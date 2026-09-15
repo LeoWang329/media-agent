@@ -1,0 +1,30 @@
+{
+  "name": "media-agent",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "tools/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,client,mock -c blue,green,gray \"tsx watch --clear-screen=false packages/server/src/index.ts\" \"vite packages/client\" \"tsx tools/mock-llm/src/main.ts\"",
+    "build": "vite build packages/client",
+    "start": "npm run build && tsx packages/server/src/index.ts --serve-client --open",
+    "mock-llm": "tsx tools/mock-llm/src/main.ts",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "e2e:serve": "npm run build && tsx tests/e2e/serve.ts",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client && tsc -p tools/mock-llm && tsc -p ."
+  },
+  "devDependencies": {
+    "@playwright/test": "~1.62.1",
+    "@types/node": "^24.13.4",
+    "concurrently": "^10.0.5",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

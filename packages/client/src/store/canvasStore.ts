@@ -1,0 +1,224 @@
+import {
+  activePath,
+  addMessage,
+  switchVersion as switchVersionInTree,
+  type CanvasDetail,
+  type CanvasNodeLayout,
+  type ChatNode,
+  type Config,
+  type ModelConfigWithKey,
+} from '@media-agent/shared';
+import { create } from 'zustand';
+import { api, postStream } from '../api';
+
+type Stream = { assistantId: string | null; text: string };
+
+type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'activeChildOf'>>;
+
+type CanvasState = {
+  canvasId: string | null;
+  detail: CanvasDetail | null;
+  selectedId: string | null;
+  nodes: Record<string, ChatNode>;
+  streams: Record<string, Stream>; // 正在生成回复的节点
+  modelConfigs: ModelConfigWithKey[];
+  promptNames: string[];
+  renamingId: string | null;
+  error: string;
+
+  open: (canvasId: string) => Promise<void>;
+  refresh: () => Promise<void>;
+  select: (nodeId: string | null) => Promise<void>;
+  loadNode: (nodeId: string) => Promise<ChatNode>;
+  createNode: (x: number, y: number) => Promise<void>;
+  patchNode: (nodeId: string, patch: NodePatch) => Promise<void>;
+  saveLayouts: (layouts: CanvasNodeLayout[]) => Promise<void>;
+  deleteNode: (nodeId: string) => Promise<void>;
+  fork: (nodeId: string, messageId: string, draftPrefix?: string) => Promise<void>;
+  forkFromLast: (nodeId: string) => Promise<void>;
+  send: (nodeId: string, text: string) => Promise<void>;
+  regenerate: (nodeId: string, messageId: string) => Promise<void>;
+  edit: (nodeId: string, messageId: string, text: string) => Promise<void>;
+  stop: (nodeId: string) => Promise<void>;
+  switchVersion: (nodeId: string, messageId: string) => Promise<void>;
+  setRenaming: (nodeId: string | null) => void;
+  clearError: () => void;
+};
+
+export const useCanvasStore = create<CanvasState>((set, get) => {
+  const canvasUrl = () => `/canvases/${get().canvasId}`;
+  const nodeUrl = (nodeId: string) => `${canvasUrl()}/nodes/${nodeId}`;
+
+  const setNode = (node: ChatNode) => set((s) => ({ nodes: { ...s.nodes, [node.id]: node } }));
+  const changeNode = (nodeId: string, change: (node: ChatNode) => ChatNode) =>
+    set((s) => (s.nodes[nodeId] ? { nodes: { ...s.nodes, [nodeId]: change(s.nodes[nodeId]) } } : {}));
+
+  // 出错时显示在画布顶上，不打断操作
+  const attempt = async (task: () => Promise<void>) => {
+    try {
+      await task();
+    } catch (err) {
+      set({ error: (err as Error).message });
+    }
+  };
+
+  // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次
+  const pending: Record<string, string> = {};
+  let frame = 0;
+  const flush = () => {
+    frame = 0;
+    set((s) => {
+      const streams = { ...s.streams };
+      for (const [nodeId, text] of Object.entries(pending)) {
+        if (streams[nodeId]) streams[nodeId] = { ...streams[nodeId], text: streams[nodeId].text + text };
+        delete pending[nodeId];
+      }
+      return { streams };
+    });
+  };
+
+  const runStream = (nodeId: string, url: string, body: unknown) =>
+    attempt(async () => {
+      if (get().streams[nodeId]) return;
+      set((s) => ({ streams: { ...s.streams, [nodeId]: { assistantId: null, text: '' } } }));
+      try {
+        await postStream(url, body, (event) => {
+          if (event.type === 'user') {
+            changeNode(nodeId, (node) => ({ ...addMessage(node, event.message), draft: '' }));
+          } else if (event.type === 'assistant-start') {
+            changeNode(nodeId, (node) => addMessage(node, event.message));
+            set((s) => ({ streams: { ...s.streams, [nodeId]: { assistantId: event.message.id, text: '' } } }));
+          } else if (event.type === 'delta') {
+            pending[nodeId] = (pending[nodeId] ?? '') + event.text;
+            frame ||= requestAnimationFrame(flush);
+          } else {
+            changeNode(nodeId, (node) => ({ ...node, messages: { ...node.messages, [event.message.id]: event.message } }));
+          }
+        });
+      } finally {
+        delete pending[nodeId];
+        set((s) => {
+          const { [nodeId]: _, ...streams } = s.streams;
+          return { streams };
+        });
+        // 标题、卡片概述由服务端算好，重新拿一次
+        if (get().nodes[nodeId]) await Promise.all([get().loadNode(nodeId), get().refresh()]).catch(() => {});
+      }
+    });
+
+  return {
+    canvasId: null,
+    detail: null,
+    selectedId: null,
+    nodes: {},
+    streams: {},
+    modelConfigs: [],
+    promptNames: [],
+    renamingId: null,
+    error: '',
+
+    open: (canvasId) =>
+      attempt(async () => {
+        set({ canvasId, detail: null, selectedId: null, nodes: {}, renamingId: null, error: '' });
+        const [detail, config, promptNames] = await Promise.all([
+          api<CanvasDetail>(`/canvases/${canvasId}`),
+          api<Config>('/config'),
+          api<string[]>('/prompts'),
+        ]);
+        set({ detail, modelConfigs: config.modelConfigs, promptNames });
+      }),
+
+    refresh: async () => {
+      const canvasId = get().canvasId;
+      const detail = await api<CanvasDetail>(`/canvases/${canvasId}`);
+      if (get().canvasId === canvasId) set({ detail });
+    },
+
+    select: (nodeId) =>
+      attempt(async () => {
+        set({ selectedId: nodeId });
+        if (nodeId && !get().nodes[nodeId]) await get().loadNode(nodeId);
+      }),
+
+    loadNode: async (nodeId) => {
+      const node = await api<ChatNode>(nodeUrl(nodeId));
+      setNode(node);
+      return node;
+    },
+
+    createNode: (x, y) =>
+      attempt(async () => {
+        const node = await api<ChatNode>(`${canvasUrl()}/nodes`, { method: 'POST', body: { x, y } });
+        setNode(node);
+        await get().refresh();
+        set({ selectedId: node.id });
+      }),
+
+    patchNode: (nodeId, patch) =>
+      attempt(async () => {
+        setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: patch }));
+        if (patch.title !== undefined) await get().refresh();
+      }),
+
+    saveLayouts: (layouts) =>
+      attempt(async () => {
+        set((s) => {
+          if (!s.detail) return {};
+          const byId = new Map(layouts.map((l) => [l.id, l]));
+          return { detail: { ...s.detail, nodes: s.detail.nodes.map((n) => ({ ...n, ...byId.get(n.id) })) } };
+        });
+        await api(canvasUrl(), { method: 'PATCH', body: { nodes: layouts } });
+      }),
+
+    deleteNode: (nodeId) =>
+      attempt(async () => {
+        const { deleted } = await api<{ deleted: string[] }>(nodeUrl(nodeId), { method: 'DELETE' });
+        set((s) => ({
+          selectedId: s.selectedId && deleted.includes(s.selectedId) ? null : s.selectedId,
+          nodes: Object.fromEntries(Object.entries(s.nodes).filter(([id]) => !deleted.includes(id))),
+        }));
+        await get().refresh();
+      }),
+
+    fork: (nodeId, messageId, draftPrefix) =>
+      attempt(async () => {
+        const node = await api<ChatNode>(`${nodeUrl(nodeId)}/fork`, { method: 'POST', body: { messageId, draftPrefix } });
+        setNode(node);
+        await get().refresh();
+        set({ selectedId: node.id });
+      }),
+
+    forkFromLast: (nodeId) =>
+      attempt(async () => {
+        const last = activePath(await get().loadNode(nodeId)).at(-1);
+        if (!last) throw new Error('这个节点还没有消息，没法 fork');
+        await get().fork(nodeId, last.id);
+      }),
+
+    send: (nodeId, text) => {
+      const parentId = activePath(get().nodes[nodeId]).at(-1)?.id ?? null;
+      return runStream(nodeId, `${nodeUrl(nodeId)}/send`, { parentId, text });
+    },
+
+    regenerate: (nodeId, messageId) => runStream(nodeId, `${nodeUrl(nodeId)}/messages/${messageId}/regenerate`, {}),
+
+    edit: (nodeId, messageId, text) => runStream(nodeId, `${nodeUrl(nodeId)}/messages/${messageId}/edit`, { text }),
+
+    stop: (nodeId) =>
+      attempt(async () => {
+        await api(`${nodeUrl(nodeId)}/stop`, { method: 'POST' });
+      }),
+
+    switchVersion: (nodeId, messageId) =>
+      attempt(async () => {
+        const node = switchVersionInTree(get().nodes[nodeId], messageId);
+        setNode(node);
+        const key = node.messages[messageId].parentId ?? 'root';
+        await api(nodeUrl(nodeId), { method: 'PATCH', body: { activeChildOf: { [key]: messageId } } });
+        await get().refresh();
+      }),
+
+    setRenaming: (renamingId) => set({ renamingId }),
+    clearError: () => set({ error: '' }),
+  };
+});

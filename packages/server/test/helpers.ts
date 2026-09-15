@@ -1,0 +1,78 @@
+import type { StreamEvent } from '@media-agent/shared';
+import type express from 'express';
+import fs from 'node:fs/promises';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
+import { createApp } from '../src/app';
+
+export function listen(app: express.Express): Promise<Server> {
+  return new Promise((resolve) => {
+    const server = app.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+export async function close(server: Server) {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+
+export const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 起一个用临时目录的服务，设好工作文件夹和指向 mock-llm 的模型配置
+export async function startTestApp() {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
+  const work = path.join(tmp, 'work');
+  const mockLlm = await listen(createMockLlmApp());
+  const server = await listen(createApp({ configDir: path.join(tmp, 'config') }));
+  const base = `${urlOf(server)}/api`;
+
+  async function call<T = any>(method: string, url: string, body?: unknown): Promise<{ status: number; body: T }> {
+    const res = await fetch(`${base}${url}`, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : undefined };
+  }
+
+  async function ok<T = any>(method: string, url: string, body?: unknown): Promise<T> {
+    const res = await call<T>(method, url, body);
+    if (res.status >= 400) throw new Error(`${method} ${url} → ${res.status} ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  // 发一个会返回 SSE 的请求，读完整个流再返回全部事件
+  async function stream(url: string, body: unknown): Promise<StreamEvent[]> {
+    const res = await fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`POST ${url} → ${res.status} ${await res.text()}`);
+    return (await res.text())
+      .split('\n\n')
+      .filter((block) => block.startsWith('data: '))
+      .map((block) => JSON.parse(block.slice(6)));
+  }
+
+  await ok('PUT', '/config', { workFolder: work });
+  await ok('PUT', '/config', {
+    modelConfigs: [{ id: 'mock', name: 'mock', baseUrl: `${urlOf(mockLlm)}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }],
+  });
+
+  return {
+    work,
+    call,
+    ok,
+    stream,
+    async cleanup() {
+      await close(server);
+      await close(mockLlm);
+      await fs.rm(tmp, { recursive: true, force: true });
+    },
+  };
+}
+
+export type TestApp = Awaited<ReturnType<typeof startTestApp>>;
