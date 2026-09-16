@@ -21,7 +21,7 @@ export function AssetLibrary({ onPick }: PickProps) {
   const results = useAssetStore((s) => s.results);
   const pathInput = useAssetStore((s) => s.pathInput);
   const error = useAssetStore((s) => s.error);
-  const { load, pickFolder, addFolder, setQuery, search, refresh } = useAssetStore.getState();
+  const { load, pickFolder, addFolder, setQuery, search, refresh, openCollage } = useAssetStore.getState();
   const [typedPath, setTypedPath] = useState('');
 
   useEffect(() => {
@@ -39,6 +39,7 @@ export function AssetLibrary({ onPick }: PickProps) {
       <div className="asset-toolbar">
         <input type="search" aria-label="搜索资产库" placeholder="按文件名搜" value={query} onChange={(e) => setQuery(e.target.value)} />
         <button type="button" onClick={() => void pickFolder()}>导入文件夹</button>
+        {!onPick && <button type="button" onClick={openCollage}>拼图</button>}
       </div>
       {pathInput && (
         <form

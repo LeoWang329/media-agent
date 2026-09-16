@@ -13,6 +13,7 @@ type AssetState = {
   selected: string[]; // 选中的图，按选中的先后
   anchor: string | null; // Shift 连选的起点
   pathInput: boolean; // 弹不出系统窗口时改用路径输入框
+  collage: boolean; // 拼图面板开着没有
   error: string;
 
   load: () => Promise<void>;
@@ -25,6 +26,8 @@ type AssetState = {
   setQuery: (query: string) => void;
   search: () => Promise<void>;
   select: (path: string, mode: 'single' | 'toggle' | 'range') => void;
+  openCollage: () => void;
+  closeCollage: () => void;
 };
 
 const folderQuery = (folder: string, refresh: boolean) => new URLSearchParams({ folder, ...(refresh && { refresh: '1' }) });
@@ -60,6 +63,7 @@ export const useAssetStore = create<AssetState>((set, get) => {
     selected: [],
     anchor: null,
     pathInput: false,
+    collage: false,
     error: '',
 
     // 打开画布页时读一次导入过的文件夹；网格默认显示第一个
@@ -155,5 +159,8 @@ export const useAssetStore = create<AssetState>((set, get) => {
         }
         return { selected: [path], anchor: path };
       }),
+
+    openCollage: () => set({ collage: true }),
+    closeCollage: () => set({ collage: false }),
   };
 });

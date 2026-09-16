@@ -68,10 +68,12 @@ test('10.2 第 1、2 条：输入 @ 选图插小标签，调槽位顺序编号�
 
   await test.step('没发出去的草稿里，小标签刷新后还在', async () => {
     await input(page).click();
+    // 草稿是停手半秒后才存，等那次 PATCH 回来再刷新
+    const draftSaved = page.waitForResponse((res) => res.request().method() === 'PATCH' && res.url().includes('/nodes/'));
     await page.keyboard.type('@');
     await picker(page).getByRole('button', { name: 'Picture 2' }).click();
     await expect(tags(page)).toHaveText(['Picture 2']);
-    await page.waitForTimeout(600); // 草稿是停手半秒后才存的
+    await draftSaved;
 
     await page.reload();
     await cards(page).first().click();

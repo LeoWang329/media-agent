@@ -95,6 +95,13 @@ export async function updateConfig(configDir: string, body: unknown): Promise<Co
   });
 }
 
+// 拼图存过一次就记住那个文件夹，下次弹窗从这里开始
+export async function setLastCollageFolder(configDir: string, folder: string): Promise<void> {
+  await changeLocalConfig(configDir, async (local) => {
+    local.lastCollageFolder = folder;
+  });
+}
+
 const samePath = (a: string, b: string) => path.relative(a, b) === '';
 
 // 资产库导入文件夹：原地引用，只记下路径

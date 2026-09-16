@@ -8,3 +8,4 @@ export * from './nodeSummary';
 export * from './canvasTree';
 export * from './imageRules';
 export * from './slotDiff';
+export * from './collage';

@@ -340,7 +340,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            GET      /assets/search?q=                跨全部根文件夹
            GET      /assets/thumb?path=
            POST     /assets/reveal                   {path} 在资源管理器里显示
-           POST     /assets/collage                  第二批，见 9.6
+           POST     /assets/collage                  {files,rows,columns,cell,numbers,folder} → {path,folder,width,height,inLibrary}
 大模型     POST     /llm/test                        {modelConfigId} → {ok, error?}
 ```
 
@@ -390,7 +390,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 ### P6 拼图（第二批）
 
-做：资产库「拼图」按钮打开弹窗；选行数和列数（各 1–3，不能 1×1）；从资产库拖图进格子，格子间拖动调顺序；「加编号」开关，默认关；每格是正方形，边长可选 1024（默认）或 1536；图完整放进格子，空白补白色；编号开启时在左上角画黑字白底圆角小框，字高约格子边长的 5%；导出 JPEG 质量 92；保存前弹系统窗口选文件夹（记住上次），文件名 `collage-YYYYMMDD-HHmmss.jpg`；保存后如果那个文件夹在库里，刷新出现；不在库里，问要不要导入。
+做：资产库「拼图」按钮打开拼图面板（盖在画布上，左边资产库照样能拖）；选行数和列数（各 1–3，不能 1×1）；从资产库拖图进格子，格子间拖动调顺序；「加编号」开关，默认关；每格是正方形，边长可选 1024（默认）或 1536；图完整放进格子，空白补白色；编号开启时在左上角画黑字白底圆角小框，字高约格子边长的 5%；导出 JPEG 质量 92；保存前弹系统窗口选文件夹（记住上次），文件名 `collage-YYYYMMDD-HHmmss.jpg`；保存后如果那个文件夹在库里，刷新出现；不在库里，问要不要导入。
 
 完成标准：10.2 第 3 条。
 

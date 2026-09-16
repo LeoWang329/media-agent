@@ -53,6 +53,7 @@ export const assetThumbUrl = (path: string, mtime: number) => `/api/assets/thumb
 
 export const imageThumbUrl = (canvasId: string, imageId: string) => `/api/canvases/${canvasId}/images/${imageId}/thumb`;
 
-// 拖拽时放在 dataTransfer 里的数据类型：资产库的图（路径列表）、槽位之间调顺序（槽位下标）
+// 拖拽时放在 dataTransfer 里的数据类型：资产库的图（路径列表）、槽位之间调顺序（槽位下标）、拼图格子之间调顺序（格子下标）
 export const ASSET_DRAG_TYPE = 'application/x-media-agent-assets';
 export const SLOT_DRAG_TYPE = 'application/x-media-agent-slot';
+export const COLLAGE_DRAG_TYPE = 'application/x-media-agent-collage';

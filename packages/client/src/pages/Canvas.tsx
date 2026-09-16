@@ -5,6 +5,8 @@ import { Link, useParams } from 'react-router';
 import { AssetLibrary } from '../components/AssetLibrary';
 import { CanvasView } from '../components/CanvasView';
 import { ChatPanel } from '../components/ChatPanel';
+import { CollageBoard } from '../components/CollageBoard';
+import { useAssetStore } from '../store/assetStore';
 import { useCanvasStore } from '../store/canvasStore';
 
 const MIN_PANEL_WIDTH = 360;
@@ -14,6 +16,7 @@ export function Canvas() {
   const title = useCanvasStore((s) => s.detail?.canvas.title);
   const error = useCanvasStore((s) => s.error);
   const { open, clearError } = useCanvasStore.getState();
+  const collage = useAssetStore((s) => s.collage);
   const [assetsCollapsed, setAssetsCollapsed] = useState(false);
   const [panelWidth, setPanelWidth] = useState(480);
 
@@ -53,9 +56,12 @@ export function Canvas() {
             <button type="button" onClick={clearError}>知道了</button>
           </div>
         )}
-        <ReactFlowProvider>
-          <CanvasView />
-        </ReactFlowProvider>
+        <div className="canvas-area">
+          <ReactFlowProvider>
+            <CanvasView />
+          </ReactFlowProvider>
+          {collage && <CollageBoard />}
+        </div>
       </main>
       <div className="panel-resizer" onPointerDown={startResize} />
       <section className="chat-panel" style={{ width: panelWidth }}>
