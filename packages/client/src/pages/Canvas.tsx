@@ -15,7 +15,7 @@ export function Canvas() {
   const { id } = useParams();
   const title = useCanvasStore((s) => s.detail?.canvas.title);
   const error = useCanvasStore((s) => s.error);
-  const { open, clearError } = useCanvasStore.getState();
+  const { open, clearError, undo, redo } = useCanvasStore.getState();
   const collage = useAssetStore((s) => s.collage);
   const [assetsCollapsed, setAssetsCollapsed] = useState(false);
   const [panelWidth, setPanelWidth] = useState(480);
@@ -23,6 +23,18 @@ export function Canvas() {
   useEffect(() => {
     if (id) void open(id);
   }, [id, open]);
+
+  // Ctrl+Z 撤销、Ctrl+Shift+Z 重做；在输入框、提示词编辑器里打字时不抢，那里有自己的撤销
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+      if ((e.target as HTMLElement | null)?.closest('input, textarea, [contenteditable="true"]')) return;
+      e.preventDefault();
+      void (e.shiftKey ? redo() : undo());
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
 
   // 拖面板左边缘改宽度
   const startResize = (e: React.PointerEvent) => {

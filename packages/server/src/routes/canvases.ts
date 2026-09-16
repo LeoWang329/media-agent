@@ -15,6 +15,7 @@ import {
   readCanvas,
   readNode,
   trashCanvas,
+  restoreNodes,
   trashNodes,
   updateCanvas,
   updateNode,
@@ -91,9 +92,15 @@ export function canvasRoutes(configDir: string): express.Router {
 
   router.delete('/canvases/:canvasId/nodes/:nodeId', async (req, res) => {
     const { canvasId, nodeId } = ids(req);
-    const deleted = await trashNodes(await work(), canvasId, nodeId);
+    const { deleted, trash } = await trashNodes(await work(), canvasId, nodeId);
     deleted.forEach(stopGeneration);
-    res.json({ deleted });
+    res.json({ deleted, trash });
+  });
+
+  // 撤销删除节点：trash 是删的时候返回的那个文件夹名
+  router.post('/canvases/:canvasId/nodes/restore', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    res.json({ restored: await restoreNodes(await work(), canvasId, v.trashName(req.body?.trash)) });
   });
 
   router.post('/canvases/:canvasId/nodes/:nodeId/fork', async (req, res) => {

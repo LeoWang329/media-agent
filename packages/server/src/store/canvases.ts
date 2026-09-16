@@ -177,12 +177,15 @@ export async function forkNode(work: string, canvasId: string, sourceId: string,
   return node;
 }
 
-// 删除节点连同子孙：节点文件和它们在画布上的位置一起移到 .trash
-export async function trashNodes(work: string, canvasId: string, nodeId: string): Promise<string[]> {
+type NodeTrash = { canvasId: string; deletedAt: string; layouts: CanvasNodeLayout[] };
+
+// 删除节点连同子孙：节点文件和它们在画布上的位置一起移到 .trash，返回删掉的 id 和回收站里那个文件夹的名字
+export async function trashNodes(work: string, canvasId: string, nodeId: string): Promise<{ deleted: string[]; trash: string }> {
   const nodes = await listNodes(work, canvasId);
   if (!nodes.some((node) => node.id === nodeId)) throw new HttpError(404, '找不到这个节点');
   const ids = [nodeId, ...descendantIds(nodes, nodeId)];
-  const target = path.join(work, '.trash', trashName('nodes', nodeId));
+  const trash = trashName('nodes', nodeId);
+  const target = path.join(work, '.trash', trash);
   await fs.mkdir(path.join(target, 'nodes'), { recursive: true });
 
   let layouts: CanvasNodeLayout[] = [];
@@ -193,6 +196,25 @@ export async function trashNodes(work: string, canvasId: string, nodeId: string)
   for (const id of ids) {
     await withLock(`node:${id}`, () => fs.rename(nodeFile(work, canvasId, id), path.join(target, 'nodes', `${id}.json`)));
   }
-  await writeJsonAtomic(path.join(target, 'manifest.json'), { canvasId, deletedAt: now(), layouts });
-  return ids;
+  await writeJsonAtomic(path.join(target, 'manifest.json'), { canvasId, deletedAt: now(), layouts } satisfies NodeTrash);
+  return { deleted: ids, trash };
+}
+
+// 撤销删除：把 .trash 里那一份挪回来，位置也照原样放回画布
+export async function restoreNodes(work: string, canvasId: string, trash: string): Promise<string[]> {
+  const dir = path.join(work, '.trash', trash);
+  const manifest = await readJson<NodeTrash>(path.join(dir, 'manifest.json'));
+  if (!manifest || manifest.canvasId !== canvasId) throw new HttpError(404, '回收站里找不到要恢复的节点');
+  const files = (await fs.readdir(path.join(dir, 'nodes'))).filter((file) => file.endsWith('.json'));
+  for (const file of files) {
+    const id = path.basename(file, '.json');
+    await withLock(`node:${id}`, () => fs.rename(path.join(dir, 'nodes', file), nodeFile(work, canvasId, id)));
+  }
+  await updateCanvas(work, canvasId, (canvas) => {
+    for (const layout of manifest.layouts) {
+      if (!canvas.nodes.some((node) => node.id === layout.id)) canvas.nodes.push(layout);
+    }
+  });
+  await fs.rm(dir, { recursive: true, force: true });
+  return manifest.layouts.map((layout) => layout.id);
 }

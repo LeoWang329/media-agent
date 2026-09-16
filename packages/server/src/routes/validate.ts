@@ -22,6 +22,13 @@ export function fileName(value: unknown): string {
   return name;
 }
 
+// 回收站里的文件夹名，只当名字用，不接受路径分隔符和上一级
+export function trashName(value: unknown): string {
+  const name = nonEmptyText(value, '回收站里的名字').trim();
+  if (!/^[\w.-]+$/.test(name) || name.startsWith('.')) throw new HttpError(400, '回收站里的名字不对');
+  return name;
+}
+
 export function text(value: unknown, what: string): string {
   if (typeof value !== 'string') throw new HttpError(400, `${what}格式不对`);
   return value;

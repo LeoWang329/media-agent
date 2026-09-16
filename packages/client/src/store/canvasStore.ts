@@ -20,6 +20,9 @@ type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromp
 
 export const MAX_SLOTS = 9;
 
+// patchNode 里这几个字段的改动进撤销栈
+const UNDOABLE_FIELDS = ['title', 'duration', 'aspectRatio'] as const;
+
 type CanvasState = {
   canvasId: string | null;
   detail: CanvasDetail | null;
@@ -53,9 +56,16 @@ type CanvasState = {
   placeFiles: (nodeId: string, files: File[], replaceIndex?: number) => Promise<string[]>;
   removeSlot: (nodeId: string, index: number) => Promise<void>;
   moveSlot: (nodeId: string, from: number, to: number) => Promise<void>;
+  undo: () => Promise<void>;
+  redo: () => Promise<void>;
   setRenaming: (nodeId: string | null) => void;
   clearError: () => void;
 };
+
+// 撤销栈里的一步：怎么退回去、怎么再做一遍
+type UndoStep = { undo: () => Promise<void>; redo: () => Promise<void> };
+
+const UNDO_LIMIT = 50;
 
 export const useCanvasStore = create<CanvasState>((set, get) => {
   const canvasUrl = () => `/canvases/${get().canvasId}`;
@@ -83,9 +93,55 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     return run;
   };
 
-  const saveSlots = async (nodeId: string, slots: string[]) => {
+  // 撤销栈：只记画布和槽位上的操作，发出去的消息不进来。
+  // 撤销和重做都走下面几个 apply，那几个不记栈，所以不会把自己又记进去
+  let undoStack: UndoStep[] = [];
+  let redoStack: UndoStep[] = [];
+  const remember = (step: UndoStep) => {
+    undoStack = [...undoStack.slice(1 - UNDO_LIMIT), step];
+    redoStack = [];
+  };
+
+  const applyPatch = (nodeId: string, patch: NodePatch) =>
+    attempt(async () => {
+      setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: patch }));
+      if (patch.title !== undefined) await get().refresh();
+    });
+
+  const applyLayouts = (layouts: CanvasNodeLayout[]) =>
+    attempt(async () => {
+      set((s) => {
+        if (!s.detail) return {};
+        const byId = new Map(layouts.map((l) => [l.id, l]));
+        return { detail: { ...s.detail, nodes: s.detail.nodes.map((n) => ({ ...n, ...byId.get(n.id) })) } };
+      });
+      await api(canvasUrl(), { method: 'PATCH', body: { nodes: layouts } });
+    });
+
+  const applySlots = async (nodeId: string, slots: string[]) => {
     setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: { slots } }));
     await get().refresh();
+  };
+
+  // 先记再改：界面在服务端答完就变了，这中间按 Ctrl+Z 不能退到上一步去
+  const saveSlots = async (nodeId: string, slots: string[]) => {
+    const before = get().nodes[nodeId]?.slots ?? [];
+    remember({
+      undo: () => applySlots(nodeId, before),
+      redo: () => applySlots(nodeId, slots),
+    });
+    await applySlots(nodeId, slots);
+  };
+
+  // 删除节点：撤销时从 .trash 里挪回来；再删一次会进新的 .trash 文件夹，名字要更新
+  const removeNode = async (nodeId: string): Promise<string> => {
+    const { deleted, trash } = await api<{ deleted: string[]; trash: string }>(nodeUrl(nodeId), { method: 'DELETE' });
+    set((s) => ({
+      selectedId: s.selectedId && deleted.includes(s.selectedId) ? null : s.selectedId,
+      nodes: Object.fromEntries(Object.entries(s.nodes).filter(([id]) => !deleted.includes(id))),
+    }));
+    await get().refresh();
+    return trash;
   };
 
   // 放进下一个空位；replaceIndex 指向已有图的槽位时，第一张替换它，其余接在后面。
@@ -177,6 +233,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     open: (canvasId) =>
       attempt(async () => {
+        undoStack = [];
+        redoStack = [];
         set({ canvasId, detail: null, selectedId: null, nodes: {}, renamingId: null, error: '' });
         const [detail, config, promptNames] = await Promise.all([
           api<CanvasDetail>(`/canvases/${canvasId}`),
@@ -212,30 +270,45 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         set({ selectedId: node.id });
       }),
 
-    patchNode: (nodeId, patch) =>
-      attempt(async () => {
-        setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: patch }));
-        if (patch.title !== undefined) await get().refresh();
-      }),
+    // 改名、时长、比例能撤销；模型配置、提示词套数、草稿这些不算
+    patchNode: (nodeId, patch) => {
+      const node = get().nodes[nodeId];
+      const changed = UNDOABLE_FIELDS.filter((key) => key in patch && node && patch[key] !== node[key]);
+      if (node && changed.length) {
+        const pick = (from: Record<string, unknown>) => Object.fromEntries(changed.map((key) => [key, from[key]])) as NodePatch;
+        const before = pick(node);
+        const after = pick(patch);
+        remember({ undo: () => applyPatch(nodeId, before), redo: () => applyPatch(nodeId, after) });
+      }
+      return applyPatch(nodeId, patch);
+    },
 
-    saveLayouts: (layouts) =>
-      attempt(async () => {
-        set((s) => {
-          if (!s.detail) return {};
-          const byId = new Map(layouts.map((l) => [l.id, l]));
-          return { detail: { ...s.detail, nodes: s.detail.nodes.map((n) => ({ ...n, ...byId.get(n.id) })) } };
-        });
-        await api(canvasUrl(), { method: 'PATCH', body: { nodes: layouts } });
-      }),
+    // 拖动节点、折叠、自动排整齐都走这里
+    saveLayouts: (layouts) => {
+      const before = (get().detail?.nodes ?? [])
+        .filter((n) => layouts.some((l) => l.id === n.id))
+        .map(({ id, x, y, collapsed }) => ({ id, x, y, collapsed }));
+      // 点一下没真拖动也会来一次，这种不记
+      const moved = before.some((was) => {
+        const now = layouts.find((l) => l.id === was.id)!;
+        return now.x !== was.x || now.y !== was.y || now.collapsed !== was.collapsed;
+      });
+      if (moved) remember({ undo: () => applyLayouts(before), redo: () => applyLayouts(layouts) });
+      return applyLayouts(layouts);
+    },
 
     deleteNode: (nodeId) =>
       attempt(async () => {
-        const { deleted } = await api<{ deleted: string[] }>(nodeUrl(nodeId), { method: 'DELETE' });
-        set((s) => ({
-          selectedId: s.selectedId && deleted.includes(s.selectedId) ? null : s.selectedId,
-          nodes: Object.fromEntries(Object.entries(s.nodes).filter(([id]) => !deleted.includes(id))),
-        }));
-        await get().refresh();
+        let trash = await removeNode(nodeId);
+        remember({
+          undo: async () => {
+            await api(`${canvasUrl()}/nodes/restore`, { method: 'POST', body: { trash } });
+            await get().refresh();
+          },
+          redo: async () => {
+            trash = await removeNode(nodeId);
+          },
+        });
       }),
 
     fork: (nodeId, messageId, draftPrefix) =>
@@ -306,6 +379,24 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         const [moved] = slots.splice(from, 1);
         slots.splice(to, 0, moved);
         await saveSlots(nodeId, slots);
+      }),
+
+    undo: () =>
+      attempt(async () => {
+        const step = undoStack.at(-1);
+        if (!step) return;
+        undoStack = undoStack.slice(0, -1);
+        redoStack = [...redoStack, step];
+        await step.undo();
+      }),
+
+    redo: () =>
+      attempt(async () => {
+        const step = redoStack.at(-1);
+        if (!step) return;
+        redoStack = redoStack.slice(0, -1);
+        undoStack = [...undoStack, step];
+        await step.redo();
       }),
 
     setRenaming: (renamingId) => set({ renamingId }),

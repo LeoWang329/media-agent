@@ -28,14 +28,19 @@ export function CanvasView() {
     setNodes((previous) =>
       detail.nodes
         .filter((n) => !hidden.has(n.id))
-        .map((n) => ({
-          id: n.id,
-          type: 'card',
-          position: { x: n.x, y: n.y },
-          selected: n.id === selectedId,
-          measured: previous.find((p) => p.id === n.id)?.measured,
-          data: { summary: n, hiddenCount: n.collapsed ? descendantIds(detail.nodes, n.id).length : 0 },
-        })),
+        .map((n) => {
+          const was = previous.find((p) => p.id === n.id);
+          return {
+            id: n.id,
+            type: 'card',
+            // 正在拖的节点保持手上的位置，不然回复刚发完这类刷新会把它拽回原处
+            position: was?.dragging ? was.position : { x: n.x, y: n.y },
+            dragging: was?.dragging,
+            selected: n.id === selectedId,
+            measured: was?.measured,
+            data: { summary: n, hiddenCount: n.collapsed ? descendantIds(detail.nodes, n.id).length : 0 },
+          };
+        }),
     );
   }, [detail, selectedId]);
 

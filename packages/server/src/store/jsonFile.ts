@@ -11,12 +11,27 @@ export async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
+const RENAME_RETRIES = [20, 40, 60, 80, 100];
+const BUSY = ['EPERM', 'EACCES', 'EBUSY'];
+
+// Windows 上杀毒软件、搜索索引会短暂占住刚写好的文件，这时候改名会失败，等一下再试
+async function rename(tmp: string, file: string): Promise<void> {
+  for (let i = 0; ; i += 1) {
+    try {
+      return await fs.rename(tmp, file);
+    } catch (err) {
+      if (i >= RENAME_RETRIES.length || !BUSY.includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRIES[i]));
+    }
+  }
+}
+
 // 先写临时文件再改名，写到一半断电也不会留下半个文件
 export async function writeFileAtomic(file: string, data: string | Uint8Array): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, data);
-  await fs.rename(tmp, file);
+  await rename(tmp, file);
 }
 
 export function writeJsonAtomic(file: string, data: unknown): Promise<void> {
