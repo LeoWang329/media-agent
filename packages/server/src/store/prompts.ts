@@ -68,6 +68,18 @@ export async function snapshotPrompt(work: string, name: string): Promise<{ text
   return { text, hash };
 }
 
+// 回复角落里点提示词名，看的是发这条时存下的那一版
+export async function readPromptVersion(work: string, name: string, hash: string): Promise<string> {
+  if (!/^[0-9a-f]{12,64}$/i.test(hash)) throw new HttpError(400, '版本号格式不对');
+  promptFile(work, name);
+  try {
+    return await fs.readFile(path.join(promptsDir(work), '.history', `${name}-${hash.slice(0, 12)}.md`), 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new HttpError(404, '找不到这一版系统提示词');
+    throw err;
+  }
+}
+
 export async function readFormatRequirement(): Promise<string> {
   const lines = (await fs.readFile(FORMAT_REQUIREMENT_DOC, 'utf8')).split(/\r?\n/);
   return lines.slice(lines.findIndex((line) => line.trim() === '---') + 1).join('\n').trim();

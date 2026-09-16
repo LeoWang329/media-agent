@@ -202,3 +202,49 @@ describe('画布和节点的增删改查', () => {
     expect(manifest.layouts).toHaveLength(4);
   });
 });
+
+describe('提示词框', () => {
+  it('打星写进消息，卡片跟着显示星，取消后消失', async () => {
+    const { reply } = await send('写一个');
+    const starUrl = `${nodeUrl}/messages/${reply.id}/star`;
+    const cardStarred = async () => (await t.ok('GET', `/canvases/${canvasId}`)).nodes[0].starred;
+
+    let node: ChatNode = await t.ok('POST', starUrl, { promptIndex: 0, on: true });
+    expect(node.messages[reply.id].stars).toEqual([0]);
+    expect(await cardStarred()).toBe(true);
+
+    node = await t.ok('POST', starUrl, { promptIndex: 0, on: false });
+    expect(node.messages[reply.id].stars).toEqual([]);
+    expect(await cardStarred()).toBe(false);
+    expect((await t.call('POST', starUrl, { promptIndex: 0, on: 'yes' })).status).toBe(400);
+  });
+
+  it('手动改提示词：同一位置多一个版本，正文和概述都换了，不调模型', async () => {
+    const { reply } = await send('写一个');
+    const node: ChatNode = await t.ok('POST', `${nodeUrl}/messages/${reply.id}/edit-prompt`, { promptIndex: 0, text: 'summary:\n改过的概述' });
+    const versions = Object.values(node.messages).filter((m) => m.parentId === reply.parentId);
+    expect(versions).toHaveLength(2);
+
+    const edited = versions.find((m) => m.id !== reply.id)!;
+    expect(edited.editedFromMessageId).toBe(reply.id);
+    expect(edited.parsed?.prompts[0].text).toBe('summary:\n改过的概述');
+    expect(edited.parsed?.title).toBe('测试标题');
+    expect(edited.text).toContain('历史消息 1 条');
+    expect(edited.usage).toBeUndefined();
+    expect(node.activeChildOf[reply.parentId!]).toBe(edited.id);
+    expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes[0].summary).toBe('改过的概述');
+
+    expect((await t.call('POST', `${nodeUrl}/messages/${reply.id}/edit-prompt`, { promptIndex: 3, text: 'x' })).status).toBe(404);
+  });
+
+  it('回复角落点提示词名，读到的是发这条时的那一版，之后改了也不影响', async () => {
+    const { reply } = await send('写一个');
+    const original = await fs.readFile(path.join(t.work, 'prompts', 'default.md'), 'utf8');
+    expect((await t.ok('GET', `/prompts/default/history/${reply.systemPromptHash}`)).text).toBe(original);
+
+    await t.ok('PUT', '/prompts/default', { text: '新版提示词' });
+    expect((await t.ok('GET', `/prompts/default/history/${reply.systemPromptHash}`)).text).toBe(original);
+    expect((await t.call('GET', '/prompts/default/history/zzz')).status).toBe(400);
+    expect((await t.call('GET', `/prompts/default/history/${'0'.repeat(12)}`)).status).toBe(404);
+  });
+});

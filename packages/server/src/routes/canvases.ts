@@ -1,4 +1,4 @@
-import { addMessage, DEFAULT_IMAGE_LONG_SIDE, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
+import { addMessage, DEFAULT_IMAGE_LONG_SIDE, editedPromptMessage, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
 import express, { type Request } from 'express';
 import { randomUUID } from 'node:crypto';
 import { readConfig, requireWorkFolder } from '../config';
@@ -19,7 +19,7 @@ import {
   updateCanvas,
   updateNode,
 } from '../store/canvases';
-import { canvasImagePath, importImage, readImage } from '../store/images';
+import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
 import { listPrompts } from '../store/prompts';
 import * as v from './validate';
 
@@ -148,18 +148,35 @@ export function canvasRoutes(configDir: string): express.Router {
     });
   });
 
-  // 放进槽位的图先复制进画布文件夹；发给模型的小图按节点所选模型配置的发图长边缩
+  // 发给模型的小图按节点所选模型配置的发图长边缩
+  const llmLongSide = async (w: string, canvasId: string, nodeId: unknown) => {
+    if (nodeId === undefined) return DEFAULT_IMAGE_LONG_SIDE;
+    const node = await readNode(w, canvasId, v.uuid(nodeId));
+    return (await readConfig(configDir)).modelConfigs.find((m) => m.id === node.modelConfigId)?.imageLongSide ?? DEFAULT_IMAGE_LONG_SIDE;
+  };
+
+  // 放进槽位的图先复制进画布文件夹
   router.post('/canvases/:canvasId/images', async (req, res) => {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
     await readCanvas(w, canvasId);
     const source = await allowedPath(configDir, req.body?.path);
-    let longSide = DEFAULT_IMAGE_LONG_SIDE;
-    if (req.body?.nodeId !== undefined) {
-      const node = await readNode(w, canvasId, v.uuid(req.body.nodeId));
-      longSide = (await readConfig(configDir)).modelConfigs.find((m) => m.id === node.modelConfigId)?.imageLongSide ?? longSide;
-    }
-    res.json(await importImage(w, canvasId, source, longSide));
+    res.json(await importImage(w, canvasId, source, await llmLongSide(w, canvasId, req.body?.nodeId)));
+  });
+
+  // 从 Windows 文件夹拖进槽位的图：没有本机路径，浏览器直接把内容传上来
+  router.post('/canvases/:canvasId/images/upload', express.raw({ type: '*/*', limit: '64mb' }), async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    const name = v.fileName(req.query.name);
+    res.json(await storeDroppedImage(w, canvasId, name, req.body as Buffer, await llmLongSide(w, canvasId, req.query.nodeId)));
+  });
+
+  router.get('/canvases/:canvasId/images/:imageId/checklist-path', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    res.json(await checklistPath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId))));
   });
 
   router.get('/canvases/:canvasId/images/:imageId/file', async (req, res) => {
@@ -172,6 +189,39 @@ export function canvasRoutes(configDir: string): express.Router {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
     res.sendFile(await thumbnail(configDir, canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)))));
+  });
+
+  // 星打在提示词框上，卡片按「这个节点有没有星」显示
+  router.post('/canvases/:canvasId/nodes/:nodeId/messages/:messageId/star', async (req, res) => {
+    const { canvasId, nodeId } = ids(req);
+    const promptIndex = v.index(req.body?.promptIndex, '提示词框');
+    const on = v.bool(req.body?.on, '星标');
+    res.json(
+      await updateNode(await work(), canvasId, nodeId, (node) => {
+        const message = node.messages[req.params.messageId];
+        if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
+        const stars = new Set(message.stars ?? []);
+        if (on) stars.add(promptIndex);
+        else stars.delete(promptIndex);
+        return { ...node, messages: { ...node.messages, [message.id]: { ...message, stars: [...stars].sort((a, b) => a - b) } } };
+      }),
+    );
+  });
+
+  // 手动改提示词：新建一条回复的版本，不调模型
+  router.post('/canvases/:canvasId/nodes/:nodeId/messages/:messageId/edit-prompt', async (req, res) => {
+    const { canvasId, nodeId } = ids(req);
+    const promptIndex = v.index(req.body?.promptIndex, '提示词框');
+    const text = v.text(req.body?.text, '提示词');
+    res.json(
+      await updateNode(await work(), canvasId, nodeId, (node) => {
+        const original = node.messages[req.params.messageId];
+        if (original?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
+        const edited = editedPromptMessage(original, promptIndex, text, randomUUID(), new Date().toISOString());
+        if (!edited) throw new HttpError(404, '这条回复里没有第 ' + (promptIndex + 1) + ' 个提示词框');
+        return addMessage(node, edited);
+      }),
+    );
   });
 
   router.post('/canvases/:canvasId/nodes/:nodeId/stop', (req, res) => {

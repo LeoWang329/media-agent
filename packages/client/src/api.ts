@@ -12,6 +12,19 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   return data as T;
 }
 
+// 从 Windows 文件夹拖进来的图：没有本机路径，把内容直接传上去
+export async function uploadImage<T>(canvasId: string, nodeId: string, file: File): Promise<T> {
+  const query = new URLSearchParams({ name: file.name, nodeId });
+  const res = await fetch(`/api/canvases/${canvasId}/images/upload?${query}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? `请求失败（HTTP ${res.status}）`);
+  return data as T;
+}
+
 // 发送、重新生成、编辑都返回 SSE，一边收一边回调
 export async function postStream(path: string, body: unknown, onEvent: (event: StreamEvent) => void): Promise<void> {
   const res = await fetch(`/api${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

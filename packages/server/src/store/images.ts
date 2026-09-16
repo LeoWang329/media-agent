@@ -33,6 +33,23 @@ export async function importImage(work: string, canvasId: string, source: string
   const original = await fs.readFile(source).catch((err: NodeJS.ErrnoException) => {
     throw err.code === 'ENOENT' ? new HttpError(404, `找不到这张图：${source}`) : err;
   });
+  return storeImage(work, canvasId, original, source, path.basename(source), llmLongSide);
+}
+
+// 从 Windows 文件夹直接拖进来的图：浏览器只给文件名和内容，没有本机路径，originalPath 存空
+export async function storeDroppedImage(work: string, canvasId: string, name: string, original: Buffer, llmLongSide: number): Promise<ImageRecord> {
+  if (!isSupportedImage(name)) throw new HttpError(400, '只支持 jpg、jpeg、png、webp 格式的图片');
+  return storeImage(work, canvasId, original, '', name, llmLongSide);
+}
+
+async function storeImage(
+  work: string,
+  canvasId: string,
+  original: Buffer,
+  originalPath: string,
+  originalName: string,
+  llmLongSide: number,
+): Promise<ImageRecord> {
   const sha256 = createHash('sha256').update(original).digest('hex');
   return withLock(`images:${canvasId}`, async () => {
     const images = await readImages(work, canvasId);
@@ -44,8 +61,8 @@ export async function importImage(work: string, canvasId: string, source: string
       id: randomUUID(),
       sha256,
       ext: copy.ext,
-      originalPath: source,
-      originalName: path.basename(source),
+      originalPath,
+      originalName,
       width: copy.width,
       height: copy.height,
       processed: copy.processed,
@@ -62,6 +79,14 @@ export async function importImage(work: string, canvasId: string, source: string
     await writeJsonAtomic(imagesFile(work, canvasId), { ...images, [image.id]: image });
     return image;
   });
+}
+
+// 5.7 上传清单里这张图该传哪个文件：没处理过、原文件还在就用原文件，否则用画布副本
+export async function checklistPath(work: string, canvasId: string, image: ImageRecord): Promise<{ path: string; kind: 'original' | 'canvas'; note?: string }> {
+  const original = image.originalPath;
+  if (!image.processed && original && (await fs.access(original).then(() => true, () => false))) return { path: original, kind: 'original' };
+  const note = image.processed ? '已处理，请上传这份' : original ? '原图不在了，用这份' : '拖进来的图，用这份';
+  return { path: canvasImagePath(work, canvasId, image), kind: 'canvas', note };
 }
 
 // 5.6：长边超过 5760 缩小、短边不到 256 放大；处理后仍超过 30 MB 转 JPEG 逐步降质量。没触发任何条件就原样复制

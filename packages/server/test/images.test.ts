@@ -87,6 +87,25 @@ describe('放进槽位的图', () => {
     expect((await t.call('POST', `/canvases/${canvasId}/images`, { path: path.join(fixtures, FIXTURES.heic) })).status).toBe(400);
     expect((await t.call('POST', `/canvases/${canvasId}/images`, { path: path.join(fixtures, '..', FIXTURES.first) })).status).toBe(403);
   });
+
+  it('从 Windows 文件夹拖进来的图：只按内容存，originalPath 为空；格式不支持或文件名带斜杠返回 400', async () => {
+    const nodeId = nodeUrl.split('/').at(-1)!;
+    const upload = (name: string, data: Buffer) =>
+      fetch(`${t.base}/canvases/${canvasId}/images/upload?${new URLSearchParams({ name, nodeId })}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: data,
+      });
+    const data = await fs.readFile(path.join(fixtures, FIXTURES.big));
+    const image = (await (await upload(FIXTURES.big, data)).json()) as ImageRecord;
+    expect(image).toMatchObject({ originalName: FIXTURES.big, originalPath: '', width: 5760, height: 3840 });
+    expect(await size(path.join(imagesDir(), `${image.sha256}.llm.jpg`))).toEqual([1600, 1067]);
+    expect(((await (await upload(FIXTURES.big, data)).json()) as ImageRecord).id).toBe(image.id);
+
+    expect((await upload(FIXTURES.heic, data)).status).toBe(400);
+    expect((await upload('..\\别的地方.jpg', data)).status).toBe(400);
+    expect((await upload(FIXTURES.first, Buffer.alloc(0))).status).toBe(400);
+  });
 });
 
 describe('发消息带上槽位里的图', () => {
@@ -125,5 +144,34 @@ describe('发消息带上槽位里的图', () => {
     expect(longer.user).toMatchObject({ systemNote: '视频时长改为 12 秒。', attachments: [] });
     expect(longer.reply).toContain('收到 0 张图');
     expect(longer.reply).toContain('说明：视频时长改为 12 秒。');
+  });
+});
+
+describe('上传清单里这张图该传哪个文件', () => {
+  const checklist = (imageId: string) => t.ok('GET', `/canvases/${canvasId}/images/${imageId}/checklist-path`);
+
+  it('没处理过、原文件还在就用原文件；处理过、原文件没了、拖进来的都用画布副本', async () => {
+    const normal = await importImage(FIXTURES.first);
+    expect(await checklist(normal.id)).toEqual({ path: path.join(fixtures, FIXTURES.first), kind: 'original' });
+
+    const big = await importImage(FIXTURES.big);
+    expect(await checklist(big.id)).toEqual({ path: path.join(imagesDir(), `${big.sha256}.jpg`), kind: 'canvas', note: '已处理，请上传这份' });
+
+    // 原文件放在工作文件夹里，放进槽位之后删掉
+    const temp = path.join(t.work, '临时原图.jpg');
+    await fs.copyFile(path.join(fixtures, FIXTURES.second), temp);
+    const moved = await t.ok('POST', `/canvases/${canvasId}/images`, { path: temp });
+    expect(await checklist(moved.id)).toMatchObject({ kind: 'original' });
+    await fs.rm(temp);
+    expect(await checklist(moved.id)).toEqual({ path: path.join(imagesDir(), `${moved.sha256}.jpg`), kind: 'canvas', note: '原图不在了，用这份' });
+
+    const query = new URLSearchParams({ name: FIXTURES.third });
+    const res = await fetch(`${t.base}/canvases/${canvasId}/images/upload?${query}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: await fs.readFile(path.join(fixtures, FIXTURES.third)),
+    });
+    const dropped = (await res.json()) as ImageRecord;
+    expect(await checklist(dropped.id)).toEqual({ path: path.join(imagesDir(), `${dropped.sha256}.jpg`), kind: 'canvas', note: '拖进来的图，用这份' });
   });
 });

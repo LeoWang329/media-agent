@@ -1,7 +1,8 @@
-import { aspectRatioText, imageSizeFits, type AspectRatio, type ChatNode } from '@media-agent/shared';
+import { aspectRatioText, imageSizeFits, isSupportedImageName, type AspectRatio, type ChatNode } from '@media-agent/shared';
 import { useState, type DragEvent } from 'react';
 import { ASSET_DRAG_TYPE, imageThumbUrl, SLOT_DRAG_TYPE } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
+import { AssetPicker } from './AssetLibrary';
 
 const SLOT_COUNT = 9;
 const DURATIONS = Array.from({ length: 12 }, (_, i) => i + 4);
@@ -12,11 +13,12 @@ export function SlotStrip({ node }: { node: ChatNode }) {
   const canvasId = useCanvasStore((s) => s.canvasId);
   const images = useCanvasStore((s) => s.detail?.images);
   const placing = useCanvasStore((s) => s.placing);
-  const picked = useCanvasStore((s) => s.pickedSlot);
-  const { placeImages, removeSlot, moveSlot, patchNode, pickSlot } = useCanvasStore.getState();
+  const { placeImages, placeFiles, removeSlot, moveSlot, patchNode } = useCanvasStore.getState();
   const [over, setOver] = useState<number | null>(null);
+  const [picking, setPicking] = useState<number | null>(null); // 正在给哪个槽位选图
 
-  const accepts = (e: DragEvent) => e.dataTransfer.types.includes(ASSET_DRAG_TYPE) || e.dataTransfer.types.includes(SLOT_DRAG_TYPE);
+  const accepts = (e: DragEvent) =>
+    e.dataTransfer.types.includes(ASSET_DRAG_TYPE) || e.dataTransfer.types.includes(SLOT_DRAG_TYPE) || e.dataTransfer.types.includes('Files');
 
   // index 是放下时鼠标所在的槽位：资产库的图放在已有图的槽位上就替换它，槽位之间拖动是调顺序
   const drop = (e: DragEvent, index?: number) => {
@@ -25,7 +27,13 @@ export function SlotStrip({ node }: { node: ChatNode }) {
     setOver(null);
     const assets = e.dataTransfer.getData(ASSET_DRAG_TYPE);
     const from = e.dataTransfer.getData(SLOT_DRAG_TYPE);
-    if (assets) {
+    const dropped = [...e.dataTransfer.files];
+    const files = dropped.filter((file) => isSupportedImageName(file.name));
+    if (files.length) {
+      void placeFiles(node.id, files, index);
+    } else if (dropped.length) {
+      useCanvasStore.setState({ error: '只支持 jpg、jpeg、png、webp 格式的图片' });
+    } else if (assets) {
       void placeImages(node.id, JSON.parse(assets) as string[], index);
     } else if (from !== '') {
       const to = index === undefined || index >= node.slots.length ? node.slots.length - 1 : index;
@@ -48,14 +56,16 @@ export function SlotStrip({ node }: { node: ChatNode }) {
             const imageId = node.slots[i];
             const image = imageId ? images?.[imageId] : undefined;
             const misfit = image ? !imageSizeFits(image.width, image.height) : false;
+            // 点空槽位弹出来的是第一个空位：槽位中间不留空，点右边的空格子也只能填到那里
+            const target = imageId ? i : Math.min(i, node.slots.length);
             return (
               <div
                 key={i}
-                className={`slot${imageId ? ' filled' : ''}${misfit ? ' misfit' : ''}${over === i ? ' over' : ''}${picked === i ? ' picked' : ''}`}
+                className={`slot${imageId ? ' filled' : ''}${misfit ? ' misfit' : ''}${over === i ? ' over' : ''}${picking === i ? ' picked' : ''}`}
                 data-testid="slot"
                 title={image ? `${image.originalName}${misfit ? '（尺寸不符）' : ''}` : undefined}
                 draggable={Boolean(imageId)}
-                onClick={() => pickSlot(imageId ? i : null)}
+                onClick={() => setPicking(target)}
                 onDragStart={(e) => {
                   e.dataTransfer.setData(SLOT_DRAG_TYPE, String(i));
                   e.dataTransfer.effectAllowed = 'move';
@@ -63,6 +73,7 @@ export function SlotStrip({ node }: { node: ChatNode }) {
                 onDragOver={(e) => dragOver(e, i)}
                 onDrop={(e) => drop(e, i)}
               >
+                {!imageId && i === node.slots.length && <span className="slot-next">+</span>}
                 {imageId && canvasId && (
                   <>
                     <img src={imageThumbUrl(canvasId, imageId)} alt="" draggable={false} />
@@ -99,7 +110,16 @@ export function SlotStrip({ node }: { node: ChatNode }) {
         </div>
       </div>
       {placing > 0 && <div className="placing muted">正在放入 {placing} 张图…</div>}
-      {picked !== null && placing === 0 && <div className="placing muted">选中了 {picked + 1} 号，双击资产库里的图替换它</div>}
+      {picking !== null && (
+        <AssetPicker
+          title={node.slots[picking] ? `替换 ${picking + 1} 号` : `放进 ${picking + 1} 号`}
+          onPick={(paths) => {
+            setPicking(null);
+            void placeImages(node.id, paths, picking);
+          }}
+          onClose={() => setPicking(null)}
+        />
+      )}
     </>
   );
 }

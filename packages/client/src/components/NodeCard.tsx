@@ -53,6 +53,7 @@ export function NodeCard({ id, data, selected }: NodeProps<CardNode>) {
           </div>
         )}
         {summary.directionCount > 1 && <span className="badge">{summary.directionCount} 个方向</span>}
+        {summary.starred && <span className="node-star" title="有打星的提示词">★</span>}
       </div>
       <div className="node-slots">
         {Array.from({ length: 9 }, (_, i) => {

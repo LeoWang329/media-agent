@@ -3,6 +3,14 @@ export const MAX_IMAGE_SIDE = 5760;
 export const MIN_IMAGE_SIDE = 256;
 export const MAX_IMAGE_BYTES = 30 * 1024 * 1024;
 
+// 只按扩展名判断：资产库列文件、从 Windows 文件夹拖进来的文件都用这一份
+export const SUPPORTED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+
+export function isSupportedImageName(name: string): boolean {
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 && SUPPORTED_IMAGE_EXTENSIONS.includes(name.slice(dot).toLowerCase());
+}
+
 export type ResizePlan = { width: number; height: number; reason: 'too-large' | 'too-small' };
 
 // 长边超过 5760 缩到 5760；短边不到 256 放大到 256；两条冲突时以不超过 5760 为准。不用改尺寸时返回 null

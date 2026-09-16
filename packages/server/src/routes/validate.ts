@@ -15,8 +15,25 @@ export function nonEmptyText(value: unknown, what: string): string {
   return value;
 }
 
+// 拖进来的文件名只当名字存着，不拼路径，不接受带斜杠的
+export function fileName(value: unknown): string {
+  const name = nonEmptyText(value, '文件名').trim();
+  if (/[\\/]/.test(name)) throw new HttpError(400, '文件名不对');
+  return name;
+}
+
 export function text(value: unknown, what: string): string {
   if (typeof value !== 'string') throw new HttpError(400, `${what}格式不对`);
+  return value;
+}
+
+export function index(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new HttpError(400, `${what}序号不对`);
+  return value;
+}
+
+export function bool(value: unknown, what: string): boolean {
+  if (typeof value !== 'boolean') throw new HttpError(400, `${what}格式不对`);
   return value;
 }
 

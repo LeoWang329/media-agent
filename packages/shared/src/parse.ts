@@ -51,6 +51,27 @@ export function parseReply(text: string): ParsedReply {
   return { ...(title !== undefined && { title }), prompts, segments };
 }
 
+// 手动改提示词：把第 index 个框里的内容换掉，其余原样。没这个框时返回 null
+export function replacePromptText(text: string, index: number, promptText: string): string | null {
+  const lines = text.split(/\r?\n/);
+  let seen = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!OPEN.test(lines[i])) continue;
+    let end = i + 1;
+    while (end < lines.length && !CLOSE.test(lines[end])) end += 1;
+    if (end >= lines.length) break; // 没收尾的框不算
+    if (seen === index) return [...lines.slice(0, i + 1), ...promptText.split(/\r?\n/), ...lines.slice(end)].join('\n');
+    seen += 1;
+    i = end;
+  }
+  return null;
+}
+
+// 提示词里引用了哪几张图（上传清单用）
+export function referencedPictures(text: string): number[] {
+  return [...new Set([...text.matchAll(/<Picture\s+(\d+)>/gi)].map((m) => Number(m[1])))].sort((a, b) => a - b);
+}
+
 // 框里 summary: 那一段；没有就取前两行非空文字
 export function extractSummary(boxText: string): string {
   const lines = boxText.split('\n');

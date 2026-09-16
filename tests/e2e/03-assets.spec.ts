@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
 import { cards, lastReply, newCanvasWithNode, panel, send, setupWorkFolder } from './helpers';
 
@@ -6,7 +8,8 @@ test.beforeAll(async ({ playwright }) => {
   await setupWorkFolder(playwright);
 });
 
-const tile = (page: Page, name: string) => page.getByTestId('asset-tile').filter({ hasText: name });
+const tile = (page: Page, name: string) => page.locator('.asset-column').getByTestId('asset-tile').filter({ hasText: name });
+const pickerTile = (page: Page, name: string) => page.locator('.asset-picker').getByTestId('asset-tile').filter({ hasText: name });
 const slots = (page: Page) => panel(page).getByTestId('slot');
 const filledSlots = (page: Page) => panel(page).locator('.slot.filled');
 
@@ -121,12 +124,45 @@ test('槽位之间拖动调顺序；多选后拖进槽位区按选中的先后�
   await expect(slots(page).nth(3)).toHaveAttribute('title', FIXTURES.third);
 
   await slots(page).first().click();
-  await expect(panel(page).getByText('选中了 1 号')).toBeVisible();
-  await tile(page, FIXTURES.fourth).dblclick();
+  await expect(page.getByRole('dialog', { name: '替换 1 号' })).toBeVisible();
+  await pickerTile(page, FIXTURES.fourth).click();
   await expect(slots(page).first()).toHaveAttribute('title', FIXTURES.fourth);
   await expect(filledSlots(page)).toHaveCount(4);
+
+  // 点最后一个空槽位，弹出的是第一个空位；Ctrl 选两张一次放进去
+  await slots(page).nth(8).click();
+  await expect(page.getByRole('dialog', { name: '放进 5 号' })).toBeVisible();
+  await pickerTile(page, FIXTURES.small).click({ modifiers: ['Control'] });
+  await pickerTile(page, FIXTURES.big).click({ modifiers: ['Control'] });
+  await page.getByRole('button', { name: '放入选中的 2 张' }).click();
+  await expect(filledSlots(page)).toHaveCount(6);
+  await expect(slots(page).nth(4)).toHaveAttribute('title', FIXTURES.small);
+  await expect(slots(page).nth(5)).toHaveAttribute('title', FIXTURES.big);
 
   await page.getByLabel('搜索资产库').fill('紫色');
   await expect(page.getByText('搜索结果 1 个')).toBeVisible();
   await expect(page.getByTestId('asset-tile')).toHaveText([FIXTURES.fifth]);
+});
+
+test('从 Windows 文件夹直接把两张图拖进槽位，不用先导入文件夹', async ({ page }) => {
+  await newCanvasWithNode(page, '从文件夹拖进来');
+  const names = [FIXTURES.third, FIXTURES.fourth];
+  const files = await Promise.all(
+    names.map(async (name) => ({ name, data: (await fs.readFile(path.join(FIXTURES_DIR, name))).toString('base64') })),
+  );
+  // 浏览器里现造两个 File，照 Windows 拖文件进来的样子放到 1 号槽位上
+  const dataTransfer = await page.evaluateHandle((dropped) => {
+    const transfer = new DataTransfer();
+    for (const { name, data } of dropped) {
+      transfer.items.add(new File([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))], name, { type: 'image/jpeg' }));
+    }
+    return transfer;
+  }, files);
+  await slots(page).first().dispatchEvent('drop', { dataTransfer });
+
+  await expect(filledSlots(page)).toHaveCount(2);
+  await expect(slots(page).first()).toHaveAttribute('title', FIXTURES.third);
+  await expect(slots(page).nth(1)).toHaveAttribute('title', FIXTURES.fourth);
+  await send(page, '写一个');
+  await expect(lastReply(page)).toContainText('收到 2 张图：<Picture 1>、<Picture 2>');
 });

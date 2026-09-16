@@ -1,7 +1,7 @@
 import express from 'express';
 import { requireWorkFolder } from '../config';
 import { openExternal } from '../native/openExternal';
-import { createPrompt, listPrompts, promptFile, readFormatRequirement, readPrompt, savePrompt, trashPrompt } from '../store/prompts';
+import { createPrompt, listPrompts, promptFile, readFormatRequirement, readPrompt, readPromptVersion, savePrompt, trashPrompt } from '../store/prompts';
 import * as v from './validate';
 
 export function promptRoutes(configDir: string): express.Router {
@@ -32,6 +32,10 @@ export function promptRoutes(configDir: string): express.Router {
   router.delete('/prompts/:name', async (req, res) => {
     await trashPrompt(await work(), req.params.name);
     res.status(204).end();
+  });
+
+  router.get('/prompts/:name/history/:hash', async (req, res) => {
+    res.json({ name: req.params.name, text: await readPromptVersion(await work(), req.params.name, req.params.hash) });
   });
 
   router.post('/prompts/:name/open', async (req, res) => {

@@ -10,7 +10,10 @@ const ROW_HEIGHT = 104;
 
 const baseName = (folder: string) => folder.split(/[\\/]/).filter(Boolean).at(-1) ?? folder;
 
-export function AssetLibrary() {
+type PickProps = { onPick?: (paths: string[]) => void };
+
+// 左栏的资产库；点槽位弹出的选图窗口用的是同一套，只是传了 onPick，单击一张就放进槽位
+export function AssetLibrary({ onPick }: PickProps) {
   const roots = useAssetStore((s) => s.roots);
   const folder = useAssetStore((s) => s.folder);
   const files = useAssetStore((s) => s.files);
@@ -63,7 +66,36 @@ export function AssetLibrary() {
         </span>
         <button type="button" disabled={!folder && !results} onClick={() => void refresh()}>刷新</button>
       </div>
-      <AssetGrid key={results ? `search:${query}` : (folder ?? '')} files={results ?? files} />
+      <AssetGrid key={results ? `search:${query}` : (folder ?? '')} files={results ?? files} onPick={onPick} />
+    </div>
+  );
+}
+
+// 点槽位弹出来的选图窗口：单击一张就放进那个槽位，Ctrl 或 Shift 多选后点下面的按钮一次放好几张
+export function AssetPicker({ title, onPick, onClose }: { title: string; onPick: (paths: string[]) => void; onClose: () => void }) {
+  const selected = useAssetStore((s) => s.selected);
+
+  useEffect(() => {
+    useAssetStore.setState({ selected: [], anchor: null });
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="picker-backdrop" onPointerDown={onClose}>
+      <div className="asset-picker" role="dialog" aria-label={title} onPointerDown={(e) => e.stopPropagation()}>
+        <div className="picker-head">
+          <span>{title}</span>
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
+        <AssetLibrary onPick={onPick} />
+        {selected.length > 0 && (
+          <div className="picker-foot">
+            <button type="button" onClick={() => onPick(selected)}>放入选中的 {selected.length} 张</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -115,7 +147,7 @@ function findFolder(tree: FolderTree, path: string): FolderTree | undefined {
 }
 
 // 只渲染看得见的几行，文件夹里图多也不卡
-function AssetGrid({ files }: { files: AssetFile[] }) {
+function AssetGrid({ files, onPick }: { files: AssetFile[] } & PickProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [scrollTop, setScrollTop] = useState(0);
@@ -139,21 +171,21 @@ function AssetGrid({ files }: { files: AssetFile[] }) {
         {files.slice(firstRow * columns, lastRow * columns).map((file, i) => {
           const index = firstRow * columns + i;
           const style = { left: (index % columns) * tileWidth, top: Math.floor(index / columns) * ROW_HEIGHT, width: tileWidth, height: ROW_HEIGHT };
-          return <AssetTile key={file.path} file={file} style={style} />;
+          return <AssetTile key={file.path} file={file} style={style} onPick={onPick} />;
         })}
       </div>
     </div>
   );
 }
 
-function AssetTile({ file, style }: { file: AssetFile; style: CSSProperties }) {
+function AssetTile({ file, style, onPick }: { file: AssetFile; style: CSSProperties } & PickProps) {
   const selected = useAssetStore((s) => s.selected.includes(file.path));
   const { select } = useAssetStore.getState();
 
-  // 点中了某个槽位就替换它，没点就放进下一个空位
+  // 左栏双击：放进下一个空槽位
   const place = () => {
-    const { selectedId, pickedSlot, placeImages } = useCanvasStore.getState();
-    if (selectedId) void placeImages(selectedId, [file.path], pickedSlot ?? undefined);
+    const { selectedId, placeImages } = useCanvasStore.getState();
+    if (selectedId) void placeImages(selectedId, [file.path]);
     else useCanvasStore.setState({ error: '先在画布上点一个节点，再往槽位里放图' });
   };
 
@@ -164,8 +196,13 @@ function AssetTile({ file, style }: { file: AssetFile; style: CSSProperties }) {
       data-testid="asset-tile"
       title={file.path}
       draggable={file.supported}
-      onClick={(e) => file.supported && select(file.path, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'single')}
-      onDoubleClick={() => file.supported && place()}
+      onClick={(e) => {
+        if (!file.supported) return;
+        const multi = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (onPick && !multi) onPick([file.path]);
+        else select(file.path, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'single');
+      }}
+      onDoubleClick={() => !onPick && file.supported && place()}
       onDragStart={(e) => {
         const current = useAssetStore.getState().selected;
         if (!current.includes(file.path)) select(file.path, 'single');

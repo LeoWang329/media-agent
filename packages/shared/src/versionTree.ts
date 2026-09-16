@@ -1,3 +1,4 @@
+import { parseReply, replacePromptText } from './parse';
 import type { ChatNode, Message } from './types';
 
 type Tree = Pick<ChatNode, 'messages' | 'rootIds' | 'activeChildOf'>;
@@ -66,4 +67,15 @@ export function editedUserMessage(original: Message, text: string, id: string, c
     ...(original.systemNote !== undefined && { systemNote: original.systemNote }),
     ...(original.attachments !== undefined && { attachments: original.attachments.map((a) => ({ ...a })) }),
   };
+}
+
+// 手动改提示词：同一个父消息下新建一条 assistant 版本，正文是把那个框换掉之后的全文，不调模型。
+// usage 不带过来，这一版没花 token；框里的星、当时用的模型和提示词版本照旧
+export function editedPromptMessage(original: Message, promptIndex: number, promptText: string, id: string, createdAt: string): Message | null {
+  const text = replacePromptText(original.text, promptIndex, promptText);
+  if (text === null) return null;
+  const { title, prompts } = parseReply(text);
+  const edited: Message = { ...original, id, createdAt, text, parsed: { ...(title !== undefined && { title }), prompts }, editedFromMessageId: original.id };
+  delete edited.usage;
+  return edited;
 }

@@ -12,7 +12,7 @@ import {
   type ModelConfigWithKey,
 } from '@media-agent/shared';
 import { create } from 'zustand';
-import { api, postStream } from '../api';
+import { api, postStream, uploadImage } from '../api';
 
 type Stream = { assistantId: string | null; text: string };
 
@@ -29,7 +29,6 @@ type CanvasState = {
   modelConfigs: ModelConfigWithKey[];
   promptNames: string[];
   renamingId: string | null;
-  pickedSlot: number | null; // 点中的槽位，接着在资产库里双击一张图就替换它
   placing: number; // 正在放进槽位的图片张数
   error: string;
 
@@ -47,9 +46,11 @@ type CanvasState = {
   regenerate: (nodeId: string, messageId: string) => Promise<void>;
   edit: (nodeId: string, messageId: string, text: string) => Promise<void>;
   stop: (nodeId: string) => Promise<void>;
+  star: (nodeId: string, messageId: string, promptIndex: number, on: boolean) => Promise<void>;
+  editPrompt: (nodeId: string, messageId: string, promptIndex: number, text: string) => Promise<void>;
   switchVersion: (nodeId: string, messageId: string) => Promise<void>;
-  pickSlot: (index: number | null) => void;
   placeImages: (nodeId: string, paths: string[], replaceIndex?: number) => Promise<void>;
+  placeFiles: (nodeId: string, files: File[], replaceIndex?: number) => Promise<void>;
   removeSlot: (nodeId: string, index: number) => Promise<void>;
   moveSlot: (nodeId: string, from: number, to: number) => Promise<void>;
   setRenaming: (nodeId: string | null) => void;
@@ -79,9 +80,38 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   const saveSlots = async (nodeId: string, slots: string[]) => {
     setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: { slots } }));
-    set({ pickedSlot: null });
     await get().refresh();
   };
+
+  // 放进下一个空位；replaceIndex 指向已有图的槽位时，第一张替换它，其余接在后面。
+  // 图要么来自资产库（有本机路径），要么是从 Windows 文件夹拖进来的（只有文件本身）
+  const place = (nodeId: string, sources: ({ path: string } | { file: File })[], replaceIndex?: number) =>
+    queueSlots(async () => {
+      const slots = get().nodes[nodeId]?.slots;
+      if (!slots) throw new Error('先在画布上点一个节点');
+      const replacing = replaceIndex !== undefined && replaceIndex < slots.length;
+      const accepted = sources.slice(0, MAX_SLOTS - slots.length + (replacing ? 1 : 0));
+      set({ placing: accepted.length });
+      try {
+        const ids: string[] = [];
+        for (const source of accepted) {
+          const image =
+            'path' in source
+              ? await api<ImageRecord>(`${canvasUrl()}/images`, { method: 'POST', body: { path: source.path, nodeId } })
+              : await uploadImage<ImageRecord>(get().canvasId!, nodeId, source.file);
+          set((s) => (s.detail ? { detail: { ...s.detail, images: { ...s.detail.images, [image.id]: image } } } : {}));
+          ids.push(image.id);
+        }
+        const current = get().nodes[nodeId].slots;
+        const next = replacing
+          ? [...current.slice(0, replaceIndex), ...ids.slice(0, 1), ...current.slice(replaceIndex! + 1), ...ids.slice(1)]
+          : [...current, ...ids];
+        if (ids.length) await saveSlots(nodeId, next);
+      } finally {
+        set({ placing: 0 });
+      }
+      if (accepted.length < sources.length) throw new Error(`槽位最多 ${MAX_SLOTS} 张，多出的 ${sources.length - accepted.length} 张没有放进去`);
+    });
 
   // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次
   const pending: Record<string, string> = {};
@@ -136,7 +166,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     modelConfigs: [],
     promptNames: [],
     renamingId: null,
-    pickedSlot: null,
     placing: 0,
     error: '',
 
@@ -159,7 +188,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     select: (nodeId) =>
       attempt(async () => {
-        set({ selectedId: nodeId, pickedSlot: null });
+        set({ selectedId: nodeId });
         if (nodeId && !get().nodes[nodeId]) await get().loadNode(nodeId);
       }),
 
@@ -233,6 +262,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       }),
 
     // 切换版本后，槽位、时长、比例换成新路径最后一条消息当时的
+    // 星打在提示词框上，卡片上的星跟着变，所以要重新读一遍画布
+    star: (nodeId, messageId, promptIndex, on) =>
+      attempt(async () => {
+        setNode(await api<ChatNode>(`${nodeUrl(nodeId)}/messages/${messageId}/star`, { method: 'POST', body: { promptIndex, on } }));
+        await get().refresh();
+      }),
+
+    // 手动改提示词：服务端新建一条回复的版本，不调模型
+    editPrompt: (nodeId, messageId, promptIndex, text) =>
+      attempt(async () => {
+        setNode(await api<ChatNode>(`${nodeUrl(nodeId)}/messages/${messageId}/edit-prompt`, { method: 'POST', body: { promptIndex, text } }));
+        await get().refresh();
+      }),
+
     switchVersion: (nodeId, messageId) =>
       attempt(async () => {
         const current = get().nodes[nodeId];
@@ -245,33 +288,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         await get().refresh();
       }),
 
-    pickSlot: (index) => set((s) => ({ pickedSlot: s.pickedSlot === index ? null : index })),
+    placeImages: (nodeId, paths, replaceIndex) => place(nodeId, paths.map((path) => ({ path })), replaceIndex),
 
-    // 放进下一个空位；replaceIndex 指向已有图的槽位时，第一张替换它，其余接在后面
-    placeImages: (nodeId, paths, replaceIndex) =>
-      queueSlots(async () => {
-        const slots = get().nodes[nodeId]?.slots;
-        if (!slots) throw new Error('先在画布上点一个节点');
-        const replacing = replaceIndex !== undefined && replaceIndex < slots.length;
-        const accepted = paths.slice(0, MAX_SLOTS - slots.length + (replacing ? 1 : 0));
-        set({ placing: accepted.length });
-        try {
-          const ids: string[] = [];
-          for (const path of accepted) {
-            const image = await api<ImageRecord>(`${canvasUrl()}/images`, { method: 'POST', body: { path, nodeId } });
-            set((s) => (s.detail ? { detail: { ...s.detail, images: { ...s.detail.images, [image.id]: image } } } : {}));
-            ids.push(image.id);
-          }
-          const current = get().nodes[nodeId].slots;
-          const next = replacing
-            ? [...current.slice(0, replaceIndex), ...ids.slice(0, 1), ...current.slice(replaceIndex! + 1), ...ids.slice(1)]
-            : [...current, ...ids];
-          if (ids.length) await saveSlots(nodeId, next);
-        } finally {
-          set({ placing: 0 });
-        }
-        if (accepted.length < paths.length) throw new Error(`槽位最多 ${MAX_SLOTS} 张，多出的 ${paths.length - accepted.length} 张没有放进去`);
-      }),
+    placeFiles: (nodeId, files, replaceIndex) => place(nodeId, files.map((file) => ({ file })), replaceIndex),
 
     removeSlot: (nodeId, index) => queueSlots(() => saveSlots(nodeId, get().nodes[nodeId].slots.filter((_, i) => i !== index))),
 

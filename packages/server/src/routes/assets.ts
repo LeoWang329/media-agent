@@ -4,6 +4,7 @@ import { thumbnail } from '../assets/thumbs';
 import { addAssetFolder, readConfig, removeAssetFolder } from '../config';
 import { HttpError } from '../httpError';
 import { pickFolder } from '../native/pickFolder';
+import { revealInFolder } from '../native/reveal';
 import { allowedPath } from '../paths';
 
 export function assetRoutes(configDir: string): express.Router {
@@ -24,6 +25,12 @@ export function assetRoutes(configDir: string): express.Router {
   router.post('/assets/pick-folder', async (_req, res) => {
     if (process.platform !== 'win32') throw new HttpError(501, '这个系统不能弹窗选择，请直接填写路径');
     res.json({ path: await pickFolder() });
+  });
+
+  // 上传清单里的「在资源管理器中显示」
+  router.post('/assets/reveal', async (req, res) => {
+    revealInFolder(await allowedPath(configDir, req.body?.path));
+    res.status(204).end();
   });
 
   router.get('/assets/tree', async (req, res) => {

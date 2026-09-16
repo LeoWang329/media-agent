@@ -1,10 +1,10 @@
-import type { AssetFile, FolderTree } from '@media-agent/shared';
+import { SUPPORTED_IMAGE_EXTENSIONS, type AssetFile, type FolderTree } from '@media-agent/shared';
 import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../httpError';
 
-const SUPPORTED = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const SUPPORTED = new Set(SUPPORTED_IMAGE_EXTENSIONS);
 // 这些格式列出来但灰显「不支持」
 const UNSUPPORTED = new Set(['.heic', '.heif', '.gif']);
 // 超过 5 秒没扫过才重新扫

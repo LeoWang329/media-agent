@@ -1,8 +1,8 @@
 import { parseReply, versionsOf, type ChatNode, type Message } from '@media-agent/shared';
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { imageThumbUrl } from '../api';
+import { api, imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
 import { PromptBox } from './PromptBox';
 
@@ -97,7 +97,7 @@ function AssistantMessage({ node, message, busy, streamingText }: Props) {
           if (segment.type === 'text') return <Markdown key={i} text={segment.text} />;
           if (segment.closed || streaming) {
             return (
-              <PromptBox key={i} nodeId={node.id} messageId={message.id} index={segment.index} label={segment.label} text={segment.text} pending={!segment.closed} />
+              <PromptBox key={i} node={node} message={message} index={segment.index} label={segment.label} text={segment.text} pending={!segment.closed} />
             );
           }
           // 回复已经结束但框没有收尾，照原样显示
@@ -109,6 +109,7 @@ function AssistantMessage({ node, message, busy, streamingText }: Props) {
         })
       )}
       {streaming && !text && <div className="muted">生成中…</div>}
+      {!streaming && !message.error && <ReplyMeta message={message} />}
       <div className="message-footer">
         <Versions node={node} message={message} busy={busy} />
         {!streaming && (
@@ -117,6 +118,51 @@ function AssistantMessage({ node, message, busy, streamingText }: Props) {
             <button type="button" onClick={() => void fork(node.id, message.id)}>从这里 fork</button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// 回复角落：用的哪个模型、哪套系统提示词（点开看当时那一版）、花了多少 token
+function ReplyMeta({ message }: { message: Message }) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  if (!message.modelName && !message.systemPromptName) return null;
+
+  const open = async () => {
+    const { text } = await api<{ text: string }>(`/prompts/${encodeURIComponent(message.systemPromptName!)}/history/${message.systemPromptHash}`);
+    setPrompt(text);
+  };
+
+  return (
+    <div className="reply-meta muted">
+      {message.modelName && <span>{message.modelName}</span>}
+      {message.systemPromptName &&
+        (message.systemPromptHash ? (
+          <button type="button" className="link" onClick={() => void open()}>{message.systemPromptName}</button>
+        ) : (
+          <span>{message.systemPromptName}</span>
+        ))}
+      {message.usage && <span>{message.usage.promptTokens} + {message.usage.completionTokens} tokens</span>}
+      {prompt !== null && <TextModal title={`发这条时的系统提示词：${message.systemPromptName}`} text={prompt} onClose={() => setPrompt(null)} />}
+    </div>
+  );
+}
+
+function TextModal({ title, text, onClose }: { title: string; text: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="picker-backdrop" onPointerDown={onClose}>
+      <div className="text-modal" role="dialog" aria-label={title} onPointerDown={(e) => e.stopPropagation()}>
+        <div className="picker-head">
+          <span>{title}</span>
+          <button type="button" onClick={onClose}>关闭</button>
+        </div>
+        <pre className="readonly-text">{text}</pre>
       </div>
     </div>
   );

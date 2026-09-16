@@ -154,7 +154,7 @@ id 一律用 `crypto.randomUUID()`。
 
 - 每个节点有自己的槽位 `node.slots`，最多 9 个，编号就是数组下标加 1，对应提示词里的 `<Picture N>`。
 - 中间不留空：删掉第 2 张，原第 3 张变成第 2 张。
-- 放图：双击资产库里的图，放进下一个空位；多选后拖进槽位区，按选中的先后顺序填进空位；拖到某个已有图的槽位上，替换它；点一下有图的槽位选中它，再双击资产库里的图，替换这一格；槽位之间拖动，调顺序。
+- 放图：双击资产库里的图，放进下一个空位；多选后拖进槽位区，按选中的先后顺序填进空位；拖到某个已有图的槽位上，替换它；点一下槽位弹出选图窗口，单击一张就放进这一格，Ctrl 或 Shift 多选后点「放入选中的 N 张」一次放好几张（点空槽位时弹出的是第一个空位，因为槽位中间不留空）；从 Windows 文件夹里直接把图拖进槽位区（不用先导入文件夹）；槽位之间拖动，调顺序。
 - 放图时先把图复制进画布文件夹（见 5.6），槽位里存的是 imageId。
 - 槽位改动不马上发给模型，发下一条消息时才带上（见 5.4）。
 - `node.slots` 随时保存，打开节点时用存的值（没发出的改动不丢）。切换消息版本时，`node.slots` 重置为新路径最后一条消息的 `slotSnapshot`；切换前如果槽位有没发出的改动，弹一句确认。
@@ -223,6 +223,8 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 2. 画布副本 `images/<sha>.<ext>`：按 H3 要求处理。长边超过 5760 → 缩到 5760；短边不到 256 → 放大到 256（两个条件冲突的极端长条图以不超过 5760 为准，槽位上标红「尺寸不符」）；处理后文件仍超过 30 MB → 转成 JPEG，从质量 90 开始每次降 5 直到不超过 30 MB。没触发任何条件就原样复制。记录 `processed`。
 3. 模型用小图 `images/<sha>.llm.jpg`：长边缩到模型配置里的 `imageLongSide`（默认 1600），JPEG 质量 85。
 4. 写 `images.json`。
+
+从 Windows 文件夹拖进来的图走同一套处理，只是浏览器只给得出文件名和内容，`originalPath` 存空字符串。
 
 资产库缩略图：长边 256，JPEG 质量 80，存本机缓存，键是 `sha1(路径 + 修改时间 + 大小)`。
 
@@ -325,6 +327,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            POST     /canvases/:id/nodes/:nid/messages/:mid/star {promptIndex, on}
            POST     /canvases/:id/nodes/:nid/stop     停止正在生成的回复
 图片       POST     /canvases/:id/images             {path} → ImageRecord（做 5.6 的处理）
+           POST     /canvases/:id/images/upload      ?name=&nodeId= 加图片内容 → ImageRecord（从文件夹拖进来的）
            GET      /canvases/:id/images/:iid/file   画布副本
            GET      /canvases/:id/images/:iid/thumb
            GET      /canvases/:id/images/:iid/checklist-path   {path, kind:'original'|'canvas', note}
