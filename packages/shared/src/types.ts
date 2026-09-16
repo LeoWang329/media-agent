@@ -1,10 +1,14 @@
 // 工作文件夹 model-configs.json 里的一项，不含 key
+// 每百万 tokens 的价格，用来算每条回复花了多少钱；cached 是命中缓存那部分输入的价
+export type ModelPricing = { currency: '¥' | '$'; input: number; output: number; cached: number };
+
 export type ModelConfig = {
   id: string;
   name: string;
   baseUrl: string;
   model: string;
   imageLongSide: number;
+  pricing: ModelPricing;
 };
 
 export type ModelConfigWithKey = ModelConfig & { apiKey: string };
@@ -73,7 +77,7 @@ export type Message = {
   stars?: number[];
   editedFromMessageId?: string;
   videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string; // 生成失败时的错误，text 为空
 };
 

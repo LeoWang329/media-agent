@@ -15,6 +15,8 @@ test('新建画布和节点，发「写一个」：看到标题、一个提示�
   await expect(panel(page).getByTestId('prompt-box')).toHaveCount(1);
   await expect(cards(page)).toContainText('测试标题');
   await expect(cards(page)).toContainText('测试概述');
+  // 模型配置里填了价格，回复角落显示这次花了多少
+  await expect(panel(page).getByTestId('message-assistant').last().locator('.reply-meta')).toContainText(/¥0\.\d{4}/);
 });
 
 test('从最后一条回复 fork：多一个节点和一条线；在新节点发消息，历史消息数是原路径条数加 1', async ({ page }) => {

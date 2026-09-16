@@ -59,7 +59,7 @@ media_agent/
   thumbs/<hash>.jpg           # 资产库缩略图缓存
 
 工作文件夹（用户指定，可放同步盘）
-  model-configs.json          # 模型配置（名字、接口地址、模型名、发图长边），不含 key，两台机器共用
+  model-configs.json          # 模型配置（名字、接口地址、模型名、发图长边、价格），不含 key，两台机器共用
   prompts/
     ref2va.md / i2v.md / t2v.md # 自带的三套系统提示词，第一次设置工作文件夹时从 docs/prompts/ 复制（已有同名的不覆盖）
     <其他名字>.md
@@ -131,7 +131,7 @@ type Message = {
   stars?: number[];                     // 打了星的提示词框 index
   editedFromMessageId?: string;         // 手动改提示词生成的版本，指向被改的那条
   videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];  // 预留，第一版恒为空
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string;                       // 生成失败时的错误，text 为空
 };
 
@@ -294,7 +294,8 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 ### 6.4 设置页 `/settings`
 
 - 工作文件夹：路径 + 「选择」（系统窗口）。第一次设置时初始化目录结构并复制默认提示词。
-- 模型配置列表：名字、接口地址、key（显示时打码）、模型名、发图长边；「测试连接」调一次 `/v1/models` 或发一条极短消息。
+- 模型配置列表：名字、接口地址、key（显示时打码）、模型名、发图长边、价格（币种 ¥ 或 $，输入、输出、缓存命中三个价，按每百万 tokens 填，留空当 0）；「测试连接」调一次 `/v1/models` 或发一条极短消息。
+- 填了价格后，每条回复角落显示这次花了多少钱：命中缓存的输入按缓存价、其余输入按输入价、输出按输出价。命中的 token 数从接口的 `usage.prompt_tokens_details.cached_tokens`（DeepSeek 是 `prompt_cache_hit_tokens`）取，接口不报就当没命中。
 - 系统提示词：列出 `prompts/*.md`，右侧文本编辑器，保存、新建、删除、「用外部编辑器打开」（服务端 `start <文件>`）。自带三套：`ref2va`（参考模式，六个部分，新建节点默认用它）、`i2v`（一张图当首帧，开头带对齐指令行加三个部分）、`t2v`（纯文字，三个部分），列表里按这个顺序排在前面。
 - 程序固定附加的格式要求：只读显示。
 - 资产库文件夹列表（和左栏同一份数据）。
@@ -346,7 +347,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（send 和 edit 先发这个）、`{type:'assistant-start', message}`、`{type:'delta', text}`、`{type:'done', message}`（含解析结果和 usage）、`{type:'error', message}`。服务端收到流的每一段就落盘一次 `text`（节流 1 秒），中断后再打开也能看到已收到的部分。
 
-调接口时 `stream: true`，解析 `data:` 行；`usage` 有就记。请求失败或非 2xx，把状态码和返回体前 500 字写进 `error`。
+调接口时 `stream: true`，解析 `data:` 行；`usage` 有就记，含命中缓存的输入 token 数。请求失败或非 2xx，把状态码和返回体前 500 字写进 `error`。
 
 ## 8. 分阶段开发
 

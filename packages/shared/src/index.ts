@@ -9,3 +9,4 @@ export * from './canvasTree';
 export * from './imageRules';
 export * from './slotDiff';
 export * from './collage';
+export * from './cost';

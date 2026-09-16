@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { DEFAULT_PRICING } from '@media-agent/shared';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
 import { createApp } from '../src/app';
 
@@ -56,7 +57,7 @@ afterEach(async () => {
 });
 
 function modelConfig(id: string, baseUrl: string, apiKey = 'sk-secret') {
-  return { id, name: id, baseUrl, apiKey, model: 'mock-model', imageLongSide: 1600 };
+  return { id, name: id, baseUrl, apiKey, model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING };
 }
 
 const readJsonFile = async (file: string) => JSON.parse(await fs.readFile(file, 'utf8'));
@@ -98,8 +99,8 @@ describe('本机配置', () => {
     expect(first.body.modelConfigs.map((m: { apiKey: string }) => m.apiKey)).toEqual(['******', '******']);
 
     expect(await readJsonFile(path.join(workFolder, 'model-configs.json'))).toEqual([
-      { id: 'm1', name: 'm1', baseUrl: 'http://x/v1', model: 'mock-model', imageLongSide: 1600 },
-      { id: 'm2', name: 'm2', baseUrl: 'http://y/v1', model: 'mock-model', imageLongSide: 1600 },
+      { id: 'm1', name: 'm1', baseUrl: 'http://x/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING },
+      { id: 'm2', name: 'm2', baseUrl: 'http://y/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING },
     ]);
     expect((await readJsonFile(path.join(tmp, 'config', 'config.json'))).apiKeys).toEqual({ m1: 'sk-secret', m2: 'sk-2' });
 
@@ -110,6 +111,8 @@ describe('本机配置', () => {
 
     const invalid = { ...modelConfig('m1', 'http://x/v1'), imageLongSide: null };
     expect((await request(app).put('/api/config').send({ modelConfigs: [invalid] })).status).toBe(400);
+    const negative = { ...modelConfig('m1', 'http://x/v1'), pricing: { ...DEFAULT_PRICING, input: -1 } };
+    expect((await request(app).put('/api/config').send({ modelConfigs: [negative] })).status).toBe(400);
   });
 
   it('换到另一个工作文件夹，读的是那里的模型配置，本机有这个 id 的 key 就带上', async () => {

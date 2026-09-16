@@ -41,7 +41,15 @@ export async function streamChatCompletion({ modelConfig, messages, signal, onDe
       if (chunk.error) throw new Error(`接口返回错误：${JSON.stringify(chunk.error).slice(0, 500)}`);
       const text = chunk.choices?.[0]?.delta?.content;
       if (text) onDelta(text);
-      if (chunk.usage) usage = { promptTokens: chunk.usage.prompt_tokens, completionTokens: chunk.usage.completion_tokens };
+      if (chunk.usage) {
+        // 命中缓存的输入 tokens：OpenAI 这类放在 prompt_tokens_details.cached_tokens，DeepSeek 放在 prompt_cache_hit_tokens
+        const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? chunk.usage.prompt_cache_hit_tokens;
+        usage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          ...(typeof cachedTokens === 'number' && cachedTokens > 0 ? { cachedTokens } : {}),
+        };
+      }
     }
   }
 }

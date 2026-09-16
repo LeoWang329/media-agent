@@ -87,12 +87,35 @@ button:disabled {
   border-bottom: 1px solid #eaeef2;
 }
 
-.model-config label {
+.model-config label,
+.model-config .label-row {
   display: grid;
   grid-template-columns: 6em 1fr;
   align-items: center;
   gap: 12px;
   margin-bottom: 8px;
+}
+
+.prices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.prices label.price {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.prices input {
+  width: 5em;
+}
+
+.prices .muted {
+  font-size: 12px;
 }
 
 .actions {

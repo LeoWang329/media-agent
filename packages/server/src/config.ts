@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { API_KEY_MASK, type Config, type ModelConfig, type ModelConfigWithKey } from '@media-agent/shared';
+import { API_KEY_MASK, DEFAULT_PRICING, type Config, type ModelConfig, type ModelConfigWithKey, type ModelPricing } from '@media-agent/shared';
 import { HttpError } from './httpError';
 import fs from 'node:fs/promises';
 import { readJson, writeJsonAtomic } from './store/jsonFile';
@@ -29,7 +29,9 @@ async function readLocalConfig(configDir: string): Promise<LocalConfig> {
 const modelConfigsFile = (workFolder: string) => path.join(workFolder, 'model-configs.json');
 
 async function readModelConfigs(workFolder: string | null): Promise<ModelConfig[]> {
-  return workFolder ? ((await readJson<ModelConfig[]>(modelConfigsFile(workFolder))) ?? []) : [];
+  const saved = workFolder ? ((await readJson<ModelConfig[]>(modelConfigsFile(workFolder))) ?? []) : [];
+  // 以前存的没有价格
+  return saved.map((m) => ({ ...m, pricing: { ...DEFAULT_PRICING, ...m.pricing } }));
 }
 
 export async function readConfig(configDir: string): Promise<Config> {
@@ -125,6 +127,23 @@ export async function removeAssetFolder(configDir: string, value: unknown): Prom
   return config.assetFolders;
 }
 
+// 价格留空当 0；界面上空着的数字框送过来是 null
+function parsePricing(value: unknown): ModelPricing {
+  const fields = (value ?? {}) as Record<string, unknown>;
+  const price = (key: keyof ModelPricing) => {
+    const price = fields[key];
+    if (price === undefined || price === null) return 0;
+    if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) throw new HttpError(400, '价格要填 0 或正数');
+    return price;
+  };
+  return {
+    currency: fields.currency === '$' ? '$' : DEFAULT_PRICING.currency,
+    input: price('input'),
+    output: price('output'),
+    cached: price('cached'),
+  };
+}
+
 function parseModelConfig(item: unknown): ModelConfigWithKey {
   const fields = (item ?? {}) as Record<string, unknown>;
   const text = (key: keyof ModelConfigWithKey) => {
@@ -138,5 +157,5 @@ function parseModelConfig(item: unknown): ModelConfigWithKey {
   if (typeof imageLongSide !== 'number' || !Number.isInteger(imageLongSide) || imageLongSide <= 0) {
     throw new HttpError(400, '发图长边要填正整数');
   }
-  return { id, name: text('name'), baseUrl: text('baseUrl'), apiKey: text('apiKey'), model: text('model'), imageLongSide };
+  return { id, name: text('name'), baseUrl: text('baseUrl'), apiKey: text('apiKey'), model: text('model'), imageLongSide, pricing: parsePricing(fields.pricing) };
 }

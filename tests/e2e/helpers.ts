@@ -5,7 +5,10 @@ import { E2E_APP_PORT, E2E_WORK_FOLDER, MOCK_LLM_PORT } from './env';
 export async function setupWorkFolder(playwright: PlaywrightWorkerArgs['playwright']) {
   const request = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${E2E_APP_PORT}` });
   expect((await request.put('/api/config', { data: { workFolder: E2E_WORK_FOLDER } })).ok()).toBe(true);
-  const modelConfigs = [{ id: 'mock', name: 'mock', baseUrl: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }];
+  const pricing = { currency: '¥', input: 3, output: 15, cached: 0.3 };
+  const modelConfigs = [
+    { id: 'mock', name: 'mock', baseUrl: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600, pricing },
+  ];
   expect((await request.put('/api/config', { data: { modelConfigs } })).ok()).toBe(true);
   await request.dispose();
 }

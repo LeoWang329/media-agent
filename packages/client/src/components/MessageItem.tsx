@@ -1,4 +1,4 @@
-import { parseReply, versionsOf, type ChatNode, type Message } from '@media-agent/shared';
+import { formatCost, messageCost, parseReply, versionsOf, type ChatNode, type Message } from '@media-agent/shared';
 import { memo, useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -123,10 +123,12 @@ function AssistantMessage({ node, message, busy, streamingText }: Props) {
   );
 }
 
-// 回复角落：用的哪个模型、哪套系统提示词（点开看当时那一版）、花了多少 token
+// 回复角落：用的哪个模型、哪套系统提示词（点开看当时那一版）、花了多少 token 和钱
 function ReplyMeta({ message }: { message: Message }) {
   const [prompt, setPrompt] = useState<string | null>(null);
+  const pricing = useCanvasStore((s) => s.modelConfigs.find((m) => m.id === message.modelConfigId)?.pricing);
   if (!message.modelName && !message.systemPromptName) return null;
+  const cost = message.usage && pricing ? messageCost(message.usage, pricing) : null;
 
   const open = async () => {
     const { text } = await api<{ text: string }>(`/prompts/${encodeURIComponent(message.systemPromptName!)}/history/${message.systemPromptHash}`);
@@ -142,7 +144,13 @@ function ReplyMeta({ message }: { message: Message }) {
         ) : (
           <span>{message.systemPromptName}</span>
         ))}
-      {message.usage && <span>{message.usage.promptTokens} + {message.usage.completionTokens} tokens</span>}
+      {message.usage && (
+        <span>
+          {message.usage.promptTokens} + {message.usage.completionTokens} tokens
+          {message.usage.cachedTokens ? `（命中缓存 ${message.usage.cachedTokens}）` : ''}
+        </span>
+      )}
+      {cost !== null && <span>{formatCost(cost, pricing!.currency)}</span>}
       {prompt !== null && <TextModal title={`发这条时的系统提示词：${message.systemPromptName}`} text={prompt} onClose={() => setPrompt(null)} />}
     </div>
   );

@@ -1,9 +1,15 @@
-import { DEFAULT_IMAGE_LONG_SIDE, type Config, type ModelConfigWithKey } from '@media-agent/shared';
+import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_PRICING, type Config, type ModelConfigWithKey, type ModelPricing } from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, promptUrl } from '../api';
 
 type Status = { kind: 'ok' | 'error' | 'pending'; text: string };
+
+const PRICE_FIELDS = [
+  ['input', '输入'],
+  ['output', '输出'],
+  ['cached', '缓存命中'],
+] as const satisfies [keyof ModelPricing, string][];
 
 type SectionProps = { config: Config; onSaved: (config: Config) => void };
 
@@ -99,8 +105,10 @@ function ModelConfigsSection({ config, onSaved }: SectionProps) {
   const update = (id: string, patch: Partial<ModelConfigWithKey>) =>
     edit(items.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
+  const setPrice = (m: ModelConfigWithKey, patch: Partial<ModelPricing>) => update(m.id, { pricing: { ...m.pricing, ...patch } });
+
   const add = () =>
-    edit([...items, { id: crypto.randomUUID(), name: '', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE }]);
+    edit([...items, { id: crypto.randomUUID(), name: '', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE, pricing: DEFAULT_PRICING }]);
 
   async function save(): Promise<boolean> {
     try {
@@ -177,6 +185,28 @@ function ModelConfigsSection({ config, onSaved }: SectionProps) {
               onChange={(e) => update(m.id, { imageLongSide: e.target.valueAsNumber })}
             />
           </label>
+          <div className="label-row">
+            <span>价格</span>
+            <div className="prices">
+              <select aria-label="币种" value={m.pricing.currency} onChange={(e) => setPrice(m, { currency: e.target.value as ModelPricing['currency'] })}>
+                <option value="¥">¥</option>
+                <option value="$">$</option>
+              </select>
+              {PRICE_FIELDS.map(([key, label]) => (
+                <label className="price" key={key}>
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={m.pricing[key] || ''}
+                    onChange={(e) => setPrice(m, { [key]: e.target.valueAsNumber || 0 })}
+                  />
+                </label>
+              ))}
+              <span className="muted">每百万 tokens，留空就不算钱</span>
+            </div>
+          </div>
           <div className="row">
             <button type="button" onClick={() => test(m.id)}>测试连接</button>
             <button type="button" onClick={() => edit(items.filter((x) => x.id !== m.id))}>删除</button>
