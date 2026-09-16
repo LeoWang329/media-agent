@@ -1,6 +1,7 @@
 import type { NodeSummary } from '@media-agent/shared';
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { useEffect, useRef, useState } from 'react';
+import { imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
 
 export type CardNode = Node<{ summary: NodeSummary; hiddenCount: number }, 'card'>;
@@ -10,6 +11,7 @@ export function NodeCard({ id, data, selected }: NodeProps<CardNode>) {
   const renamingId = useCanvasStore((s) => s.renamingId);
   const setRenaming = useCanvasStore((s) => s.setRenaming);
   const patchNode = useCanvasStore((s) => s.patchNode);
+  const canvasId = useCanvasStore((s) => s.canvasId);
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -51,6 +53,12 @@ export function NodeCard({ id, data, selected }: NodeProps<CardNode>) {
           </div>
         )}
         {summary.directionCount > 1 && <span className="badge">{summary.directionCount} 个方向</span>}
+      </div>
+      <div className="node-slots">
+        {Array.from({ length: 9 }, (_, i) => {
+          const imageId = summary.slots[i];
+          return imageId && canvasId ? <img key={i} className="node-slot" src={imageThumbUrl(canvasId, imageId)} alt="" draggable={false} /> : <span key={i} className="node-slot empty" />;
+        })}
       </div>
       {summary.summary && <div className="node-summary">{summary.summary}</div>}
       {hiddenCount > 0 && <div className="node-collapsed">▸ 已收起 {hiddenCount} 个</div>}

@@ -92,7 +92,7 @@ describe('composeMessages', () => {
       message('a1b', 'u1', 'assistant', { text: '第一版' }),
       message('u2', 'a1b', 'user', { text: '改一下' }),
     ];
-    expect(composeMessages(path, '系统提示词\n', '\n格式要求\n')).toEqual([
+    expect(composeMessages(path, '系统提示词\n', '\n格式要求\n', (id) => id)).toEqual([
       { role: 'system', content: '系统提示词\n\n\n格式要求' },
       { role: 'user', content: [{ type: 'text', text: '写一个' }] },
       { role: 'assistant', content: '第一版' },

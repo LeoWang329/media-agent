@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HttpError } from '../httpError';
-import { trashName, writeTextAtomic } from './jsonFile';
+import { trashName, writeFileAtomic } from './jsonFile';
 
 // 程序固定附加的格式要求只维护 docs/prompts/format-requirement.md 这一份
 const FORMAT_REQUIREMENT_DOC = fileURLToPath(new URL('../../../../docs/prompts/format-requirement.md', import.meta.url));
@@ -37,7 +37,7 @@ export async function readPrompt(work: string, name: string): Promise<string> {
 
 export async function savePrompt(work: string, name: string, text: string): Promise<void> {
   await readPrompt(work, name);
-  await writeTextAtomic(promptFile(work, name), text);
+  await writeFileAtomic(promptFile(work, name), text);
 }
 
 export async function createPrompt(work: string, name: string, text: string): Promise<void> {

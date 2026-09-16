@@ -1,11 +1,14 @@
 import {
   activePath,
   addMessage,
+  hasUnsentSettings,
+  pathSnapshot,
   switchVersion as switchVersionInTree,
   type CanvasDetail,
   type CanvasNodeLayout,
   type ChatNode,
   type Config,
+  type ImageRecord,
   type ModelConfigWithKey,
 } from '@media-agent/shared';
 import { create } from 'zustand';
@@ -13,7 +16,9 @@ import { api, postStream } from '../api';
 
 type Stream = { assistantId: string | null; text: string };
 
-type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'activeChildOf'>>;
+type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'activeChildOf' | 'duration' | 'aspectRatio'>>;
+
+const MAX_SLOTS = 9;
 
 type CanvasState = {
   canvasId: string | null;
@@ -24,6 +29,8 @@ type CanvasState = {
   modelConfigs: ModelConfigWithKey[];
   promptNames: string[];
   renamingId: string | null;
+  pickedSlot: number | null; // 点中的槽位，接着在资产库里双击一张图就替换它
+  placing: number; // 正在放进槽位的图片张数
   error: string;
 
   open: (canvasId: string) => Promise<void>;
@@ -41,6 +48,10 @@ type CanvasState = {
   edit: (nodeId: string, messageId: string, text: string) => Promise<void>;
   stop: (nodeId: string) => Promise<void>;
   switchVersion: (nodeId: string, messageId: string) => Promise<void>;
+  pickSlot: (index: number | null) => void;
+  placeImages: (nodeId: string, paths: string[], replaceIndex?: number) => Promise<void>;
+  removeSlot: (nodeId: string, index: number) => Promise<void>;
+  moveSlot: (nodeId: string, from: number, to: number) => Promise<void>;
   setRenaming: (nodeId: string | null) => void;
   clearError: () => void;
 };
@@ -60,6 +71,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     } catch (err) {
       set({ error: (err as Error).message });
     }
+  };
+
+  // 槽位操作排队做，连续拖放、删除时后一个拿到的是前一个改完的槽位
+  let slotQueue = Promise.resolve();
+  const queueSlots = (task: () => Promise<void>) => (slotQueue = slotQueue.then(() => attempt(task)));
+
+  const saveSlots = async (nodeId: string, slots: string[]) => {
+    setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: { slots } }));
+    set({ pickedSlot: null });
+    await get().refresh();
   };
 
   // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次
@@ -115,6 +136,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     modelConfigs: [],
     promptNames: [],
     renamingId: null,
+    pickedSlot: null,
+    placing: 0,
     error: '',
 
     open: (canvasId) =>
@@ -136,7 +159,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     select: (nodeId) =>
       attempt(async () => {
-        set({ selectedId: nodeId });
+        set({ selectedId: nodeId, pickedSlot: null });
         if (nodeId && !get().nodes[nodeId]) await get().loadNode(nodeId);
       }),
 
@@ -209,13 +232,55 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         await api(`${nodeUrl(nodeId)}/stop`, { method: 'POST' });
       }),
 
+    // 切换版本后，槽位、时长、比例换成新路径最后一条消息当时的
     switchVersion: (nodeId, messageId) =>
       attempt(async () => {
-        const node = switchVersionInTree(get().nodes[nodeId], messageId);
-        setNode(node);
+        const current = get().nodes[nodeId];
+        if (hasUnsentSettings(current) && !window.confirm('槽位、时长或比例有还没发出的改动，切换版本会换成那个版本当时的设置，继续吗？')) return;
+        const node = switchVersionInTree(current, messageId);
+        const snapshot = pathSnapshot(node)!;
+        setNode({ ...node, ...snapshot });
         const key = node.messages[messageId].parentId ?? 'root';
-        await api(nodeUrl(nodeId), { method: 'PATCH', body: { activeChildOf: { [key]: messageId } } });
+        await api(nodeUrl(nodeId), { method: 'PATCH', body: { activeChildOf: { [key]: messageId }, ...snapshot } });
         await get().refresh();
+      }),
+
+    pickSlot: (index) => set((s) => ({ pickedSlot: s.pickedSlot === index ? null : index })),
+
+    // 放进下一个空位；replaceIndex 指向已有图的槽位时，第一张替换它，其余接在后面
+    placeImages: (nodeId, paths, replaceIndex) =>
+      queueSlots(async () => {
+        const slots = get().nodes[nodeId]?.slots;
+        if (!slots) throw new Error('先在画布上点一个节点');
+        const replacing = replaceIndex !== undefined && replaceIndex < slots.length;
+        const accepted = paths.slice(0, MAX_SLOTS - slots.length + (replacing ? 1 : 0));
+        set({ placing: accepted.length });
+        try {
+          const ids: string[] = [];
+          for (const path of accepted) {
+            const image = await api<ImageRecord>(`${canvasUrl()}/images`, { method: 'POST', body: { path, nodeId } });
+            set((s) => (s.detail ? { detail: { ...s.detail, images: { ...s.detail.images, [image.id]: image } } } : {}));
+            ids.push(image.id);
+          }
+          const current = get().nodes[nodeId].slots;
+          const next = replacing
+            ? [...current.slice(0, replaceIndex), ...ids.slice(0, 1), ...current.slice(replaceIndex! + 1), ...ids.slice(1)]
+            : [...current, ...ids];
+          if (ids.length) await saveSlots(nodeId, next);
+        } finally {
+          set({ placing: 0 });
+        }
+        if (accepted.length < paths.length) throw new Error(`槽位最多 ${MAX_SLOTS} 张，多出的 ${paths.length - accepted.length} 张没有放进去`);
+      }),
+
+    removeSlot: (nodeId, index) => queueSlots(() => saveSlots(nodeId, get().nodes[nodeId].slots.filter((_, i) => i !== index))),
+
+    moveSlot: (nodeId, from, to) =>
+      queueSlots(async () => {
+        const slots = [...get().nodes[nodeId].slots];
+        const [moved] = slots.splice(from, 1);
+        slots.splice(to, 0, moved);
+        await saveSlots(nodeId, slots);
       }),
 
     setRenaming: (renamingId) => set({ renamingId }),

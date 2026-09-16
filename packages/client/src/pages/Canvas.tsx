@@ -2,6 +2,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
+import { AssetLibrary } from '../components/AssetLibrary';
 import { CanvasView } from '../components/CanvasView';
 import { ChatPanel } from '../components/ChatPanel';
 import { useCanvasStore } from '../store/canvasStore';
@@ -39,6 +40,7 @@ export function Canvas() {
         <button type="button" className="collapse-button" onClick={() => setAssetsCollapsed(!assetsCollapsed)}>
           {assetsCollapsed ? '›' : '‹ 收起'}
         </button>
+        {!assetsCollapsed && <AssetLibrary />}
       </aside>
       <main className="canvas-main">
         <header className="canvas-header">

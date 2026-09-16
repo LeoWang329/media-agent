@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../httpError';
+import { readImages } from './images';
 import { readJson, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
 
@@ -74,6 +75,7 @@ export async function canvasDetail(work: string, canvasId: string): Promise<Canv
   const nodes = new Map((await listNodes(work, canvasId)).map((node) => [node.id, node]));
   return {
     canvas,
+    images: await readImages(work, canvasId),
     nodes: canvas.nodes.flatMap((layout) => {
       const node = nodes.get(layout.id);
       if (!node) return [];

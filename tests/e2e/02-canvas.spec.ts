@@ -1,42 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
-import { E2E_APP_PORT, E2E_WORK_FOLDER, MOCK_LLM_PORT } from './env';
+import { cards, newCanvasWithNode, panel, send, setupWorkFolder, waitIdle } from './helpers';
 
-// 用接口直接设好工作文件夹和 mock 模型配置，不走设置页
 test.beforeAll(async ({ playwright }) => {
-  const request = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${E2E_APP_PORT}` });
-  expect((await request.put('/api/config', { data: { workFolder: E2E_WORK_FOLDER } })).ok()).toBe(true);
-  const modelConfigs = [{ id: 'mock', name: 'mock', baseUrl: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }];
-  expect((await request.put('/api/config', { data: { modelConfigs } })).ok()).toBe(true);
-  await request.dispose();
+  await setupWorkFolder(playwright);
 });
 
-const panel = (page: Page) => page.locator('.chat-panel');
-const cards = (page: Page) => page.getByTestId('node-card');
 const cardTitled = (page: Page, title: string) => cards(page).filter({ has: page.locator('.node-title', { hasText: new RegExp(`^${title}$`) }) });
 const bubbles = (page: Page) => panel(page).locator('.bubble');
-
-async function newCanvasWithNode(page: Page, title: string) {
-  await page.goto('/');
-  page.once('dialog', (dialog) => void dialog.accept(title));
-  await page.getByRole('button', { name: '新建画布' }).click();
-  await expect(page.getByRole('heading', { name: title })).toBeVisible();
-  await page.getByRole('button', { name: '新建节点' }).click();
-  await expect(cards(page)).toHaveCount(1);
-  await expect(panel(page).locator('.panel-title')).toHaveText('新节点');
-}
-
-// 等回复写完：面板底部的按钮从「停止」变回「发送」
-const waitIdle = (page: Page) => expect(panel(page).getByRole('button', { name: '发送', exact: true })).toBeVisible();
-
-async function send(page: Page, text: string) {
-  const replies = panel(page).getByTestId('message-assistant');
-  const before = await replies.count();
-  const input = panel(page).getByLabel('输入消息');
-  await input.fill(text);
-  await input.press('Enter');
-  await expect(replies).toHaveCount(before + 1);
-  await waitIdle(page);
-}
 
 test('新建画布和节点，发「写一个」：看到标题、一个提示词框，卡片概述含「测试概述」', async ({ page }) => {
   await newCanvasWithNode(page, '用例 1');

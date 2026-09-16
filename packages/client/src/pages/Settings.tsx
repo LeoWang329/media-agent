@@ -28,6 +28,7 @@ export function Settings() {
       <ModelConfigsSection key={config.workFolder ?? ''} config={config} onSaved={setConfig} />
       {config.workFolder && <PromptsSection key={config.workFolder} />}
       <FormatRequirementSection />
+      <AssetFoldersSection config={config} onSaved={setConfig} />
     </main>
   );
 }
@@ -304,6 +305,38 @@ function PromptsSection() {
           </div>
         </div>
       </div>
+    </section>
+  );
+}
+
+// 和画布页左栏同一份列表，导入在左栏做
+function AssetFoldersSection({ config, onSaved }: SectionProps) {
+  const [error, setError] = useState('');
+
+  const remove = async (folder: string) => {
+    try {
+      const assetFolders = await api<string[]>('/assets/folders', { method: 'DELETE', body: { path: folder } });
+      onSaved({ ...config, assetFolders });
+      setError('');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h2>资产库文件夹</h2>
+      {config.assetFolders.length === 0 && <p className="muted">还没有导入文件夹，在画布页左栏点「导入文件夹」。</p>}
+      <ul className="folder-list">
+        {config.assetFolders.map((folder) => (
+          <li key={folder}>
+            <span>{folder}</span>
+            <button type="button" onClick={() => void remove(folder)}>移除</button>
+          </li>
+        ))}
+      </ul>
+      <p className="muted">移除只是不在资产库里显示，不会动文件。</p>
+      {error && <p className="status error">{error}</p>}
     </section>
   );
 }

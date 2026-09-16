@@ -2,6 +2,7 @@ import { activePath, type ChatNode } from '@media-agent/shared';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 import { MessageItem } from './MessageItem';
+import { SlotStrip } from './SlotStrip';
 
 export function ChatPanel() {
   const selectedId = useCanvasStore((s) => s.selectedId);
@@ -63,6 +64,7 @@ function Conversation({ node }: { node: ChatNode }) {
           />
         ))}
       </div>
+      <SlotStrip node={node} />
       <Composer node={node} busy={busy} />
     </div>
   );

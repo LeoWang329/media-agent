@@ -2,6 +2,7 @@ import { parseReply, versionsOf, type ChatNode, type Message } from '@media-agen
 import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
 import { PromptBox } from './PromptBox';
 
@@ -56,7 +57,9 @@ function UserMessage({ node, message, busy }: Props) {
 
   return (
     <div className="message user" data-testid="message-user">
+      {message.systemNote && <div className="system-note">{message.systemNote}</div>}
       <div className="bubble">{message.text}</div>
+      <Attachments message={message} />
       <div className="message-footer">
         <Versions node={node} message={message} busy={busy} />
         <div className="message-actions">
@@ -115,6 +118,22 @@ function AssistantMessage({ node, message, busy, streamingText }: Props) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// 这条消息实际发给模型的图，带编号
+function Attachments({ message }: { message: Message }) {
+  const canvasId = useCanvasStore((s) => s.canvasId);
+  if (!message.attachments?.length || !canvasId) return null;
+  return (
+    <div className="attachments">
+      {message.attachments.map((a) => (
+        <figure key={a.picture} className="attachment">
+          <img src={imageThumbUrl(canvasId, a.imageId)} alt={`Picture ${a.picture}`} />
+          <figcaption>{a.picture}</figcaption>
+        </figure>
+      ))}
     </div>
   );
 }

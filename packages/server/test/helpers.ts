@@ -5,6 +5,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
 import { createApp } from '../src/app';
 
@@ -57,6 +58,14 @@ export async function startTestApp() {
       .map((block) => JSON.parse(block.slice(6)));
   }
 
+  // 在工作文件夹里生成一张 300×300 的图放进画布，返回 imageId；颜色不同内容就不同
+  async function addImage(canvasId: string, color: string): Promise<string> {
+    const file = path.join(work, 'test-images', `${color.slice(1)}.jpg`);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, await sharp({ create: { width: 300, height: 300, channels: 3, background: color } }).jpeg().toBuffer());
+    return (await ok('POST', `/canvases/${canvasId}/images`, { path: file })).id;
+  }
+
   await ok('PUT', '/config', { workFolder: work });
   await ok('PUT', '/config', {
     modelConfigs: [{ id: 'mock', name: 'mock', baseUrl: `${urlOf(mockLlm)}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }],
@@ -64,9 +73,11 @@ export async function startTestApp() {
 
   return {
     work,
+    base,
     call,
     ok,
     stream,
+    addImage,
     async cleanup() {
       await close(server);
       await close(mockLlm);

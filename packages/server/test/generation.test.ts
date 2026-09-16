@@ -40,7 +40,7 @@ describe('发送消息', () => {
 
     const deltas = events.flatMap((e) => (e.type === 'delta' ? [e.text] : [])).join('');
     expect(reply.text).toBe(deltas);
-    expect(reply.text).toContain('说明：写一个');
+    expect(reply.text).toContain('说明：本次没有参考图。视频时长 8 秒，画面比例 16:9。');
     expect(reply.text).toContain('历史消息 1 条');
     expect(reply.parsed?.title).toBe('测试标题');
     expect(reply.parsed?.prompts).toHaveLength(1);
@@ -73,10 +73,11 @@ describe('发送消息', () => {
   });
 
   it('重新生成是同一条 user 消息下的兄弟版本；编辑用户消息新建版本并照抄原消息的快照', async () => {
-    await t.ok('PATCH', nodeUrl, { slots: ['img-a', 'img-b'], duration: 10, aspectRatio: '9:16' });
+    const slots = [await t.addImage(canvasId, '#ff0000'), await t.addImage(canvasId, '#00ff00')];
+    await t.ok('PATCH', nodeUrl, { slots, duration: 10, aspectRatio: '9:16' });
     const { events, reply } = await send('写一个');
     const user = (events[0] as { message: Message }).message;
-    expect(user).toMatchObject({ slotSnapshot: ['img-a', 'img-b'], duration: 10, aspectRatio: '9:16' });
+    expect(user).toMatchObject({ slotSnapshot: slots, duration: 10, aspectRatio: '9:16' });
 
     const regenerated = lastEvent(await t.stream(`${nodeUrl}/messages/${reply.id}/regenerate`, {})) as { message: Message };
     expect(regenerated.message.parentId).toBe(user.id);
@@ -86,7 +87,7 @@ describe('发送消息', () => {
     await t.ok('PATCH', nodeUrl, { slots: [], duration: 8, aspectRatio: '16:9' });
     const edited = await t.stream(`${nodeUrl}/messages/${user.id}/edit`, { text: '写两个' });
     const editedUser = (edited[0] as { message: Message }).message;
-    expect(editedUser).toMatchObject({ parentId: null, text: '写两个', slotSnapshot: ['img-a', 'img-b'], duration: 10, aspectRatio: '9:16' });
+    expect(editedUser).toMatchObject({ parentId: null, text: '写两个', slotSnapshot: slots, duration: 10, aspectRatio: '9:16', attachments: user.attachments });
     expect(lastEvent(edited).type).toBe('done');
 
     node = await getNode();
@@ -130,7 +131,8 @@ describe('发送消息', () => {
 
 describe('fork', () => {
   it('从 assistant 消息 fork：复制链上的消息、槽位时长比例、父子关系，放在原节点右侧、已有子节点下方', async () => {
-    await t.ok('PATCH', nodeUrl, { slots: ['img-a'], duration: 12, aspectRatio: '1:1' });
+    const slots = [await t.addImage(canvasId, '#0000ff')];
+    await t.ok('PATCH', nodeUrl, { slots, duration: 12, aspectRatio: '1:1' });
     const first = await send('三个方向');
     await t.ok('PATCH', nodeUrl, { slots: [], duration: 8 });
 
@@ -144,7 +146,7 @@ describe('fork', () => {
       titleIsManual: false,
       modelConfigId: 'mock',
       systemPromptName: 'default',
-      slots: ['img-a'],
+      slots,
       duration: 12,
       aspectRatio: '1:1',
       draft: '沿第 2 个方向（方向二：测试方向二）往下改：',

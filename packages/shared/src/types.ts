@@ -31,6 +31,25 @@ export type Canvas = {
 
 export type Attachment = { picture: number; imageId: string };
 
+// 放进过槽位的图，存在画布文件夹 images.json 里，键是 id
+export type ImageRecord = {
+  id: string;
+  sha256: string;
+  ext: 'jpg' | 'png' | 'webp';
+  originalPath: string;
+  originalName: string;
+  width: number; // 处理后的尺寸
+  height: number;
+  processed: null | { reason: 'too-large' | 'too-small' | 'file-too-big'; originalWidth: number; originalHeight: number };
+  addedAt: string;
+};
+
+// 资产库里的一个文件；supported 为假的（heic 等）只显示不能用
+export type AssetFile = { path: string; name: string; size: number; mtime: number; supported: boolean };
+
+// 资产库文件夹树，只含文件夹
+export type FolderTree = { path: string; name: string; children: FolderTree[] };
+
 export type PromptBox = { index: number; label?: string; text: string; summary: string };
 
 export type Message = {
@@ -90,7 +109,7 @@ export type NodeSummary = CanvasNodeLayout & {
   starred: boolean;
 };
 
-export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[] };
+export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, ImageRecord> };
 
 export type StreamEvent =
   | { type: 'user'; message: Message }

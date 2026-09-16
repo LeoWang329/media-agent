@@ -1,21 +1,25 @@
-import { addMessage, editedUserMessage, parentKey, type ChatNode, type Message } from '@media-agent/shared';
+import { addMessage, DEFAULT_IMAGE_LONG_SIDE, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
 import express, { type Request } from 'express';
 import { randomUUID } from 'node:crypto';
 import { readConfig, requireWorkFolder } from '../config';
+import { thumbnail } from '../assets/thumbs';
 import { HttpError } from '../httpError';
 import { runGeneration, stopGeneration } from '../llm/generation';
+import { allowedPath } from '../paths';
 import {
   canvasDetail,
   createCanvas,
   createNode,
   forkNode,
   listCanvases,
+  readCanvas,
   readNode,
   trashCanvas,
   trashNodes,
   updateCanvas,
   updateNode,
 } from '../store/canvases';
+import { canvasImagePath, importImage, readImage } from '../store/images';
 import { listPrompts } from '../store/prompts';
 import * as v from './validate';
 
@@ -104,7 +108,10 @@ export function canvasRoutes(configDir: string): express.Router {
     const text = v.nonEmptyText(req.body?.text, '消息');
     const parentId: string | null = req.body?.parentId ?? null;
     await runGeneration({ configDir, work: await work(), canvasId, nodeId }, res, (node) => {
-      if (parentId !== null && !node.messages[parentId]) throw new HttpError(404, '找不到要接着回复的那条消息');
+      const parent = parentId === null ? null : node.messages[parentId];
+      if (parent === undefined) throw new HttpError(404, '找不到要接着回复的那条消息');
+      // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明
+      const { systemNote, attachments } = slotDiff(parent, node);
       const userMessage: Message = {
         id: randomUUID(),
         parentId,
@@ -114,6 +121,8 @@ export function canvasRoutes(configDir: string): express.Router {
         slotSnapshot: [...node.slots],
         duration: node.duration,
         aspectRatio: node.aspectRatio,
+        ...(systemNote !== undefined && { systemNote }),
+        attachments,
       };
       return { node: { ...addMessage(node, userMessage), draft: '' }, userMessage, replyTo: userMessage };
     });
@@ -137,6 +146,32 @@ export function canvasRoutes(configDir: string): express.Router {
       const userMessage = editedUserMessage(original, text, randomUUID(), new Date().toISOString());
       return { node: addMessage(node, userMessage), userMessage, replyTo: userMessage };
     });
+  });
+
+  // 放进槽位的图先复制进画布文件夹；发给模型的小图按节点所选模型配置的发图长边缩
+  router.post('/canvases/:canvasId/images', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    const source = await allowedPath(configDir, req.body?.path);
+    let longSide = DEFAULT_IMAGE_LONG_SIDE;
+    if (req.body?.nodeId !== undefined) {
+      const node = await readNode(w, canvasId, v.uuid(req.body.nodeId));
+      longSide = (await readConfig(configDir)).modelConfigs.find((m) => m.id === node.modelConfigId)?.imageLongSide ?? longSide;
+    }
+    res.json(await importImage(w, canvasId, source, longSide));
+  });
+
+  router.get('/canvases/:canvasId/images/:imageId/file', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    res.sendFile(canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId))));
+  });
+
+  router.get('/canvases/:canvasId/images/:imageId/thumb', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    res.sendFile(await thumbnail(configDir, canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)))));
   });
 
   router.post('/canvases/:canvasId/nodes/:nodeId/stop', (req, res) => {

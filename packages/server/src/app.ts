@@ -4,7 +4,7 @@ import path from 'node:path';
 import { maskConfig, readConfig, updateConfig } from './config';
 import { HttpError } from './httpError';
 import { testConnection } from './llm/testConnection';
-import { pickFolder } from './native/pickFolder';
+import { assetRoutes } from './routes/assets';
 import { canvasRoutes } from './routes/canvases';
 import { promptRoutes } from './routes/prompts';
 
@@ -34,11 +34,7 @@ export function createApp({ configDir, clientDist }: AppOptions): express.Expres
     res.json(await testConnection(modelConfig));
   });
 
-  api.post('/assets/pick-folder', async (_req, res) => {
-    if (process.platform !== 'win32') throw new HttpError(501, '这个系统不能弹窗选择，请直接填写路径');
-    res.json({ path: await pickFolder() });
-  });
-
+  api.use(assetRoutes(configDir));
   api.use(canvasRoutes(configDir));
   api.use(promptRoutes(configDir));
 

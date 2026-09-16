@@ -35,3 +35,11 @@ export async function postStream(path: string, body: unknown, onEvent: (event: S
 }
 
 export const promptUrl = (name: string) => `/prompts/${encodeURIComponent(name)}`;
+
+export const assetThumbUrl = (path: string, mtime: number) => `/api/assets/thumb?${new URLSearchParams({ path, v: String(mtime) })}`;
+
+export const imageThumbUrl = (canvasId: string, imageId: string) => `/api/canvases/${canvasId}/images/${imageId}/thumb`;
+
+// 拖拽时放在 dataTransfer 里的数据类型：资产库的图（路径列表）、槽位之间调顺序（槽位下标）
+export const ASSET_DRAG_TYPE = 'application/x-media-agent-assets';
+export const SLOT_DRAG_TYPE = 'application/x-media-agent-slot';

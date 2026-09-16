@@ -23,7 +23,7 @@ npm install
 ## 测试
 
 - `npm test`：vitest，跑 `packages/shared` 单元测试、`packages/server` 集成测试和 `tools/mock-llm` 的测试。
-- `npm run test:e2e`：Playwright。会自己打包前端，在 3712 端口起一个用系统临时目录的服务，不碰本机真实配置。
+- `npm run test:e2e`：Playwright。会自己打包前端，在 3712 端口起一个用系统临时目录的服务，不碰本机真实配置。跑之前自动生成 `tests/fixtures/images/` 里的测试图片（不进 git）。
 - `npm run typecheck`：类型检查。
 
 测试只用 mock-llm，不调真模型。

@@ -3,6 +3,7 @@ import { E2E_APP_PORT, MOCK_LLM_PORT } from './tests/e2e/env';
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  globalSetup: './tests/e2e/global-setup.ts',
   // 按文件名顺序跑：01 要从空配置开始
   workers: 1,
   reporter: 'list',

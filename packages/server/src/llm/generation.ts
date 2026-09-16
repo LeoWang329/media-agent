@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readConfig } from '../config';
 import { HttpError } from '../httpError';
 import { updateCanvas, updateNode } from '../store/canvases';
+import { llmImageUrls } from '../store/images';
 import { readFormatRequirement, snapshotPrompt } from '../store/prompts';
 import { streamChatCompletion } from './chatStream';
 
@@ -77,7 +78,8 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const modelConfig = modelConfigs.find((m) => m.id === node.modelConfigId);
       if (!modelConfig) throw new Error('这个节点没有可用的模型配置，请在面板顶部选一个');
       const prompt = await snapshotPrompt(work, node.systemPromptName);
-      const messages = composeMessages(ancestorsOf(node, assistant.parentId!), prompt.text, await readFormatRequirement());
+      const path = ancestorsOf(node, assistant.parentId!);
+      const messages = composeMessages(path, prompt.text, await readFormatRequirement(), await llmImageUrls(work, canvasId, path));
       assistant = { ...assistant, modelName: modelConfig.model, systemPromptHash: prompt.hash };
 
       let lastPersist = Date.now();
