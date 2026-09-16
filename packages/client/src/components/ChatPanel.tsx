@@ -1,5 +1,9 @@
 import { activePath, type ChatNode } from '@media-agent/shared';
+import { EditorContent } from '@tiptap/react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { docPictures, docToText } from '../editor/document';
+import { usePictureEditor } from '../editor/usePictureEditor';
+import { usePicturePicking } from '../editor/usePicturePicking';
 import { useCanvasStore } from '../store/canvasStore';
 import { MessageItem } from './MessageItem';
 import { SlotStrip } from './SlotStrip';
@@ -72,44 +76,54 @@ function Conversation({ node }: { node: ChatNode }) {
 
 function Composer({ node, busy }: { node: ChatNode; busy: boolean }) {
   const { send, stop, patchNode } = useCanvasStore.getState();
-  const [text, setText] = useState(node.draft);
+  const [empty, setEmpty] = useState(!node.draft.trim());
   const draftTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => () => clearTimeout(draftTimer.current), []);
 
-  // 没发出的文字过半秒存一次，切换节点再回来还在
-  const change = (value: string) => {
-    setText(value);
-    clearTimeout(draftTimer.current);
-    draftTimer.current = setTimeout(() => void patchNode(node.id, { draft: value }), 500);
-  };
+  const editor = usePictureEditor({
+    initialText: node.draft,
+    slots: node.slots,
+    ariaLabel: '输入消息',
+    className: 'composer-editor',
+    placeholder: 'Enter 发送，Shift+Enter 换行，@ 选图',
+    onAt: (position) => onAt(position),
+    onEnter: () => submit(),
+    // 没发出的文字过半秒存一次，切换节点再回来还在
+    onChange: (doc) => {
+      const text = docToText(doc, node.slots);
+      setEmpty(!text.trim());
+      clearTimeout(draftTimer.current);
+      draftTimer.current = setTimeout(() => void patchNode(node.id, { draft: text }), 500);
+    },
+  });
+
+  const { onAt, picker } = usePicturePicking(node, editor);
 
   const submit = () => {
-    if (!text.trim() || busy) return;
+    if (!editor || busy) return;
+    const doc = editor.getJSON();
+    if (docPictures(doc).some((imageId) => !node.slots.includes(imageId))) {
+      useCanvasStore.setState({ error: '有小标签指的图已经不在槽位里了，先删掉它再发' });
+      return;
+    }
+    const text = docToText(doc, node.slots);
+    if (!text.trim()) return;
     clearTimeout(draftTimer.current);
-    setText('');
+    editor.commands.clearContent();
+    setEmpty(true);
     void send(node.id, text);
   };
 
   return (
     <div className="composer">
-      <textarea
-        aria-label="输入消息"
-        value={text}
-        placeholder="Enter 发送，Shift+Enter 换行"
-        onChange={(e) => change(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
+      <EditorContent editor={editor} className="composer-box" />
       {busy ? (
         <button type="button" onClick={() => void stop(node.id)}>停止</button>
       ) : (
-        <button type="button" disabled={!text.trim()} onClick={submit}>发送</button>
+        <button type="button" disabled={empty} onClick={submit}>发送</button>
       )}
+      {picker}
     </div>
   );
 }

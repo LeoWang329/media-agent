@@ -1,8 +1,8 @@
-import type { AssetFile, FolderTree } from '@media-agent/shared';
+import type { AssetFile, ChatNode, FolderTree } from '@media-agent/shared';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import { ASSET_DRAG_TYPE, assetThumbUrl } from '../api';
+import { ASSET_DRAG_TYPE, assetThumbUrl, imageThumbUrl } from '../api';
 import { useAssetStore } from '../store/assetStore';
-import { useCanvasStore } from '../store/canvasStore';
+import { MAX_SLOTS, useCanvasStore } from '../store/canvasStore';
 import { ContextMenu } from './ContextMenu';
 
 const MIN_TILE_WIDTH = 84;
@@ -28,9 +28,9 @@ export function AssetLibrary({ onPick }: PickProps) {
     void load();
   }, [load]);
 
-  // 搜索框停手 300 毫秒再搜
+  // 搜索框停手 200 毫秒再搜
   useEffect(() => {
-    const timer = setTimeout(() => void search(), 300);
+    const timer = setTimeout(() => void search(), 200);
     return () => clearTimeout(timer);
   }, [query, search]);
 
@@ -71,9 +71,19 @@ export function AssetLibrary({ onPick }: PickProps) {
   );
 }
 
-// 点槽位弹出来的选图窗口：单击一张就放进那个槽位，Ctrl 或 Shift 多选后点下面的按钮一次放好几张
-export function AssetPicker({ title, onPick, onClose }: { title: string; onPick: (paths: string[]) => void; onClose: () => void }) {
+type PickerProps = {
+  title: string;
+  node: ChatNode;
+  onSlot?: (index: number) => void; // 打 @ 时点上半部分的图：只插标签，不动槽位
+  onPick: (paths: string[]) => void;
+  onClose: () => void;
+};
+
+// 点槽位、或在输入框里打 @ 弹出来的选图窗口：上半是当前 9 个槽位，下半是资产库。
+// 下半单击一张就用了，Ctrl 或 Shift 多选后点下面的按钮一次用好几张
+export function AssetPicker({ title, node, onSlot, onPick, onClose }: PickerProps) {
   const selected = useAssetStore((s) => s.selected);
+  const canvasId = useCanvasStore((s) => s.canvasId);
 
   useEffect(() => {
     useAssetStore.setState({ selected: [], anchor: null });
@@ -88,6 +98,29 @@ export function AssetPicker({ title, onPick, onClose }: { title: string; onPick:
         <div className="picker-head">
           <span>{title}</span>
           <button type="button" onClick={onClose}>关闭</button>
+        </div>
+        <div className="picker-slots">
+          <span className="muted">当前槽位</span>
+          <div className="picker-slot-row">
+            {Array.from({ length: MAX_SLOTS }, (_, i) => {
+              const imageId = node.slots[i];
+              const inside = imageId && canvasId && (
+                <>
+                  <img src={imageThumbUrl(canvasId, imageId)} alt="" draggable={false} />
+                  <span className="slot-number">{i + 1}</span>
+                </>
+              );
+              return onSlot && imageId ? (
+                <button key={i} type="button" className="picker-slot filled" data-testid="picker-slot" aria-label={`Picture ${i + 1}`} onClick={() => onSlot(i)}>
+                  {inside}
+                </button>
+              ) : (
+                <div key={i} className={`picker-slot${imageId ? ' filled' : ''}`} data-testid="picker-slot">
+                  {inside}
+                </div>
+              );
+            })}
+          </div>
         </div>
         <AssetLibrary onPick={onPick} />
         {selected.length > 0 && (

@@ -18,7 +18,7 @@ type Stream = { assistantId: string | null; text: string };
 
 type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'activeChildOf' | 'duration' | 'aspectRatio'>>;
 
-const MAX_SLOTS = 9;
+export const MAX_SLOTS = 9;
 
 type CanvasState = {
   canvasId: string | null;
@@ -49,8 +49,8 @@ type CanvasState = {
   star: (nodeId: string, messageId: string, promptIndex: number, on: boolean) => Promise<void>;
   editPrompt: (nodeId: string, messageId: string, promptIndex: number, text: string) => Promise<void>;
   switchVersion: (nodeId: string, messageId: string) => Promise<void>;
-  placeImages: (nodeId: string, paths: string[], replaceIndex?: number) => Promise<void>;
-  placeFiles: (nodeId: string, files: File[], replaceIndex?: number) => Promise<void>;
+  placeImages: (nodeId: string, paths: string[], replaceIndex?: number) => Promise<string[]>; // 返回放进去的 imageId
+  placeFiles: (nodeId: string, files: File[], replaceIndex?: number) => Promise<string[]>;
   removeSlot: (nodeId: string, index: number) => Promise<void>;
   moveSlot: (nodeId: string, from: number, to: number) => Promise<void>;
   setRenaming: (nodeId: string | null) => void;
@@ -66,17 +66,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     set((s) => (s.nodes[nodeId] ? { nodes: { ...s.nodes, [nodeId]: change(s.nodes[nodeId]) } } : {}));
 
   // 出错时显示在画布顶上，不打断操作
-  const attempt = async (task: () => Promise<void>) => {
+  const attempt = async <T>(task: () => Promise<T>): Promise<T | undefined> => {
     try {
-      await task();
+      return await task();
     } catch (err) {
       set({ error: (err as Error).message });
+      return undefined;
     }
   };
 
   // 槽位操作排队做，连续拖放、删除时后一个拿到的是前一个改完的槽位
-  let slotQueue = Promise.resolve();
-  const queueSlots = (task: () => Promise<void>) => (slotQueue = slotQueue.then(() => attempt(task)));
+  let slotQueue: Promise<unknown> = Promise.resolve();
+  const queueSlots = <T>(task: () => Promise<T>) => {
+    const run = slotQueue.then(() => attempt(task));
+    slotQueue = run;
+    return run;
+  };
 
   const saveSlots = async (nodeId: string, slots: string[]) => {
     setNode(await api<ChatNode>(nodeUrl(nodeId), { method: 'PATCH', body: { slots } }));
@@ -85,15 +90,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   // 放进下一个空位；replaceIndex 指向已有图的槽位时，第一张替换它，其余接在后面。
   // 图要么来自资产库（有本机路径），要么是从 Windows 文件夹拖进来的（只有文件本身）
-  const place = (nodeId: string, sources: ({ path: string } | { file: File })[], replaceIndex?: number) =>
+  const place = (nodeId: string, sources: ({ path: string } | { file: File })[], replaceIndex?: number): Promise<string[]> =>
     queueSlots(async () => {
       const slots = get().nodes[nodeId]?.slots;
       if (!slots) throw new Error('先在画布上点一个节点');
       const replacing = replaceIndex !== undefined && replaceIndex < slots.length;
       const accepted = sources.slice(0, MAX_SLOTS - slots.length + (replacing ? 1 : 0));
       set({ placing: accepted.length });
+      const ids: string[] = [];
       try {
-        const ids: string[] = [];
         for (const source of accepted) {
           const image =
             'path' in source
@@ -110,8 +115,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       } finally {
         set({ placing: 0 });
       }
-      if (accepted.length < sources.length) throw new Error(`槽位最多 ${MAX_SLOTS} 张，多出的 ${sources.length - accepted.length} 张没有放进去`);
-    });
+      if (accepted.length < sources.length) set({ error: `槽位最多 ${MAX_SLOTS} 张，多出的 ${sources.length - accepted.length} 张没有放进去` });
+      return ids;
+    }).then((ids) => ids ?? []);
 
   // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次
   const pending: Record<string, string> = {};

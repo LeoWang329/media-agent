@@ -1,10 +1,9 @@
 import { aspectRatioText, imageSizeFits, isSupportedImageName, type AspectRatio, type ChatNode } from '@media-agent/shared';
 import { useState, type DragEvent } from 'react';
 import { ASSET_DRAG_TYPE, imageThumbUrl, SLOT_DRAG_TYPE } from '../api';
-import { useCanvasStore } from '../store/canvasStore';
+import { MAX_SLOTS, useCanvasStore } from '../store/canvasStore';
 import { AssetPicker } from './AssetLibrary';
 
-const SLOT_COUNT = 9;
 const DURATIONS = Array.from({ length: 12 }, (_, i) => i + 4);
 const ASPECT_RATIOS: AspectRatio[] = ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
 
@@ -52,7 +51,7 @@ export function SlotStrip({ node }: { node: ChatNode }) {
     <>
       <div className="slot-area">
         <div className="slot-strip" data-testid="slot-strip" onDragOver={(e) => dragOver(e)} onDragLeave={() => setOver(null)} onDrop={(e) => drop(e)}>
-          {Array.from({ length: SLOT_COUNT }, (_, i) => {
+          {Array.from({ length: MAX_SLOTS }, (_, i) => {
             const imageId = node.slots[i];
             const image = imageId ? images?.[imageId] : undefined;
             const misfit = image ? !imageSizeFits(image.width, image.height) : false;
@@ -113,6 +112,7 @@ export function SlotStrip({ node }: { node: ChatNode }) {
       {picking !== null && (
         <AssetPicker
           title={node.slots[picking] ? `替换 ${picking + 1} 号` : `放进 ${picking + 1} 号`}
+          node={node}
           onPick={(paths) => {
             setPicking(null);
             void placeImages(node.id, paths, picking);

@@ -42,7 +42,7 @@ test('从第一条用户消息 fork：新节点输入框预填这句话，消息
 
   await expect(cards(page)).toHaveCount(2);
   await expect(panel(page).locator('.panel-title')).toHaveText('测试标题 · 分支');
-  await expect(panel(page).getByLabel('输入消息')).toHaveValue('写一个');
+  await expect(panel(page).getByLabel('输入消息')).toHaveText('写一个');
   await expect(panel(page).getByTestId('message-user')).toHaveCount(0);
   await expect(panel(page).getByTestId('message-assistant')).toHaveCount(0);
 });
@@ -85,7 +85,7 @@ test('发「三个方向」：三个框，卡片显示「3 个方向」；点第
 
   await panel(page).getByTestId('prompt-box').nth(1).getByRole('button', { name: '沿此方向 fork' }).click();
   await expect(cards(page)).toHaveCount(2);
-  await expect(panel(page).getByLabel('输入消息')).toHaveValue(/第 2 个方向/);
+  await expect(panel(page).getByLabel('输入消息')).toHaveText(/第 2 个方向/);
 });
 
 test('折叠有子节点的节点：子节点隐藏、卡片显示已收起；删除时确认框写「连同 2 个子节点」，三个一起消失', async ({ page }) => {
