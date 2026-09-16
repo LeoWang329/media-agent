@@ -52,10 +52,10 @@ describe('发送消息', () => {
     expect(activePath(node).map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(node.messages[reply.id]).toEqual(reply);
 
-    const promptText = await fs.readFile(path.join(t.work, 'prompts', 'default.md'), 'utf8');
+    const promptText = await fs.readFile(path.join(t.work, 'prompts', 'ref2va.md'), 'utf8');
     const hash = createHash('sha256').update(promptText).digest('hex');
-    expect(reply).toMatchObject({ modelConfigId: 'mock', modelName: 'mock-model', systemPromptName: 'default', systemPromptHash: hash });
-    expect(await fs.readFile(path.join(t.work, 'prompts', '.history', `default-${hash.slice(0, 12)}.md`), 'utf8')).toBe(promptText);
+    expect(reply).toMatchObject({ modelConfigId: 'mock', modelName: 'mock-model', systemPromptName: 'ref2va', systemPromptHash: hash });
+    expect(await fs.readFile(path.join(t.work, 'prompts', '.history', `ref2va-${hash.slice(0, 12)}.md`), 'utf8')).toBe(promptText);
 
     const detail = await t.ok('GET', `/canvases/${canvasId}`);
     expect(detail.nodes[0]).toMatchObject({ id: nodeId, title: '测试标题', directionCount: 1, x: 100, y: 50 });
@@ -145,7 +145,7 @@ describe('fork', () => {
       title: '测试标题 · 分支',
       titleIsManual: false,
       modelConfigId: 'mock',
-      systemPromptName: 'default',
+      systemPromptName: 'ref2va',
       slots,
       duration: 12,
       aspectRatio: '1:1',
@@ -239,12 +239,12 @@ describe('提示词框', () => {
 
   it('回复角落点提示词名，读到的是发这条时的那一版，之后改了也不影响', async () => {
     const { reply } = await send('写一个');
-    const original = await fs.readFile(path.join(t.work, 'prompts', 'default.md'), 'utf8');
-    expect((await t.ok('GET', `/prompts/default/history/${reply.systemPromptHash}`)).text).toBe(original);
+    const original = await fs.readFile(path.join(t.work, 'prompts', 'ref2va.md'), 'utf8');
+    expect((await t.ok('GET', `/prompts/ref2va/history/${reply.systemPromptHash}`)).text).toBe(original);
 
-    await t.ok('PUT', '/prompts/default', { text: '新版提示词' });
-    expect((await t.ok('GET', `/prompts/default/history/${reply.systemPromptHash}`)).text).toBe(original);
-    expect((await t.call('GET', '/prompts/default/history/zzz')).status).toBe(400);
-    expect((await t.call('GET', `/prompts/default/history/${'0'.repeat(12)}`)).status).toBe(404);
+    await t.ok('PUT', '/prompts/ref2va', { text: '新版提示词' });
+    expect((await t.ok('GET', `/prompts/ref2va/history/${reply.systemPromptHash}`)).text).toBe(original);
+    expect((await t.call('GET', '/prompts/ref2va/history/zzz')).status).toBe(400);
+    expect((await t.call('GET', `/prompts/ref2va/history/${'0'.repeat(12)}`)).status).toBe(404);
   });
 });

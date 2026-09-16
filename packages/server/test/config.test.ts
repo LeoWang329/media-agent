@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
 import { createApp } from '../src/app';
 
-const DEFAULT_PROMPT = fileURLToPath(new URL('../../../docs/prompts/default.md', import.meta.url));
+const REF_PROMPT = fileURLToPath(new URL('../../../docs/prompts/ref2va.md', import.meta.url));
 
 function listen(app: express.Express): Promise<Server> {
   return new Promise((resolve) => {
@@ -76,8 +76,9 @@ describe('本机配置', () => {
     expect(res.status).toBe(200);
     expect(res.body.workFolder).toBe(workFolder);
 
-    const defaultPrompt = path.join(workFolder, 'prompts', 'default.md');
-    expect(await fs.readFile(defaultPrompt, 'utf8')).toBe(await fs.readFile(DEFAULT_PROMPT, 'utf8'));
+    const defaultPrompt = path.join(workFolder, 'prompts', 'ref2va.md');
+    expect(await fs.readFile(defaultPrompt, 'utf8')).toBe(await fs.readFile(REF_PROMPT, 'utf8'));
+    for (const name of ['i2v', 't2v']) expect((await fs.stat(path.join(workFolder, 'prompts', `${name}.md`))).isFile()).toBe(true);
     for (const dir of ['prompts/.history', 'canvases', '.trash']) {
       expect((await fs.stat(path.join(workFolder, dir))).isDirectory()).toBe(true);
     }

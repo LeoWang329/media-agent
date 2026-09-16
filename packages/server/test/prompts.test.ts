@@ -15,11 +15,12 @@ afterEach(async () => {
 
 describe('系统提示词', () => {
   it('列表、新建、读、改、删除进 .trash；名字不合法返回 400', async () => {
-    expect(await t.ok('GET', '/prompts')).toEqual(['default']);
+    // 自带三套，参考模式排第一
+    expect(await t.ok('GET', '/prompts')).toEqual(['ref2va', 'i2v', 't2v']);
 
     await t.ok('POST', '/prompts', { name: '英文版', text: 'english' });
     expect((await t.call('POST', '/prompts', { name: '英文版', text: 'x' })).status).toBe(409);
-    expect(await t.ok('GET', '/prompts')).toEqual(['default', '英文版']);
+    expect(await t.ok('GET', '/prompts')).toEqual(['ref2va', 'i2v', 't2v', '英文版']);
 
     await t.ok('PUT', `/prompts/${encodeURIComponent('英文版')}`, { text: 'english v2' });
     expect(await t.ok('GET', `/prompts/${encodeURIComponent('英文版')}`)).toEqual({ name: '英文版', text: 'english v2' });
@@ -30,7 +31,7 @@ describe('系统提示词', () => {
     expect((await t.call('GET', `/prompts/${encodeURIComponent('..\\config')}`)).status).toBe(400);
 
     expect((await t.call('DELETE', `/prompts/${encodeURIComponent('英文版')}`)).status).toBe(204);
-    expect(await t.ok('GET', '/prompts')).toEqual(['default']);
+    expect(await t.ok('GET', '/prompts')).toEqual(['ref2va', 'i2v', 't2v']);
     expect((await fs.readdir(path.join(t.work, '.trash'))).some((name) => name.endsWith('-prompt-英文版.md'))).toBe(true);
   });
 

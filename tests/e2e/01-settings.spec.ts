@@ -12,7 +12,7 @@ test('第一次打开跳到设置页；设好工作文件夹出现默认提示�
   await workFolder.getByLabel('工作文件夹路径').fill(E2E_WORK_FOLDER);
   await workFolder.getByRole('button', { name: '保存' }).click();
   await expect(workFolder.getByText('已保存')).toBeVisible();
-  expect(fs.existsSync(path.join(E2E_WORK_FOLDER, 'prompts', 'default.md'))).toBe(true);
+  for (const name of ['ref2va', 'i2v', 't2v']) expect(fs.existsSync(path.join(E2E_WORK_FOLDER, 'prompts', `${name}.md`))).toBe(true);
 
   const models = page.locator('section').filter({ has: page.getByRole('heading', { name: '模型配置' }) });
   await models.getByRole('button', { name: '新增模型配置' }).click();

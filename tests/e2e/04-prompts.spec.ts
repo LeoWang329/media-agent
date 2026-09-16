@@ -79,7 +79,7 @@ test('星标打在框上、卡片跟着显示；回复角落有模型名、提�
   const meta = lastReply(page).locator('.reply-meta');
   await expect(meta).toContainText('mock-model');
   await expect(meta).toContainText('tokens');
-  await meta.getByRole('button', { name: 'default' }).click();
+  await meta.getByRole('button', { name: 'ref2va' }).click();
   await expect(page.getByRole('dialog', { name: /发这条时的系统提示词/ })).toContainText('MiniMax H3 视频提示词写手');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);

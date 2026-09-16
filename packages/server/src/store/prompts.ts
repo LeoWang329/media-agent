@@ -11,6 +11,10 @@ const FORMAT_REQUIREMENT_DOC = fileURLToPath(new URL('../../../../docs/prompts/f
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
+// 自带的三套提示词，列表里按这个顺序排在前面；第一套是新建节点的默认
+export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v'];
+export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
+
 const promptsDir = (work: string) => path.join(work, 'prompts');
 
 export function promptFile(work: string, name: string): string {
@@ -23,7 +27,11 @@ export async function listPrompts(work: string): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
     .map((entry) => entry.name.slice(0, -3))
-    .sort((a, b) => (a === 'default' ? -1 : b === 'default' ? 1 : a.localeCompare(b, 'zh-CN')));
+    .sort((a, b) => {
+      const [ia, ib] = [BUILTIN_PROMPTS.indexOf(a), BUILTIN_PROMPTS.indexOf(b)];
+      if (ia >= 0 || ib >= 0) return (ia < 0 ? BUILTIN_PROMPTS.length : ia) - (ib < 0 ? BUILTIN_PROMPTS.length : ib);
+      return a.localeCompare(b, 'zh-CN');
+    });
 }
 
 export async function readPrompt(work: string, name: string): Promise<string> {

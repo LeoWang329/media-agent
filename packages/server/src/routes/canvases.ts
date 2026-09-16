@@ -20,7 +20,7 @@ import {
   updateNode,
 } from '../store/canvases';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
-import { listPrompts } from '../store/prompts';
+import { DEFAULT_PROMPT, listPrompts } from '../store/prompts';
 import * as v from './validate';
 
 export function canvasRoutes(configDir: string): express.Router {
@@ -70,7 +70,7 @@ export function canvasRoutes(configDir: string): express.Router {
       x: v.finiteNumber(req.body?.x, '节点位置'),
       y: v.finiteNumber(req.body?.y, '节点位置'),
       modelConfigId: modelConfigs[0]?.id ?? '',
-      systemPromptName: prompts.includes('default') ? 'default' : (prompts[0] ?? 'default'),
+      systemPromptName: prompts.includes(DEFAULT_PROMPT) ? DEFAULT_PROMPT : (prompts[0] ?? DEFAULT_PROMPT),
     });
     res.status(201).json(node);
   });
