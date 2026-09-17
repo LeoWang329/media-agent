@@ -14,7 +14,6 @@ import {
   createCanvas,
   createNode,
   forkNode,
-  listCanvases,
   listNodes,
   readCanvas,
   readNode,
@@ -25,6 +24,7 @@ import {
   updateCanvas,
   updateNode,
 } from '../store/canvases';
+import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
 import { DEFAULT_PROMPT, listPrompts } from '../store/prompts';
 import * as v from './validate';
@@ -34,8 +34,8 @@ export function canvasRoutes(configDir: string): express.Router {
   const work = () => requireWorkFolder(configDir);
   const ids = (req: Request) => ({ canvasId: v.uuid(req.params.canvasId), nodeId: v.uuid(req.params.nodeId) });
 
-  router.get('/canvases', async (_req, res) => {
-    res.json(await listCanvases(await work(), isGenerating));
+  router.get('/home', async (_req, res) => {
+    res.json(await homeData(await work(), isGenerating));
   });
 
   // 撤销删除画布：trash 是删的时候返回的那个文件夹名

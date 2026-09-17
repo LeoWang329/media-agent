@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
-import { cards, lastReply, newCanvasWithNode, panel, placeFromAssets, send, setupWorkFolder, toasts } from './helpers';
+import { cards, cardTitled, lastReply, newCanvasWithNode, panel, placeFromAssets, send, setupWorkFolder, toasts } from './helpers';
 
 test.beforeAll(async ({ playwright }) => {
   await setupWorkFolder(playwright);
@@ -161,7 +161,7 @@ test('翻译：翻着的时候窗口里的样子，关掉窗口翻好了底部�
   await expect(dialog.locator('#trMeta')).not.toContainText('旧译文');
 });
 
-test('星标打在框上、卡片跟着显示；回复角落有模型名、提示词名和 token，点提示词名看当时那版', async ({ page }) => {
+test('星标打在框上、卡片跟着显示；回复角落有模型名、提示词名和 token，点提示词名看当时那版；岔出去的节点复制来的星不显示', async ({ page }) => {
   await newCanvasWithNode(page, '星标和角落');
   await send(page, '写一个');
 
@@ -183,4 +183,12 @@ test('星标打在框上、卡片跟着显示；回复角落有模型名、提�
   await expect(sys).toContainText('MiniMax H3 视频提示词写手');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  // 从打过星的回复岔出去：新节点连星一起复制了回复，但星不算它的，画布上还是只有原节点显示星
+  await act(page, 'star').click();
+  await expect(cardTitled(page, '测试标题').locator('.gn-star')).toBeVisible();
+  await act(page, 'continue').click();
+  await expect(cards(page)).toHaveCount(2);
+  await expect(cards(page).locator('.gn-star')).toHaveCount(1);
+  await expect(cardTitled(page, '测试标题').locator('.gn-star')).toBeVisible();
 });

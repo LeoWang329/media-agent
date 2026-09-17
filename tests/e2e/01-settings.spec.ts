@@ -41,7 +41,7 @@ test('第一次打开进首次设置：选工作文件夹、填模型配置并�
   expect(saved[0]).toMatchObject({ name: 'mock', model: 'mock-model', pricing: { currency: '¥', input: 3, output: 15, cached: 0.3 } });
 
   await page.getByRole('link', { name: '进入首页' }).click();
-  await expect(page.getByRole('heading', { name: '画布', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '还没有画布' })).toBeVisible();
   await expect(page.locator('.path-pill')).toHaveText(E2E_WORK_FOLDER);
 });
 

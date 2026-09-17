@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listCanvases } from './canvases';
+import { readAllCanvases } from './canvases';
 import { BUILTIN_PROMPTS, listPrompts } from './prompts';
 
 // 三套自带的系统提示词只维护 docs/prompts/ 里这三份：参考模式、图当首帧、纯文字
@@ -32,6 +32,6 @@ export async function workFolderStatus(root: string): Promise<{ writable: boolea
   } catch {
     writable = false;
   }
-  const [canvases, prompts] = await Promise.all([listCanvases(root, () => false).catch(() => []), listPrompts(root).catch(() => [])]);
+  const [canvases, prompts] = await Promise.all([readAllCanvases(root).catch(() => []), listPrompts(root).catch(() => [])]);
   return { writable, canvases: canvases.length, prompts: prompts.length };
 }

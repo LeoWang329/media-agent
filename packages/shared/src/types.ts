@@ -119,8 +119,58 @@ export type ChatNode = {
   updatedAt: string;
 };
 
-// cover 是最近放进槽位的那张图的 id，没放过图时为 null；generating 是正在生成回复的节点数
-export type CanvasListItem = { id: string; title: string; updatedAt: string; nodeCount: number; cover: string | null; generating: number };
+// 首页的一个画布：updatedAt 算上了里面节点动过的时间；cover 是最近放进槽位的那张图的 id，没放过图时为 null；
+// generating 是正在生成回复的节点数，stars 是打过星的节点数
+export type HomeCanvas = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  nodeCount: number;
+  cover: string | null;
+  generating: number;
+  stars: number;
+};
+
+// 首页「最近动过的节点」里的一个；error 是当前路径最后一条回复失败的原因
+export type HomeNode = {
+  id: string;
+  canvasId: string;
+  title: string;
+  summary: string;
+  directionCount: number;
+  slots: string[];
+  duration: number;
+  aspectRatio: AspectRatio;
+  starred: boolean;
+  generating: boolean;
+  error: string | null;
+  updatedAt: string;
+};
+
+// 首页「打过星的提示词」里的一条；images、duration、aspectRatio 是这条回复当时的
+export type StarredPrompt = {
+  canvasId: string;
+  nodeId: string;
+  nodeTitle: string;
+  messageId: string;
+  promptIndex: number;
+  label?: string;
+  text: string;
+  summary: string;
+  images: string[];
+  duration: number;
+  aspectRatio: AspectRatio;
+  translations: { language: TranslateLanguage; text: string }[];
+  createdAt: string;
+};
+
+// GET /api/home；images 只有节点和提示词用到的那些图，按画布分
+export type HomeData = {
+  canvases: HomeCanvas[];
+  recentNodes: HomeNode[];
+  starred: StarredPrompt[];
+  images: Record<string, Record<string, ImageRecord>>;
+};
 
 export type NodeSummary = CanvasNodeLayout & {
   title: string;

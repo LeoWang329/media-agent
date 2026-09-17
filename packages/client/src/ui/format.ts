@@ -34,5 +34,11 @@ export function relativeWhen(iso: string, now = new Date()): string {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
+// 「今天 16:58 写的」「3 分钟前写的」：时间以数字结尾时补个空格
+export function whenDid(iso: string, verb: string): string {
+  const when = relativeWhen(iso);
+  return `${when}${/\d$/.test(when) ? ' ' : ''}${verb}`;
+}
+
 // 18.6 MB、96 KB
 export const fmtSize = (bytes: number) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);

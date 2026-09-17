@@ -1,4 +1,4 @@
-import { activePath, directionDraft, type ChatNode, type Message, type PromptTranslation } from '@media-agent/shared';
+import { activePath, directionDraft, type ChatNode, type HomeData, type Message, type NodeSummary, type PromptTranslation } from '@media-agent/shared';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -121,7 +121,7 @@ describe('发送消息', () => {
     await sleep(1300);
     expect((await t.call('POST', `${nodeUrl}/send`, { parentId: null, text: '又一个' })).status).toBe(409);
     expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes[0]).toMatchObject({ id: nodeId, generating: true });
-    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, generating: 1 }]);
+    expect(await t.ok('GET', '/home')).toMatchObject({ canvases: [{ id: canvasId, generating: 1 }], recentNodes: [{ id: nodeId, generating: true }] });
     expect((await t.ok('POST', `${nodeUrl}/stop`)).stopped).toBe(true);
 
     const { events, reply } = await sending;
@@ -178,21 +178,22 @@ describe('fork', () => {
 });
 
 describe('画布和节点的增删改查', () => {
-  it('画布列表带封面和生成数、改名、删除进 .trash、撤销删除', async () => {
+  it('首页的画布带封面和生成数、改名、删除进 .trash、撤销删除', async () => {
+    const canvases = async () => (await t.ok('GET', '/home')).canvases;
     await t.ok('PATCH', `/canvases/${canvasId}`, { title: '改过的画布' });
-    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1, cover: null, generating: 0 }]);
+    expect(await canvases()).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1, cover: null, generating: 0, stars: 0 }]);
     await t.addImage(canvasId, '#ff0000');
     await sleep(5);
     const latest = await t.addImage(canvasId, '#00ff00');
-    expect((await t.ok('GET', '/canvases'))[0].cover).toBe(latest);
+    expect((await canvases())[0].cover).toBe(latest);
 
     const { trash } = await t.ok('DELETE', `/canvases/${canvasId}`);
-    expect(await t.ok('GET', '/canvases')).toEqual([]);
+    expect(await canvases()).toEqual([]);
     expect(trash).toMatch(new RegExp(`-canvas-${canvasId}$`));
     expect(await fs.readdir(path.join(t.work, '.trash'))).toContain(trash);
 
     expect(await t.ok('POST', '/canvases/restore', { trash })).toEqual({ id: canvasId });
-    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1 }]);
+    expect(await canvases()).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1 }]);
     expect((await t.call('POST', '/canvases/restore', { trash })).status).toBe(404);
     expect((await t.call('POST', '/canvases/restore', { trash: '../canvases' })).status).toBe(400);
     expect((await t.call('GET', '/canvases/not-a-uuid')).status).toBe(400);
@@ -241,6 +242,68 @@ describe('画布和节点的增删改查', () => {
   });
 });
 
+describe('首页', () => {
+  it('最近动过的节点只算自己发过消息的；打过星的提示词带当时的图和译文，岔出去的节点复制来的只列一次', async () => {
+    const image = await t.addImage(canvasId, '#0000ff');
+    await t.ok('PATCH', nodeUrl, { slots: [image], duration: 12, aspectRatio: '1:1' });
+    const { reply } = await send('三个方向');
+    await t.ok('PATCH', nodeUrl, { slots: [] });
+    await t.ok('POST', `${nodeUrl}/messages/${reply.id}/star`, { promptIndex: 1, on: true });
+    for (const language of ['日文', '英文']) await t.ok('POST', `${nodeUrl}/messages/${reply.id}/translate`, { promptIndex: 1, language });
+    const forked: ChatNode = await t.ok('POST', `${nodeUrl}/fork`, { messageId: reply.id });
+    await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 900 });
+
+    let home: HomeData = await t.ok('GET', '/home');
+    expect(home.recentNodes).toMatchObject([{ id: nodeId, canvasId, title: '测试标题', directionCount: 3, slots: [], starred: true, generating: false, error: null }]);
+    const box = reply.parsed!.prompts[1];
+    expect(home.starred).toEqual([
+      {
+        canvasId,
+        nodeId,
+        nodeTitle: '测试标题',
+        messageId: reply.id,
+        promptIndex: 1,
+        label: '方向二：测试方向二',
+        text: box.text,
+        summary: box.summary,
+        images: [image],
+        duration: 12,
+        aspectRatio: '1:1',
+        translations: [
+          { language: '英文', text: `译文（英文）
+${box.text}` },
+          { language: '日文', text: `译文（日文）
+${box.text}` },
+        ],
+        createdAt: reply.createdAt,
+      },
+    ]);
+    expect(home.canvases).toMatchObject([{ id: canvasId, nodeCount: 3, cover: image, stars: 1 }]);
+    expect(Object.keys(home.images[canvasId])).toEqual([image]);
+
+    // 岔出去的节点发过消息才进「最近动过」；它复制来的星不算它的
+    await send('继续', reply.id, `/canvases/${canvasId}/nodes/${forked.id}`);
+    home = await t.ok('GET', '/home');
+    expect(home.recentNodes.map((node) => [node.id, node.starred])).toEqual([
+      [forked.id, false],
+      [nodeId, true],
+    ]);
+    expect(home.starred.map((prompt) => prompt.nodeId)).toEqual([nodeId]);
+
+    // 打星只改节点文件，画布也算动过；画布上的星按节点数
+    const starred: ChatNode = await t.ok('POST', `${nodeUrl}/messages/${reply.id}/star`, { promptIndex: 0, on: true });
+    home = await t.ok('GET', '/home');
+    expect(home.recentNodes[0].id).toBe(nodeId);
+    expect(home.starred).toHaveLength(2);
+    expect(home.canvases).toMatchObject([{ updatedAt: starred.updatedAt, stars: 1 }]);
+  });
+
+  it('工作文件夹读不了时返回 503 和原因', async () => {
+    await fs.rm(path.join(t.work, 'canvases'), { recursive: true });
+    expect(await t.call('GET', '/home')).toEqual({ status: 503, body: { error: '找不到这个路径' } });
+  });
+});
+
 describe('提示词框', () => {
   it('打星写进消息，卡片跟着显示星，取消后消失', async () => {
     const { reply } = await send('写一个');
@@ -255,6 +318,21 @@ describe('提示词框', () => {
     expect(node.messages[reply.id].stars).toEqual([]);
     expect(await cardStarred()).toBe(false);
     expect((await t.call('POST', starUrl, { promptIndex: 0, on: 'yes' })).status).toBe(400);
+  });
+
+  it('岔出去的节点复制来的星不算它的，卡片上不显示；它自己回复里打的星照常显示', async () => {
+    const { reply } = await send('写一个');
+    await t.ok('POST', `${nodeUrl}/messages/${reply.id}/star`, { promptIndex: 0, on: true });
+    const forked: ChatNode = await t.ok('POST', `${nodeUrl}/fork`, { messageId: reply.id });
+    expect(forked.messages[reply.id].stars).toEqual([0]);
+    const starredCards = async () => (await t.ok('GET', `/canvases/${canvasId}`)).nodes.filter((n: NodeSummary) => n.starred).map((n: NodeSummary) => n.id);
+    expect(await starredCards()).toEqual([nodeId]);
+
+    const forkUrl = `/canvases/${canvasId}/nodes/${forked.id}`;
+    const { reply: own } = await send('继续', reply.id, forkUrl);
+    await t.ok('POST', `${forkUrl}/messages/${own.id}/star`, { promptIndex: 0, on: true });
+    expect(await starredCards()).toEqual([nodeId, forked.id]);
+    expect((await t.ok('GET', '/home')).canvases[0].stars).toBe(2);
   });
 
   it('手动改提示词：同一位置多一个版本，正文和概述都换了，不调模型', async () => {

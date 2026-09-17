@@ -5,7 +5,7 @@ import { AssetsDialog } from '../canvas/AssetsDialog';
 import { CollageDialog } from '../canvas/CollageDialog';
 import { Drawer } from '../canvas/Drawer';
 import { Graph } from '../canvas/Graph';
-import { addRootNode, autoLayout, closeDrawer } from '../canvas/nodeActions';
+import { addRootNode, autoLayout, closeDrawer, selectNode } from '../canvas/nodeActions';
 import { CLOSED_OVERLAYS, openAssets, useOverlays } from '../canvas/overlays';
 import { RefPicker } from '../canvas/RefPicker';
 import { SysPromptDialog } from '../canvas/SysPromptDialog';
@@ -32,11 +32,14 @@ export function Canvas() {
   const zoom = useView((s) => s.z);
   const [renaming, setRenaming] = useState(false);
   const fitted = useRef(false);
+  // 从首页点进来的节点（地址里的 #node=节点 id），画布读出来后打开它的对话
+  const linked = useRef<string | null>(null);
   const title = detail?.canvas.title ?? '';
 
   useEffect(() => {
     if (!id) return;
     fitted.current = false;
+    linked.current = location.hash.startsWith('#node=') ? location.hash.slice('#node='.length) : null;
     void useCanvasStore.getState().open(id);
     useOverlays.setState(CLOSED_OVERLAYS);
   }, [id]);
@@ -54,13 +57,18 @@ export function Canvas() {
     if (title) document.title = `${title} · 提示词画布`;
   }, [title]);
 
-  // 打开画布时把节点都放进视野
+  // 打开画布时把节点都放进视野；从首页点进来的节点接着打开，地址里的 #node= 用完就去掉
   useEffect(() => {
     if (!detail || fitted.current) return;
     fitted.current = true;
     const hidden = hiddenNodeIds(detail.nodes);
     fitAll(detail.nodes.filter((n) => !hidden.has(n.id)));
-  }, [detail]);
+    const nodeId = linked.current;
+    if (!nodeId) return;
+    linked.current = null;
+    if (detail.nodes.some((n) => n.id === nodeId)) selectNode(nodeId);
+    navigate({ hash: '' }, { replace: true });
+  }, [detail, navigate]);
 
   // 别的页面里正在生成的节点（比如刷新过页面）：隔一会儿读一次，写完为止
   const remote = useCanvasStore((s) => (s.detail?.nodes ?? []).filter((n) => n.generating && !s.streams[n.id]).map((n) => n.id).join(','));

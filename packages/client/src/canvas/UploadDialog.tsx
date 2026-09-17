@@ -1,4 +1,4 @@
-import { referencedPictures, type ChecklistPath } from '@media-agent/shared';
+import { referencedPictures, type CanvasImage, type ChecklistPath } from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { api, imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
@@ -12,18 +12,20 @@ import { useOverlays, type UploadTarget } from './overlays';
 
 export function UploadDialog() {
   const target = useOverlays((s) => s.upload);
-  if (!target) return null;
-  return <UploadList target={target} />;
+  const canvasId = useCanvasStore((s) => s.canvasId);
+  const images = useCanvasStore((s) => s.detail?.images);
+  const nodeTitle = useCanvasStore((s) => s.detail?.nodes.find((n) => n.id === target?.nodeId)?.title ?? '');
+  if (!target || !canvasId) return null;
+  return <UploadList canvasId={canvasId} images={images} where={nodeTitle} target={target} onClose={close} />;
 }
 
 const close = () => useOverlays.setState({ upload: null });
 const fileName = (path: string) => path.split(/[\\/]/).at(-1) ?? path;
 
-// 上传清单：这条回复当时带的每张图该传哪个文件，按编号顺序
-function UploadList({ target }: { target: UploadTarget }) {
-  const canvasId = useCanvasStore((s) => s.canvasId);
-  const images = useCanvasStore((s) => s.detail?.images);
-  const nodeTitle = useCanvasStore((s) => s.detail?.nodes.find((n) => n.id === target.nodeId)?.title ?? '');
+type Props = { canvasId: string; images: Record<string, CanvasImage> | undefined; where: string; target: UploadTarget; onClose: () => void };
+
+// 上传清单：这条回复当时带的每张图该传哪个文件，按编号顺序。where 写在标题下面，是哪个节点，首页上前面还带画布名
+export function UploadList({ canvasId, images, where, target, onClose }: Props) {
   const [paths, setPaths] = useState<Record<string, ChecklistPath>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const ids = target.images;
@@ -57,12 +59,12 @@ function UploadList({ target }: { target: UploadTarget }) {
   };
 
   return (
-    <Dialog className="dialog-sheet" style={{ width: 'min(780px, calc(100vw - 32px))' }} label="上传清单" odId="dialog-upload-list" onClose={close}>
+    <Dialog className="dialog-sheet" style={{ width: 'min(780px, calc(100vw - 32px))' }} label="上传清单" odId="dialog-upload-list" onClose={onClose}>
       <div className="dialog-head">
         <div className="stack" style={{ gap: 2, minWidth: 0 }}>
           <h2>上传清单</h2>
           <span className="meta" id="upSub">
-            {nodeTitle} · {target.label || '提示词'} · 共 {ids.length} 张，按编号顺序上传
+            {where} · {target.label || '提示词'} · 共 {ids.length} 张，按编号顺序上传
           </span>
         </div>
         <div className="row">
@@ -70,7 +72,7 @@ function UploadList({ target }: { target: UploadTarget }) {
             <Icon name="copy" />
             复制提示词
           </button>
-          <button type="button" className="btn btn-ghost btn-icon" aria-label="关闭" onClick={close}>
+          <button type="button" className="btn btn-ghost btn-icon" aria-label="关闭" onClick={onClose}>
             <Icon name="x" />
           </button>
         </div>
@@ -140,7 +142,9 @@ function UploadList({ target }: { target: UploadTarget }) {
                   {i + 1}
                   <small>号</small>
                 </div>
-                <div className="up-thumb">{canvasId && <img className="im" src={imageThumbUrl(canvasId, id)} alt={image?.originalName ?? ''} loading="lazy" />}</div>
+                <div className="up-thumb">
+                  <img className="im" src={imageThumbUrl(canvasId, id)} alt={image?.originalName ?? ''} loading="lazy" />
+                </div>
                 <div className="up-info">
                   <div className="up-name">
                     {image?.originalName}
@@ -186,7 +190,7 @@ function UploadList({ target }: { target: UploadTarget }) {
           <Icon name="copy" />
           复制全部路径
         </button>
-        <button type="button" className="btn btn-primary" onClick={close}>
+        <button type="button" className="btn btn-primary" onClick={onClose}>
           好了
         </button>
       </div>

@@ -1,4 +1,4 @@
-import type { ChatNode, Message } from './types';
+import type { ChatNode, Message, PromptBox } from './types';
 import { activePath } from './versionTree';
 
 export const CARD_SUMMARY_LENGTH = 80;
@@ -23,4 +23,27 @@ export function titleAfterReply(node: Pick<ChatNode, 'title' | 'titleIsManual' |
   return reply.parsed?.title || firstChars(summary, 12) || node.title;
 }
 
-export const isStarred = (node: Pick<ChatNode, 'messages'>) => Object.values(node.messages).some((m) => m.stars?.length);
+// 岔出来的节点里，复制来的消息比节点建得早，自己发的比节点建得晚
+export const isOwnMessage = (node: Pick<ChatNode, 'parentNodeId' | 'createdAt'>, message: Pick<Message, 'createdAt'>) =>
+  !node.parentNodeId || message.createdAt > node.createdAt;
+
+export type StarredBox = { node: ChatNode; message: Message; promptIndex: number; box: PromptBox };
+
+// 一张画布上打过星的框。岔出去的节点连星一起复制了回复，复制来的星不算它的：同一个框只算一次，
+// 算在写出这条回复的节点上（那个节点不在了才算在先读到的那份复制品上）。画布卡片和首页都按这个显示星
+export function starredBoxes(nodes: ChatNode[]): StarredBox[] {
+  const found = new Map<string, StarredBox & { own: boolean }>();
+  for (const node of nodes) {
+    for (const message of Object.values(node.messages)) {
+      if (message.role !== 'assistant') continue;
+      const own = isOwnMessage(node, message);
+      for (const promptIndex of message.stars ?? []) {
+        const box = message.parsed?.prompts[promptIndex];
+        const seen = found.get(`${message.id}/${promptIndex}`);
+        if (!box || (seen && (seen.own || !own))) continue;
+        found.set(`${message.id}/${promptIndex}`, { node, message, promptIndex, box, own });
+      }
+    }
+  }
+  return [...found.values()].map(({ own: _, ...starred }) => starred);
+}

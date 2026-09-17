@@ -4,11 +4,10 @@ import {
   descendantIds,
   forkChain,
   forkTitle,
-  isStarred,
+  starredBoxes,
   type Canvas,
   type CanvasDetail,
   type CanvasImage,
-  type CanvasListItem,
   type CanvasNodeLayout,
   type ChatNode,
 } from '@media-agent/shared';
@@ -30,25 +29,11 @@ const canvasFile = (work: string, canvasId: string) => path.join(canvasDir(work,
 const nodesDir = (work: string, canvasId: string) => path.join(canvasDir(work, canvasId), 'nodes');
 const nodeFile = (work: string, canvasId: string, nodeId: string) => path.join(nodesDir(work, canvasId), `${nodeId}.json`);
 
-// 首页卡片：封面取最近放进槽位的那张图，只读 images.json，不去读每个节点文件
-export async function listCanvases(work: string, isGenerating: (nodeId: string) => boolean): Promise<CanvasListItem[]> {
+// 工作文件夹里的全部画布；没有 canvas.json 的文件夹跳过
+export async function readAllCanvases(work: string): Promise<Canvas[]> {
   const entries = await fs.readdir(path.join(work, 'canvases'), { withFileTypes: true });
-  const items: CanvasListItem[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const canvas = await readJson<Canvas>(canvasFile(work, entry.name));
-    if (!canvas) continue;
-    const latest = Object.values(await readImages(work, canvas.id)).sort((a, b) => b.addedAt.localeCompare(a.addedAt))[0];
-    items.push({
-      id: canvas.id,
-      title: canvas.title,
-      updatedAt: canvas.updatedAt,
-      nodeCount: canvas.nodes.length,
-      cover: latest?.id ?? null,
-      generating: canvas.nodes.filter((layout) => isGenerating(layout.id)).length,
-    });
-  }
-  return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const canvases = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readJson<Canvas>(canvasFile(work, entry.name))));
+  return canvases.filter((canvas): canvas is Canvas => canvas !== null);
 }
 
 export async function createCanvas(work: string, title: string): Promise<Canvas> {
@@ -86,25 +71,24 @@ const exists = (file: string) => fs.access(file).then(() => true, () => false);
 
 export async function canvasDetail(work: string, canvasId: string, isGenerating: (nodeId: string) => boolean): Promise<CanvasDetail> {
   const canvas = await readCanvas(work, canvasId);
-  const nodes = new Map((await listNodes(work, canvasId)).map((node) => [node.id, node]));
-  const summaries = canvas.nodes.flatMap((layout) => {
-    const node = nodes.get(layout.id);
-    if (!node) return [];
-    return [
-      {
-        ...layout,
-        title: node.title,
-        parentNodeId: node.parentNodeId,
-        slots: node.slots,
-        duration: node.duration,
-        aspectRatio: node.aspectRatio,
-        ...cardSummary(node),
-        starred: isStarred(node),
-        failed: Boolean(activePath(node).at(-1)?.error),
-        generating: isGenerating(node.id),
-      },
-    ];
+  const files = new Map((await listNodes(work, canvasId)).map((node) => [node.id, node]));
+  const placed = canvas.nodes.flatMap((layout) => {
+    const node = files.get(layout.id);
+    return node ? [{ layout, node }] : [];
   });
+  const starred = new Set(starredBoxes(placed.map(({ node }) => node)).map((s) => s.node.id));
+  const summaries = placed.map(({ layout, node }) => ({
+    ...layout,
+    title: node.title,
+    parentNodeId: node.parentNodeId,
+    slots: node.slots,
+    duration: node.duration,
+    aspectRatio: node.aspectRatio,
+    ...cardSummary(node),
+    starred: starred.has(node.id),
+    failed: Boolean(activePath(node).at(-1)?.error),
+    generating: isGenerating(node.id),
+  }));
   // 槽位里正放着的图查一下原文件还在不在，槽位上标「副本」要用
   const images: Record<string, CanvasImage> = await readImages(work, canvasId);
   const inSlots = new Set(summaries.flatMap((n) => n.slots));
