@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>画布 · 提示词画布</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <script src="shared/app.js"></script>
+  <style>
+    .page { max-width: 1240px; margin: 0 auto; padding: 36px 28px 64px; }
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+    .page-head .meta { margin-top: 4px; font-size: 13px; }
+    .cv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
+    .cv { position: relative; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: border-color .15s, transform .15s, box-shadow .15s; }
+    .cv:hover { border-color: color-mix(in oklch, var(--fg) 26%, var(--border)); transform: translateY(-2px); box-shadow: 0 16px 32px -18px oklch(0% 0 0 / .5); }
+    .cv-cover { position: relative; aspect-ratio: 16 / 10; background: var(--fg-soft); overflow: hidden; }
+    .cv-cover img { width: 100%; height: 100%; object-fit: cover; transition: transform .4s var(--ease); }
+    .cv:hover .cv-cover img { transform: scale(1.03); }
+    .cv-cover .live { position: absolute; left: 10px; top: 10px; background: oklch(15% 0.01 255 / .78); color: oklch(97% 0 0); backdrop-filter: blur(6px); }
+    .cv-empty { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: 12.5px; background: repeating-linear-gradient(135deg, var(--fg-softer) 0 10px, transparent 10px 20px); }
+    .cv-body { display: flex; align-items: flex-start; gap: 8px; padding: 12px 8px 14px 14px; }
+    .cv-body h3 { font-size: 15px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cv-body .meta { margin-top: 3px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .cv-link { position: absolute; inset: 0; z-index: 1; border-radius: 14px; }
+    .cv-link:focus-visible { outline-offset: -2px; }
+    .cv-menu { position: relative; z-index: 2; margin-top: -2px; }
+    .cv.is-new { animation: pop .3s var(--ease); }
+    .cv-rename { position: relative; z-index: 2; height: 30px; font-weight: 600; }
+    @media (max-width: 720px) {
+      .page { padding: 20px 14px 48px; }
+      .cv-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+      .cv-body { padding: 10px 4px 12px 10px; }
+      .cv-body h3 { font-size: 14px; }
+    }
+    @media (max-width: 460px) { .cv-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="appbar" data-od-id="home-appbar">
+    <a class="brand" href="home.html"><span class="brand-mark" data-icon="logo"></span>提示词画布</a>
+    <span class="spacer"></span>
+    <a class="path-pill hide-sm" href="settings.html#workdir" title="工作文件夹，在设置里可以换" data-od-id="workdir-pill"><span data-icon="folder" data-icon-class="icon-sm"></span><span>D:\同步盘\提示词画布</span></a>
+    <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
+    <a class="btn btn-ghost" href="settings.html" data-icon="gear" data-od-id="link-settings"><span class="hide-sm">设置</span></a>
+  </header>
+
+  <main class="page">
+    <section class="page-head" data-od-id="home-head">
+      <div>
+        <h1>画布</h1>
+        <p class="meta" id="count"></p>
+      </div>
+      <button class="btn btn-primary btn-lg" id="btnNew" data-icon="plus" data-od-id="btn-new-canvas">新建画布</button>
+    </section>
+    <section class="cv-grid" id="grid" data-od-id="canvas-list" aria-label="全部画布"></section>
+  </main>
+
+  <dialog class="dialog" id="dlgNew" aria-label="新建画布" data-od-id="dialog-new-canvas">
+    <form method="dialog">
+      <div class="dialog-head"><h2>新建画布</h2></div>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="newTitle">画布名字</label>
+          <input class="input" id="newTitle" maxlength="30" placeholder="比如：春节回家短片" autocomplete="off" />
+          <p class="hint" id="newHint">一个创作项目一张画布，建好后在里面建节点。</p>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-secondary" value="cancel" formnovalidate>取消</button>
+        <button class="btn btn-primary" value="ok" id="newOk">新建</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    var CANVASES = [
+      { id: 'cv-7f3a2b', title: '新年广告片', nodes: 8, when: '12 分钟前', cover: 'img/gen/a8-heroine-turn.jpg', live: 1, href: 'canvas.html' },
+      { id: 'cv-2c91d0', title: '咖啡馆里的萨摩耶', nodes: 5, when: '昨天 21:14', cover: 'img/gen/b1-samoyed-cafe.jpg' },
+      { id: 'cv-5e07aa', title: '腕表新品 · 侧光', nodes: 11, when: '9月13日', cover: 'img/gen/b2-watch-product.jpg' },
+      { id: 'cv-91b4c3', title: '橘猫开冰箱', nodes: 2, when: '9月10日', cover: 'img/gen/b3-cat-fridge.jpg' },
+      { id: 'cv-3a6f18', title: '城市夜跑', nodes: 6, when: '9月8日', cover: 'img/gen/b4-night-runner.jpg' },
+      { id: 'cv-d2e470', title: '外婆的厨房', nodes: 14, when: '9月2日', cover: 'img/gen/b5-grandma-kitchen.jpg' },
+      { id: 'cv-0b8c59', title: '地铁里的纸飞机', nodes: 3, when: '8月29日', cover: 'img/gen/b6-paper-plane-subway.jpg' },
+      { id: 'cv-7a1e3d', title: '雪山越野', nodes: 7, when: '8月21日', cover: 'img/gen/b7-snow-suv.jpg' },
+      { id: 'cv-c4f962', title: '毕业季短片', nodes: 23, when: '7月3日', cover: 'img/gen/b8-graduation.jpg' },
+      { id: 'cv-68d2b7', title: '江边烟花', nodes: 4, when: '2月9日', cover: 'img/gen/b9-fireworks-river.jpg' }
+    ];
+    var grid = $('#grid');
+
+    function card(c) {
+      return '<article class="cv' + (c._new ? ' is-new' : '') + '" data-id="' + c.id + '" data-od-id="canvas-card-' + c.id + '">' +
+        '<a class="cv-link" href="' + (c.href || '#') + '" aria-label="打开「' + esc(c.title) + '」"></a>' +
+        '<div class="cv-cover">' + (c.cover ? '<img src="' + c.cover + '" alt="" loading="lazy">' : '<div class="cv-empty">还没有节点</div>') +
+          (c.live ? '<span class="tag live"><span class="dot dot-live"></span>' + c.live + ' 个节点正在生成</span>' : '') + '</div>' +
+        '<div class="cv-body"><div class="grow"><h3 class="cv-title">' + esc(c.title) + '</h3>' +
+          '<div class="meta"><span class="num">' + c.nodes + '</span> 个节点<span>·</span><span>' + esc(c.when) + '动过</span></div></div>' +
+          '<button class="btn btn-ghost btn-icon btn-sm cv-menu" data-menu aria-label="画布操作">' + icon('more') + '</button></div>' +
+      '</article>';
+    }
+    function render() {
+      grid.innerHTML = CANVASES.map(card).join('');
+      CANVASES.forEach(function (c) { delete c._new; });
+      $('#count').textContent = CANVASES.length + ' 个画布 · 按最近动过排序';
+    }
+
+    grid.addEventListener('click', function (e) {
+      var art = e.target.closest('.cv'); if (!art) return;
+      var c = CANVASES.filter(function (x) { return x.id === art.dataset.id; })[0];
+      if (e.target.closest('[data-menu]')) {
+        e.preventDefault();
+        showMenu(e.target.closest('[data-menu]'), [
+          { label: '打开', icon: 'arrow-right', onClick: function () { open(c); } },
+          { label: '重命名', icon: 'edit', onClick: function () { rename(art, c); } },
+          { sep: true },
+          { label: '删除（移到回收站）', icon: 'trash', danger: true, onClick: function () { remove(c); } }
+        ]);
+        return;
+      }
+      if (e.target.closest('.cv-link') && !c.href) { e.preventDefault(); open(c); }
+    });
+    function open(c) {
+      if (c.href) location.href = c.href;
+      else toast('原型里只做了「新年广告片」这张画布的内容', { action: '去看看', onAction: function () { location.href = 'canvas.html'; } });
+    }
+    function rename(art, c) {
+      var h = art.querySelector('.cv-title');
+      var input = document.createElement('input');
+      input.className = 'input cv-rename'; input.value = c.title; input.maxLength = 30;
+      h.replaceWith(input); input.focus(); input.select();
+      var done = false;
+      function fin(save) {
+        if (done) return; done = true;
+        var v = input.value.trim();
+        if (save && v && v !== c.title) { c.title = v; toast('已改名为「' + esc(v) + '」'); }
+        render();
+      }
+      input.onkeydown = function (e) { if (e.key === 'Enter') fin(true); if (e.key === 'Escape') fin(false); };
+      input.onblur = function () { fin(true); };
+    }
+    function remove(c) {
+      confirmBox({
+        title: '删除「' + esc(c.title) + '」？',
+        body: '里面的 ' + c.nodes + ' 个节点和图片副本会一起移到工作文件夹的回收站目录，不是真删：<br><span class="mono" style="font-size:12px">D:\\同步盘\\提示词画布\\.trash\\' + c.id + '</span>',
+        ok: '移到回收站', danger: true,
+        onOk: function () {
+          var i = CANVASES.indexOf(c);
+          CANVASES.splice(i, 1); render();
+          toast('「' + esc(c.title) + '」已移到回收站', { action: '撤销', onAction: function () { CANVASES.splice(i, 0, c); render(); } });
+        }
+      });
+    }
+
+    var dlg = $('#dlgNew');
+    $('#btnNew').onclick = function () { $('#newTitle').value = ''; $('#newTitle').classList.remove('is-error'); $('#newHint').className = 'hint'; $('#newHint').textContent = '一个创作项目一张画布，建好后在里面建节点。'; dlg.showModal(); };
+    $('#newOk').onclick = function (e) {
+      var v = $('#newTitle').value.trim();
+      if (!v) { e.preventDefault(); $('#newTitle').classList.add('is-error'); $('#newHint').className = 'hint is-error'; $('#newHint').textContent = '先起个名字'; $('#newTitle').focus(); }
+    };
+    dlg.addEventListener('close', function () {
+      if (dlg.returnValue !== 'ok') return;
+      var v = $('#newTitle').value.trim(); if (!v) return;
+      CANVASES.unshift({ id: 'cv-' + Math.random().toString(16).slice(2, 8), title: v, nodes: 0, when: '刚刚', cover: null, _new: true });
+      render();
+      toast('建好了「' + esc(v) + '」');
+    });
+
+    render();
+  </script>
+</body>
+</html>

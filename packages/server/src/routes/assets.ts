@@ -5,12 +5,14 @@ import path from 'node:path';
 import { makeCollage, type CollageInput } from '../assets/collage';
 import { folderTree, isSupportedImage, listFolder, searchAssets } from '../assets/scan';
 import { thumbnail } from '../assets/thumbs';
-import { addAssetFolder, readConfig, removeAssetFolder, setLastCollageFolder } from '../config';
+import { addAssetFolder, readConfig, removeAssetFolder, requireWorkFolder, setLastCollageFolder } from '../config';
 import { HttpError } from '../httpError';
+import { imageLongSide } from '../llm/imageLongSide';
 import { pickFolder } from '../native/pickFolder';
-import { revealInFolder } from '../native/reveal';
 import { allowedPath, isInside } from '../paths';
-import { bool, finiteNumber, text } from './validate';
+import { readCanvas } from '../store/canvases';
+import { importImage } from '../store/images';
+import { bool, fileName, finiteNumber, text, uuid } from './validate';
 
 export function assetRoutes(configDir: string): express.Router {
   const router = express.Router();
@@ -37,29 +39,31 @@ export function assetRoutes(configDir: string): express.Router {
     res.json({ path: picked });
   });
 
-  // 拼图：把几张图拼成一张大图存进选好的文件夹
+  // 拼图：把几张图拼成一张大图存进选好的文件夹。带了 canvasId 和 nodeId 时顺手复制进画布，前端再放进槽位
   router.post('/assets/collage', async (req, res) => {
     const input = collageInput(req.body);
     const files = await Promise.all(input.files.map((file) => (file === null ? null : allowedPath(configDir, file))));
     const folder = await collageFolder(configDir, pickedFolders, req.body?.folder);
-    const made = await makeCollage(folder, { ...input, files });
+    const name = req.body?.name === undefined ? undefined : collageName(req.body.name);
+    const target = req.body?.canvasId === undefined ? null : { canvasId: uuid(req.body.canvasId), nodeId: uuid(req.body?.nodeId) };
+    const work = target ? await requireWorkFolder(configDir) : null;
+    if (target) await readCanvas(work!, target.canvasId);
+    const made = await makeCollage(folder, { ...input, files }, name);
     await setLastCollageFolder(configDir, folder);
     const { assetFolders } = await readConfig(configDir);
-    res.json({ ...made, folder, inLibrary: assetFolders.some((root) => isInside(root, folder)) });
-  });
-
-  // 上传清单里的「在资源管理器中显示」
-  router.post('/assets/reveal', async (req, res) => {
-    revealInFolder(await allowedPath(configDir, req.body?.path));
-    res.status(204).end();
+    const image = target ? await importImage(work!, target.canvasId, made.path, await imageLongSide(configDir, work!, target.canvasId, target.nodeId)) : undefined;
+    res.json({ ...made, folder, inLibrary: assetFolders.some((root) => isInside(root, folder)), ...(image && { image }) });
   });
 
   router.get('/assets/tree', async (req, res) => {
     res.json(await folderTree(await allowedPath(configDir, req.query.root), req.query.refresh === '1'));
   });
 
+  // 列一个文件夹里（含子文件夹）的全部图
   router.get('/assets/list', async (req, res) => {
-    res.json(await listFolder(await allowedPath(configDir, req.query.folder), req.query.refresh === '1'));
+    const folder = await allowedPath(configDir, req.query.folder);
+    const root = (await readConfig(configDir)).assetFolders.find((r) => isInside(r, folder)) ?? folder;
+    res.json(await listFolder(root, folder, req.query.refresh === '1'));
   });
 
   router.get('/assets/search', async (req, res) => {
@@ -76,14 +80,22 @@ export function assetRoutes(configDir: string): express.Router {
   return router;
 }
 
-// 存到哪：刚在系统窗口里选的随便存；手填的只能填库里或工作文件夹里的
+// 存到哪：刚在系统窗口里选的、上次存过的随便存；别的只能是库里或工作文件夹里的
 async function collageFolder(configDir: string, picked: Set<string>, value: unknown): Promise<string> {
   if (typeof value !== 'string' || !path.isAbsolute(value.trim())) throw new HttpError(400, '存到哪个文件夹要填完整路径');
   const folder = path.resolve(value.trim());
-  if (!picked.has(folder)) await allowedPath(configDir, folder);
+  const { lastCollageFolder } = await readConfig(configDir);
+  if (!picked.has(folder) && folder !== lastCollageFolder) await allowedPath(configDir, folder);
   const stat = await fs.stat(folder).catch(() => null);
   if (!stat?.isDirectory()) throw new HttpError(400, `找不到这个文件夹：${folder}`);
   return folder;
+}
+
+// 拼图的文件名：不带路径，不是 .jpg 结尾就补上
+function collageName(value: unknown): string {
+  const name = fileName(value);
+  if (/[<>:"|?*]/.test(name)) throw new HttpError(400, '文件名里不能有 < > : " | ? * 这些字符');
+  return /\.jpe?g$/i.test(name) ? name.replace(/\.jpe?g$/i, '.jpg') : `${name}.jpg`;
 }
 
 function collageInput(body: unknown): CollageInput {

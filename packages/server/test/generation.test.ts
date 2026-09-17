@@ -1,4 +1,4 @@
-import { activePath, directionDraft, type ChatNode, type Message } from '@media-agent/shared';
+import { activePath, directionDraft, type ChatNode, type Message, type PromptTranslation } from '@media-agent/shared';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -106,17 +106,22 @@ describe('发送消息', () => {
     expect(reply.text).toBe('');
     expect(reply.error).toMatch(/^HTTP 500：.*报错/);
     expect((await getNode()).messages[reply.id].error).toBe(reply.error);
+    const card = async () => (await t.ok('GET', `/canvases/${canvasId}`)).nodes.find((n: { id: string }) => n.id === nodeId);
+    expect(await card()).toMatchObject({ failed: true, generating: false, duration: 8, aspectRatio: '16:9' });
 
     const retry = await t.stream(`${nodeUrl}/messages/${reply.id}/regenerate`, {});
     expect(lastEvent(retry).type).toBe('done');
     expect((lastEvent(retry) as { message: Message }).message.parsed?.title).toBe('测试标题');
     expect((await getNode()).title).toBe('测试标题');
+    expect(await card()).toMatchObject({ failed: false });
   });
 
-  it('停止：保留已收到的部分，不算失败；生成中再发返回 409', async () => {
+  it('停止：保留已收到的部分，不算失败，记下是叫停的；生成中再发返回 409，卡片和首页都知道在生成', async () => {
     const sending = send('慢一点');
     await sleep(1300);
     expect((await t.call('POST', `${nodeUrl}/send`, { parentId: null, text: '又一个' })).status).toBe(409);
+    expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes[0]).toMatchObject({ id: nodeId, generating: true });
+    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, generating: 1 }]);
     expect((await t.ok('POST', `${nodeUrl}/stop`)).stopped).toBe(true);
 
     const { events, reply } = await sending;
@@ -124,7 +129,8 @@ describe('发送消息', () => {
     expect(reply.error).toBeUndefined();
     expect(reply.text.length).toBeGreaterThan(0);
     expect(reply.text).not.toContain('</prompt>');
-    expect((await getNode()).messages[reply.id].text).toBe(reply.text);
+    expect(reply.stopped).toBe(true);
+    expect((await getNode()).messages[reply.id]).toMatchObject({ text: reply.text, stopped: true });
     expect((await t.ok('POST', `${nodeUrl}/stop`)).stopped).toBe(false);
   });
 });
@@ -142,6 +148,7 @@ describe('fork', () => {
     expect(forked).toMatchObject({
       parentNodeId: nodeId,
       forkedFromMessageId: first.reply.id,
+      copiedCount: 2,
       title: '测试标题 · 分支',
       titleIsManual: false,
       modelConfigId: 'mock',
@@ -155,8 +162,8 @@ describe('fork', () => {
     const second: ChatNode = await t.ok('POST', `${nodeUrl}/fork`, { messageId: first.reply.id });
     const detail = await t.ok('GET', `/canvases/${canvasId}`);
     const layout = (id: string) => detail.nodes.find((n: { id: string }) => n.id === id);
-    expect([layout(forked.id).x, layout(forked.id).y]).toEqual([420, 50]);
-    expect([layout(second.id).x, layout(second.id).y]).toEqual([420, 290]);
+    expect([layout(forked.id).x, layout(forked.id).y]).toEqual([444, 50]);
+    expect([layout(second.id).x, layout(second.id).y]).toEqual([444, 280]);
 
     const reply = await send('继续', first.reply.id, `/canvases/${canvasId}/nodes/${forked.id}`);
     expect(reply.reply.text).toContain('历史消息 3 条');
@@ -166,20 +173,51 @@ describe('fork', () => {
     const { events } = await send('写一个');
     const user = (events[0] as { message: Message }).message;
     const forked: ChatNode = await t.ok('POST', `${nodeUrl}/fork`, { messageId: user.id });
-    expect([forked.messages, forked.rootIds, forked.draft]).toEqual([{}, [], '写一个']);
+    expect([forked.messages, forked.rootIds, forked.draft, forked.copiedCount]).toEqual([{}, [], '写一个', 0]);
   });
 });
 
 describe('画布和节点的增删改查', () => {
-  it('画布列表、改名、删除进 .trash', async () => {
+  it('画布列表带封面和生成数、改名、删除进 .trash、撤销删除', async () => {
     await t.ok('PATCH', `/canvases/${canvasId}`, { title: '改过的画布' });
-    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1 }]);
+    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1, cover: null, generating: 0 }]);
+    await t.addImage(canvasId, '#ff0000');
+    await sleep(5);
+    const latest = await t.addImage(canvasId, '#00ff00');
+    expect((await t.ok('GET', '/canvases'))[0].cover).toBe(latest);
 
-    expect((await t.call('DELETE', `/canvases/${canvasId}`)).status).toBe(204);
+    const { trash } = await t.ok('DELETE', `/canvases/${canvasId}`);
     expect(await t.ok('GET', '/canvases')).toEqual([]);
-    const trash = await fs.readdir(path.join(t.work, '.trash'));
-    expect(trash.some((name) => name.endsWith(`-canvas-${canvasId}`))).toBe(true);
+    expect(trash).toMatch(new RegExp(`-canvas-${canvasId}$`));
+    expect(await fs.readdir(path.join(t.work, '.trash'))).toContain(trash);
+
+    expect(await t.ok('POST', '/canvases/restore', { trash })).toEqual({ id: canvasId });
+    expect(await t.ok('GET', '/canvases')).toMatchObject([{ id: canvasId, title: '改过的画布', nodeCount: 1 }]);
+    expect((await t.call('POST', '/canvases/restore', { trash })).status).toBe(404);
+    expect((await t.call('POST', '/canvases/restore', { trash: '../canvases' })).status).toBe(400);
     expect((await t.call('GET', '/canvases/not-a-uuid')).status).toBe(400);
+  });
+
+  it('生成中删画布：等回复存完再挪进回收站，原处不留文件夹，撤销后回复还在', async () => {
+    const sending = send('慢一点');
+    await sleep(1300);
+    const { trash } = await t.ok('DELETE', `/canvases/${canvasId}`);
+    const { reply } = await sending;
+    expect(reply.stopped).toBe(true);
+    await sleep(1100);
+    expect(await fs.readdir(path.join(t.work, 'canvases'))).toEqual([]);
+    expect(await t.ok('POST', '/canvases/restore', { trash })).toEqual({ id: canvasId });
+    expect((await getNode()).messages[reply.id]).toMatchObject({ text: reply.text, stopped: true });
+  });
+
+  it('生成中删节点：等回复存完再挪进回收站，撤销后回复完整、标着叫停', async () => {
+    const sending = send('慢一点');
+    await sleep(1300);
+    const { trash } = await t.ok('DELETE', nodeUrl);
+    const { reply } = await sending;
+    expect(reply.stopped).toBe(true);
+    expect(await t.ok('POST', `/canvases/${canvasId}/nodes/restore`, { trash })).toEqual({ restored: [nodeId] });
+    expect((await getNode()).messages[reply.id]).toMatchObject({ text: reply.text, stopped: true });
   });
 
   it('删除节点连同全部子孙移到 .trash，画布上的位置一起记下；折叠状态能保存', async () => {
@@ -235,6 +273,33 @@ describe('提示词框', () => {
     expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes[0].summary).toBe('改过的概述');
 
     expect((await t.call('POST', `${nodeUrl}/messages/${reply.id}/edit-prompt`, { promptIndex: 3, text: 'x' })).status).toBe(404);
+  });
+
+  it('翻译：只把框里的提示词和要求发给模型，译文存进回复；同一个框同一种语言再翻就换掉；手动改了这个框，新版本不带它的译文', async () => {
+    const { reply } = await send('写一个');
+    const url = `${nodeUrl}/messages/${reply.id}/translate`;
+    const box = reply.parsed!.prompts[0].text;
+
+    const first: PromptTranslation = await t.ok('POST', url, { promptIndex: 0, language: '英文', instruction: ' 台词也翻译 ' });
+    expect(first).toMatchObject({ promptIndex: 0, language: '英文', instruction: '台词也翻译', modelConfigId: 'mock', modelName: 'mock-model' });
+    expect(first.text).toBe(`译文（英文），按要求：台词也翻译\n${box}`);
+    expect(first.usage?.completionTokens).toBeGreaterThan(0);
+
+    await t.ok('POST', url, { promptIndex: 0, language: '日文' });
+    const again: PromptTranslation = await t.ok('POST', url, { promptIndex: 0, language: '英文' });
+    expect(again.text).toBe(`译文（英文）\n${box}`);
+    expect((await getNode()).messages[reply.id].translations!.map((tr) => [tr.language, tr.text])).toEqual([
+      ['日文', `译文（日文）\n${box}`],
+      ['英文', `译文（英文）\n${box}`],
+    ]);
+
+    expect((await t.call('POST', url, { promptIndex: 3, language: '英文' })).status).toBe(404);
+    expect((await t.call('POST', url, { promptIndex: 0, language: '法文' })).status).toBe(400);
+
+    const node: ChatNode = await t.ok('POST', `${nodeUrl}/messages/${reply.id}/edit-prompt`, { promptIndex: 0, text: 'summary:\n改过的概述' });
+    const edited = Object.values(node.messages).find((m) => m.editedFromMessageId === reply.id)!;
+    expect(edited.translations).toBeUndefined();
+    expect(node.messages[reply.id].translations).toHaveLength(2);
   });
 
   it('回复角落点提示词名，读到的是发这条时的那一版，之后改了也不影响', async () => {

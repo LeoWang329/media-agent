@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../httpError';
+import { isInside } from '../paths';
 
 const SUPPORTED = new Set(SUPPORTED_IMAGE_EXTENSIONS);
 // 这些格式列出来但灰显「不支持」
@@ -26,21 +27,6 @@ async function toAssetFile(file: string): Promise<AssetFile | null> {
   return { path: file, name, size: stat.size, mtime: stat.mtimeMs, supported: isSupportedImage(name) };
 }
 
-const listings = new Map<string, { scannedAt: number; files: AssetFile[] }>();
-
-// 一个文件夹下直接放着的图片，按文件名排序
-export async function listFolder(folder: string, refresh: boolean): Promise<AssetFile[]> {
-  const cached = listings.get(folder);
-  if (cached && !refresh && Date.now() - cached.scannedAt < RESCAN_AFTER) return cached.files;
-  const entries = await fs.readdir(folder, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
-    throw err.code === 'ENOENT' ? new HttpError(404, `找不到这个文件夹：${folder}`) : err;
-  });
-  const found = await Promise.all(entries.filter((e) => e.isFile() && isListed(e.name)).map((e) => toAssetFile(path.join(folder, e.name))));
-  const files = found.filter((f): f is AssetFile => f !== null).sort(byName);
-  listings.set(folder, { scannedAt: Date.now(), files });
-  return files;
-}
-
 type RootIndex = { scannedAt: number; tree: FolderTree; files: { path: string; name: string }[] };
 const indexes = new Map<string, RootIndex>();
 
@@ -51,11 +37,16 @@ async function indexRoot(root: string, refresh: boolean): Promise<RootIndex> {
   const files: RootIndex['files'] = [];
   const walk = async (dir: string): Promise<FolderTree> => {
     const entries: Dirent[] = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    let count = 0;
     for (const entry of entries) {
-      if (entry.isFile() && isListed(entry.name)) files.push({ path: path.join(dir, entry.name), name: entry.name });
+      if (!entry.isFile() || !isListed(entry.name)) continue;
+      files.push({ path: path.join(dir, entry.name), name: entry.name });
+      count += 1;
     }
     const folders = entries.filter((e) => e.isDirectory()).sort((a, b) => collator.compare(a.name, b.name));
-    return { path: dir, name: path.basename(dir) || dir, children: await Promise.all(folders.map((e) => walk(path.join(dir, e.name)))) };
+    const children = await Promise.all(folders.map((e) => walk(path.join(dir, e.name))));
+    count += children.reduce((sum, child) => sum + child.count, 0);
+    return { path: dir, name: path.basename(dir) || dir, count, children };
   };
   const index = { scannedAt: Date.now(), tree: await walk(root), files };
   indexes.set(root, index);
@@ -64,6 +55,36 @@ async function indexRoot(root: string, refresh: boolean): Promise<RootIndex> {
 
 export async function folderTree(root: string, refresh: boolean): Promise<FolderTree> {
   return (await indexRoot(root, refresh)).tree;
+}
+
+const STAT_BATCH = 32;
+
+// 读文件夹出错时给人看的原因
+function unreadable(folder: string, err: NodeJS.ErrnoException): HttpError {
+  if (err.code === 'ENOENT') return new HttpError(404, `找不到这个文件夹：${folder}`);
+  if (err.code === 'EPERM' || err.code === 'EACCES') {
+    return new HttpError(403, `系统拒绝访问（${err.code}）。可能是同步盘还没把它下载到这台电脑，或者当前账户没有读取权限。`);
+  }
+  return new HttpError(500, `读不了这个文件夹：${err.message}`);
+}
+
+const listings = new Map<string, { scannedAt: number; files: AssetFile[] }>();
+
+// 一个文件夹里（含子文件夹）的全部图片，按文件名排序。root 是它所在的导入文件夹，文件清单从 root 的索引里取
+export async function listFolder(root: string, folder: string, refresh: boolean): Promise<AssetFile[]> {
+  const cached = listings.get(folder);
+  if (cached && !refresh && Date.now() - cached.scannedAt < RESCAN_AFTER) return cached.files;
+  await fs.readdir(folder).catch((err: NodeJS.ErrnoException) => {
+    throw unreadable(folder, err);
+  });
+  const inside = (await indexRoot(root, refresh)).files.filter((file) => isInside(folder, file.path));
+  const found: (AssetFile | null)[] = [];
+  for (let i = 0; i < inside.length; i += STAT_BATCH) {
+    found.push(...(await Promise.all(inside.slice(i, i + STAT_BATCH).map((file) => toAssetFile(file.path)))));
+  }
+  const files = found.filter((f): f is AssetFile => f !== null).sort(byName);
+  listings.set(folder, { scannedAt: Date.now(), files });
+  return files;
 }
 
 // 按文件名搜全部导入的文件夹：不区分大小写，子串匹配，最多 200 条

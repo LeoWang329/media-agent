@@ -1,166 +1,155 @@
 import type { AssetFile, FolderTree } from '@media-agent/shared';
 import { create } from 'zustand';
 import { api } from '../api';
+import { trackWrite } from '../ui/saveState';
+import { toast } from '../ui/toast';
 
 type AssetState = {
   roots: string[];
-  trees: Record<string, FolderTree>; // 展开过的根文件夹的子文件夹树
-  expanded: Record<string, boolean>;
+  trees: Record<string, FolderTree>; // 每个导入文件夹的子文件夹树，带张数
+  scanning: Record<string, boolean>; // 正在扫的导入文件夹
   folder: string | null; // 网格里正在看的文件夹
-  files: AssetFile[];
+  files: AssetFile[] | null; // null：还在读
+  unreadable: string | null; // 读不了这个文件夹时的原因
   query: string;
   results: AssetFile[] | null; // 搜索结果；没在搜时为 null
-  selected: string[]; // 选中的图，按选中的先后
-  anchor: string | null; // Shift 连选的起点
-  pathInput: boolean; // 弹不出系统窗口时改用路径输入框
-  collage: boolean; // 拼图面板开着没有
-  error: string;
 
   load: () => Promise<void>;
-  pickFolder: () => Promise<void>;
+  openFolder: (folder: string, refresh?: boolean) => Promise<boolean>; // 读不了时返回 false
   addFolder: (path: string) => Promise<void>;
   removeFolder: (root: string) => Promise<void>;
-  toggleExpanded: (path: string, root: string) => Promise<void>;
-  openFolder: (folder: string, refresh?: boolean) => Promise<void>;
-  refresh: () => Promise<void>;
-  setQuery: (query: string) => void;
-  search: () => Promise<void>;
-  select: (path: string, mode: 'single' | 'toggle' | 'range') => void;
-  openCollage: () => void;
-  closeCollage: () => void;
+  rescan: (root: string) => Promise<void>;
+  search: (query: string) => Promise<void>;
+  refreshFolder: (folder: string) => Promise<void>; // 拼图存进库里之后，那个文件夹重新扫
 };
 
-const folderQuery = (folder: string, refresh: boolean) => new URLSearchParams({ folder, ...(refresh && { refresh: '1' }) });
+const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
 // folder 是 root 本身或它下面的子文件夹
-export const isUnder = (root: string, folder: string) => folder === root || folder.startsWith(`${root}\\`) || folder.startsWith(`${root}/`);
+export const isUnder = (root: string, folder: string) => {
+  const a = root.replace(/[\\/]+$/, '').toLowerCase();
+  const b = folder.toLowerCase();
+  return b === a || b.startsWith(`${a}\\`) || b.startsWith(`${a}/`);
+};
+
+export const rootOf = (roots: string[], folder: string) => roots.find((root) => isUnder(root, folder));
+
+// 树里所有文件夹，根在前、子文件夹按层级往下
+export function flattenTree(tree: FolderTree): FolderTree[] {
+  return [tree, ...tree.children.flatMap(flattenTree)];
+}
 
 export const useAssetStore = create<AssetState>((set, get) => {
-  const attempt = async (task: () => Promise<void>) => {
+  const loadTree = async (root: string, refresh = false) => {
+    set((s) => ({ scanning: { ...s.scanning, [root]: true } }));
     try {
-      set({ error: '' });
-      await task();
-    } catch (err) {
-      set({ error: (err as Error).message });
+      const tree = await api<FolderTree>(`/assets/tree?${new URLSearchParams({ root, ...(refresh && { refresh: '1' }) })}`);
+      set((s) => ({ trees: { ...s.trees, [root]: tree } }));
+      return tree;
+    } finally {
+      set((s) => ({ scanning: { ...s.scanning, [root]: false } }));
     }
   };
 
-  const loadTree = async (root: string, refresh = false) => {
-    const tree = await api<FolderTree>(`/assets/tree?${new URLSearchParams({ root, ...(refresh && { refresh: '1' }) })}`);
-    set((s) => ({ trees: { ...s.trees, [root]: tree } }));
-  };
-
+  let listSeq = 0;
   let searchSeq = 0;
 
   return {
     roots: [],
     trees: {},
-    expanded: {},
+    scanning: {},
     folder: null,
-    files: [],
+    files: null,
+    unreadable: null,
     query: '',
     results: null,
-    selected: [],
-    anchor: null,
-    pathInput: false,
-    collage: false,
-    error: '',
 
-    // 打开画布页时读一次导入过的文件夹；网格默认显示第一个
-    load: () =>
-      attempt(async () => {
+    // 打开资产库时读一遍导入过的文件夹；网格停在上次看的文件夹，没有就看第一个
+    load: async () => {
+      try {
         const roots = await api<string[]>('/assets/folders');
         set({ roots });
+        await Promise.all(roots.map((root) => loadTree(root).catch(() => undefined)));
         const { folder } = get();
-        if (folder && roots.some((root) => isUnder(root, folder))) await get().openFolder(folder);
+        if (folder && rootOf(roots, folder)) await get().openFolder(folder);
         else if (roots[0]) await get().openFolder(roots[0]);
-        else set({ folder: null, files: [] });
-      }),
+        else set({ folder: null, files: [], unreadable: null });
+      } catch (err) {
+        failed(err);
+      }
+    },
 
-    pickFolder: () =>
-      attempt(async () => {
-        try {
-          const { path } = await api<{ path: string | null }>('/assets/pick-folder', { method: 'POST' });
-          if (path) await get().addFolder(path);
-        } catch (err) {
-          set({ pathInput: true });
-          throw err;
-        }
-      }),
+    openFolder: async (folder, refresh = false) => {
+      const seq = ++listSeq;
+      set({ folder, unreadable: null, ...(get().folder !== folder && { files: null }) });
+      try {
+        const files = await api<AssetFile[]>(`/assets/list?${new URLSearchParams({ folder, ...(refresh && { refresh: '1' }) })}`);
+        if (seq === listSeq) set({ files });
+        return true;
+      } catch (err) {
+        if (seq === listSeq) set({ files: [], unreadable: (err as Error).message });
+        return false;
+      }
+    },
 
-    addFolder: (path) =>
-      attempt(async () => {
-        const before = get().roots;
-        const roots = await api<string[]>('/assets/folders', { method: 'POST', body: { path } });
-        set({ roots, pathInput: false });
-        const added = roots.find((root) => !before.includes(root));
-        if (added) await get().openFolder(added);
-      }),
+    addFolder: async (path) => {
+      const before = get().roots;
+      const roots = await trackWrite(api<string[]>('/assets/folders', { method: 'POST', body: { path } }));
+      const added = roots.find((root) => !before.includes(root)) ?? rootOf(roots, path) ?? path;
+      set({ roots, folder: added, files: null, unreadable: null, query: '', results: null });
+      const tree = await loadTree(added, true).catch(() => null);
+      await get().openFolder(added, true);
+      toast(`「${added}」导入好了，${tree?.count ?? get().files?.length ?? 0} 张图`);
+    },
 
-    removeFolder: (root) =>
-      attempt(async () => {
-        const roots = await api<string[]>('/assets/folders', { method: 'DELETE', body: { path: root } });
-        set({ roots });
+    removeFolder: async (root) => {
+      try {
+        const roots = await trackWrite(api<string[]>('/assets/folders', { method: 'DELETE', body: { path: root } }));
+        set((s) => {
+          const { [root]: _, ...trees } = s.trees;
+          return { roots, trees };
+        });
         const { folder } = get();
-        if (folder && isUnder(root, folder)) {
+        if (!folder || isUnder(root, folder)) {
           if (roots[0]) await get().openFolder(roots[0]);
-          else set({ folder: null, files: [] });
+          else set({ folder: null, files: [], unreadable: null });
         }
-      }),
+        toast('已移除，文件都还在原处');
+      } catch (err) {
+        failed(err);
+      }
+    },
 
-    toggleExpanded: (path, root) =>
-      attempt(async () => {
-        const open = !get().expanded[path];
-        set((s) => ({ expanded: { ...s.expanded, [path]: open } }));
-        if (open && !get().trees[root]) await loadTree(root);
-      }),
+    rescan: async (root) => {
+      try {
+        await loadTree(root, true);
+        const { folder } = get();
+        if (folder && isUnder(root, folder)) await get().openFolder(folder, true);
+      } catch (err) {
+        failed(err);
+      }
+    },
 
-    openFolder: (folder, refresh = false) =>
-      attempt(async () => {
-        set({ folder, query: '', results: null });
-        const files = await api<AssetFile[]>(`/assets/list?${folderQuery(folder, refresh)}`);
-        if (get().folder === folder) set({ files });
-      }),
+    search: async (query) => {
+      const q = query.trim();
+      set({ query: q });
+      if (!q) return set({ results: null });
+      const seq = ++searchSeq;
+      try {
+        const results = await api<AssetFile[]>(`/assets/search?${new URLSearchParams({ q })}`);
+        if (seq === searchSeq && get().query === q) set({ results });
+      } catch (err) {
+        failed(err);
+      }
+    },
 
-    // 「刷新」重新扫当前文件夹和它所在的那棵树
-    refresh: () =>
-      attempt(async () => {
-        const { folder, roots, trees, query } = get();
-        if (query.trim()) return get().search();
-        if (!folder) return;
-        const root = roots.find((r) => isUnder(r, folder));
-        await Promise.all([get().openFolder(folder, true), root && trees[root] ? loadTree(root, true) : undefined]);
-      }),
-
-    setQuery: (query) => set(query.trim() ? { query } : { query, results: null }),
-
-    // 按搜索框里现在的文字搜；输入框停手一会儿再调
-    search: () =>
-      attempt(async () => {
-        const { query } = get();
-        if (!query.trim()) return;
-        const seq = ++searchSeq;
-        const results = await api<AssetFile[]>(`/assets/search?${new URLSearchParams({ q: query })}`);
-        if (seq === searchSeq && get().query === query) set({ results });
-      }),
-
-    // 单击只选这一张；Ctrl 加选或取消；Shift 从上次点的那张连选到这张
-    select: (path, mode) =>
-      set((s) => {
-        if (mode === 'toggle') {
-          const selected = s.selected.includes(path) ? s.selected.filter((p) => p !== path) : [...s.selected, path];
-          return { selected, anchor: path };
-        }
-        if (mode === 'range' && s.anchor) {
-          const list = (s.results ?? s.files).filter((f) => f.supported).map((f) => f.path);
-          const from = list.indexOf(s.anchor);
-          const to = list.indexOf(path);
-          if (from >= 0 && to >= 0) return { selected: list.slice(Math.min(from, to), Math.max(from, to) + 1) };
-        }
-        return { selected: [path], anchor: path };
-      }),
-
-    openCollage: () => set({ collage: true }),
-    closeCollage: () => set({ collage: false }),
+    refreshFolder: async (folder) => {
+      const root = rootOf(get().roots, folder);
+      if (!root) return;
+      await loadTree(root, true).catch(() => undefined);
+      // 网格列的是文件夹连子文件夹的图，正在看的文件夹包含存图的文件夹才要重读
+      const current = get().folder;
+      if (current && isUnder(current, folder)) await get().openFolder(current, true);
+    },
   };
 });

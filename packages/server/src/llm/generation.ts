@@ -10,12 +10,20 @@ import { streamChatCompletion } from './chatStream';
 
 const PERSIST_INTERVAL = 1000;
 
-const running = new Map<string, AbortController>();
+// done：这次生成连同收尾的落盘全部做完
+const running = new Map<string, { controller: AbortController; done: Promise<void> }>();
+
+export const isGenerating = (nodeId: string) => running.has(nodeId);
 
 export function stopGeneration(nodeId: string): boolean {
-  const controller = running.get(nodeId);
-  controller?.abort();
-  return Boolean(controller);
+  const run = running.get(nodeId);
+  run?.controller.abort();
+  return Boolean(run);
+}
+
+// 叫停这些节点的生成，等它们把已经写出来的部分存完
+export async function stopGenerations(nodeIds: string[]): Promise<void> {
+  await Promise.all(nodeIds.map((id) => (stopGeneration(id) ? running.get(id)?.done : undefined)));
 }
 
 export type GenerationTarget = { configDir: string; work: string; canvasId: string; nodeId: string };
@@ -27,7 +35,8 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
   const { configDir, work, canvasId, nodeId } = target;
   if (running.has(nodeId)) throw new HttpError(409, '这个节点正在生成回复，先停止或等它写完');
   const controller = new AbortController();
-  running.set(nodeId, controller);
+  let finish!: () => void;
+  running.set(nodeId, { controller, done: new Promise((resolve) => (finish = resolve)) });
 
   try {
     let userMessage: Message | undefined;
@@ -98,8 +107,9 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       });
       if (usage) assistant = { ...assistant, usage };
     } catch (err) {
-      // 点了停止：保留已收到的部分，不算失败
-      if (!controller.signal.aborted) assistant = { ...assistant, text: '', error: (err as Error).message };
+      // 点了停止：保留已收到的部分，不算失败，记一下是叫停的
+      if (controller.signal.aborted) assistant = { ...assistant, stopped: true };
+      else assistant = { ...assistant, text: '', error: (err as Error).message };
     }
 
     try {
@@ -119,5 +129,6 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
     res.end();
   } finally {
     running.delete(nodeId);
+    finish();
   }
 }

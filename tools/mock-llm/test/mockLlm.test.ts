@@ -83,6 +83,14 @@ describe('mock-llm', () => {
     expect((await complete({ messages })).status).toBe(200);
   });
 
+  it('翻译：系统消息里写着「翻译成某种语言」时，第一行标出语言和要求，后面接原文', () => {
+    const translate = (system: string) => planReply([{ role: 'system', content: system }, userMessage('summary:\n测试概述')]).reply;
+    expect(translate('把用户发来的 MiniMax H3 视频提示词翻译成日文。')).toBe('译文（日文）\nsummary:\n测试概述');
+    expect(translate('把用户发来的 MiniMax H3 视频提示词翻译成英文。\n\n用户对这次翻译的要求（和上面冲突时以这里为准）：\n台词也翻译')).toBe(
+      '译文（英文），按要求：台词也翻译\nsummary:\n测试概述',
+    );
+  });
+
   it('「慢」每段间隔 500 毫秒，客户端断开后服务照常工作', async () => {
     const controller = new AbortController();
     const started = Date.now();

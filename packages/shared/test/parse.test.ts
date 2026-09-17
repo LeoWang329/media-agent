@@ -36,6 +36,14 @@ describe('parseReply', () => {
     expect(segments.map((s) => s.type)).toEqual(['text', 'prompt', 'text', 'prompt']);
   });
 
+  it('标签和正文写在同一行也认：开始标签后面的算框里第一行，结束标签前面的算最后一行、后面的算框外的话', () => {
+    const reply = ['说明', '<prompt label="方向一：慢推">subject_definitions:', '<Subject 1> 是 <Picture 1> 里的女生。', '', 'summary: 一</prompt>要改告诉我'].join('\n');
+    const { prompts, segments } = parseReply(reply);
+    expect(prompts).toEqual([{ index: 0, label: '方向一：慢推', text: 'subject_definitions:\n<Subject 1> 是 <Picture 1> 里的女生。\n\nsummary: 一', summary: '一' }]);
+    expect(segments.map((s) => (s.type === 'text' ? s.text : s.type))).toEqual(['说明', 'prompt', '要改告诉我']);
+    expect(parseReply('<prompt>summary: 一行写完</prompt>').prompts).toEqual([{ index: 0, text: 'summary: 一行写完', summary: '一行写完' }]);
+  });
+
   it('没有框时只有正文', () => {
     const { prompts, segments, title } = parseReply('这是回答。');
     expect(title).toBeUndefined();

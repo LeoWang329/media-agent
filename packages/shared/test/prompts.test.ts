@@ -40,6 +40,11 @@ describe('手动改提示词', () => {
     expect(changed).toContain('我假设她穿红衣服。');
   });
 
+  it('标签和正文写在同一行的框也能换，换完开始、结束标签各占一行', () => {
+    const inline = ['<prompt label="方向一">summary:', '第一个方向</prompt>', '后面的话'].join('\n');
+    expect(replacePromptText(inline, 0, 'summary:\n改过的')).toBe('<prompt label="方向一">\nsummary:\n改过的\n</prompt>\n后面的话');
+  });
+
   it('没有这个框时返回 null；没收尾的框不算一个框', () => {
     expect(replacePromptText(reply, 2, 'x')).toBeNull();
     expect(replacePromptText('<prompt>\n还没写完', 0, 'x')).toBeNull();

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>提示词画布 · 界面原型</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <script src="shared/app.js"></script>
+  <style>
+    .ix { max-width: 1080px; margin: 0 auto; padding: 56px 28px 72px; }
+    .ix-hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; margin-bottom: 48px; }
+    .ix-hero h1 { font-size: clamp(30px, 4vw, 44px); letter-spacing: -0.03em; }
+    .ix-hero p { color: var(--muted); font-size: 15px; margin-top: 14px; max-width: 46ch; }
+    .ix-hero .row { margin-top: 24px; flex-wrap: wrap; }
+    .ix-shot { position: relative; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; border: 1px solid var(--border); box-shadow: 0 30px 60px -30px oklch(0% 0 0 / .6); }
+    .ix-shot img { width: 100%; height: 100%; object-fit: cover; }
+    .ix-shot .strip { position: absolute; left: 14px; right: 14px; bottom: 14px; display: flex; gap: 6px; padding: 8px; border-radius: 12px; background: oklch(15% 0.01 255 / .72); backdrop-filter: blur(10px); }
+    .ix-shot .strip div { position: relative; flex: 1; aspect-ratio: 1; border-radius: 7px; overflow: hidden; }
+    .ix-shot .strip img { width: 100%; height: 100%; object-fit: cover; }
+    .ix-shot .strip .num-badge { position: absolute; left: 3px; top: 3px; }
+    .ix-list { border-top: 1px solid var(--border); }
+    .ix-row { display: grid; grid-template-columns: 48px 1fr auto; gap: 20px; padding: 22px 0; border-bottom: 1px solid var(--border); align-items: start; }
+    .ix-row .n { font-family: var(--font-mono); font-size: 13px; color: var(--muted); padding-top: 2px; }
+    .ix-row h2 { font-size: 17px; }
+    .ix-row h2 .mono { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 8px; letter-spacing: 0; }
+    .ix-row p { color: var(--muted); font-size: 13.5px; margin-top: 4px; max-width: 70ch; }
+    .ix-row ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); line-height: 1.8; }
+    .ix-row ul b { color: var(--fg); font-weight: 520; }
+    @media (max-width: 820px) { .ix-hero { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) {
+      .ix { padding: 28px 14px 48px; }
+      .ix-row { grid-template-columns: 1fr; gap: 8px; }
+      .ix-row .n { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <span class="brand"><span class="brand-mark" data-icon="logo"></span>提示词画布</span>
+    <span class="meta hide-sm">界面原型</span>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
+  </header>
+
+  <main class="ix">
+    <section class="ix-hero" data-od-id="overview-hero">
+      <div>
+        <h1>写 H3 视频提示词，<br>多留几条路，随时回头</h1>
+        <p>按 design-handoff.md 做的整套界面。一个人在自己电脑上用，电脑优先，平板和手机也能打开。默认暗色，右上角可以切亮色。</p>
+        <div class="row">
+          <a class="btn btn-primary btn-lg" href="canvas.html" data-od-id="cta-open-canvas">打开画布工作台</a>
+          <a class="btn btn-secondary btn-lg" href="setup.html">从第一次设置开始</a>
+        </div>
+      </div>
+      <div class="ix-shot" aria-hidden="true">
+        <img src="img/gen/a8-heroine-turn.jpg" alt="">
+        <div class="strip">
+          <div><img src="img/gen/a1-heroine-portrait.jpg" alt=""><span class="num-badge">1</span></div>
+          <div><img src="img/gen/a3-neon-alley.jpg" alt=""><span class="num-badge">2</span></div>
+          <div><img src="img/gen/a4-sodium-lamp.jpg" alt=""><span class="num-badge">3</span></div>
+          <div><img src="img/gen/c1-puddle-step.jpg" alt=""><span class="num-badge">4</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ix-list" data-od-id="screen-list">
+      <article class="ix-row">
+        <span class="n">01</span>
+        <div><h2>首次设置<span class="mono">setup.html</span></h2>
+          <p>第一次打开什么都没有：选工作文件夹，填一套模型配置，完成。</p>
+          <ul><li>路径填 <b class="mono">C:\Windows</b> 看不让写入的提示；不填密钥直接保存看报错</li><li>点「填本地假模型的地址」，再点测试连接</li></ul></div>
+        <a class="btn btn-secondary" href="setup.html">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">02</span>
+        <div><h2>首页 · 画布列表<span class="mono">home.html</span></h2>
+          <p>每个画布显示名字、几个节点、什么时候动过；可以新建、改名、删除（移到回收站）。</p></div>
+        <a class="btn btn-secondary" href="home.html">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">03</span>
+        <div><h2>画布工作台<span class="mono">canvas.html</span></h2>
+          <p>节点图铺满全屏，点节点从右边拉出对话面板。对话、版本、提示词框、9 个槽位、时长比例、输入框都在面板里。</p>
+          <ul>
+            <li>拖节点、<b>自动排整齐</b>、按 <b>Ctrl+Z</b> 撤销；「九宫格分镜试验」是折叠着的</li>
+            <li>点「<b>手持跟拍·一句台词</b>」看正在生成和叫停，点「<b>红伞版本</b>」看请求失败和重试</li>
+            <li>删掉或拖动槽位里的图，看编号怎么变、面板底部怎么预告下次自动附上的那句说明</li>
+            <li>在输入框按 <b>@</b> 把图插进句子；发一条带「三个方向」的消息看多个方向，带「报错」的看失败</li>
+          </ul></div>
+        <a class="btn btn-secondary" href="canvas.html">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">04</span>
+        <div><h2>资产库<span class="mono">canvas.html#assets</span></h2>
+          <p>在工作台里弹出。按文件夹浏览、按文件名搜全部文件夹、多选放进槽位；HEIC、GIF 标成用不了，「手机导出」文件夹演示读不了的情况。</p></div>
+        <a class="btn btn-secondary" href="canvas.html#assets">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">05</span>
+        <div><h2>上传清单<span class="mono">canvas.html#upload</span></h2>
+          <p>这里打开的是「方向一」：它写了不存在的 &lt;Picture 4&gt;，又没用到 3 号，两种提示都会出现。处理过的图和原文件已经不在的图，会写明该传程序存的那份。</p></div>
+        <a class="btn btn-secondary" href="canvas.html#upload">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">06</span>
+        <div><h2>拼图<span class="mono">canvas.html#collage</span></h2>
+          <p>行列 1 到 3、格子边长 1024 或 1536、可选编号；格子之间拖动互换，存好可以直接放进槽位。</p></div>
+        <a class="btn btn-secondary" href="canvas.html#collage">打开</a>
+      </article>
+      <article class="ix-row">
+        <span class="n">07</span>
+        <div><h2>设置<span class="mono">settings.html</span></h2>
+          <p>工作文件夹、模型配置（密钥只能录入，存好后不再显示）、系统提示词（自带三套的原文）、固定格式要求（只能看）。</p></div>
+        <a class="btn btn-secondary" href="settings.html">打开</a>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

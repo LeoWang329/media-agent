@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>设置 · 提示词画布</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <script src="shared/app.js"></script>
+  <script src="shared/model-form.js"></script>
+  <script src="shared/prompts-data.js"></script>
+  <style>
+    .st { max-width: 1240px; margin: 0 auto; padding: 28px 28px 64px; display: grid; grid-template-columns: 200px 1fr; gap: 32px; align-items: start; }
+    .st-nav { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 2px; }
+    .st-nav h1 { font-size: 24px; margin: 0 0 14px 10px; }
+    .st-nav a { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 8px; font-size: 13.5px; color: var(--muted); }
+    .st-nav a:hover { color: var(--fg); background: var(--fg-softer); }
+    .st-nav a[aria-current="page"] { color: var(--fg); background: var(--fg-soft); font-weight: 560; }
+    .st-main { min-width: 0; }
+    .st-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+    .st-head p { color: var(--muted); font-size: 13.5px; margin-top: 4px; max-width: 64ch; }
+    .split { display: grid; grid-template-columns: 280px 1fr; gap: 20px; align-items: start; }
+    .list { display: flex; flex-direction: column; gap: 6px; }
+    .li { display: block; width: 100%; text-align: left; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+    .li:hover { border-color: color-mix(in oklch, var(--fg) 24%, var(--border)); }
+    .li[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .li .t { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13.5px; }
+    .li .s { font-size: 12px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .li .tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 7px; }
+    .editor { padding: 20px 22px 22px; }
+    .editor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+    .editor-head h2 { flex: 1; min-width: 0; }
+    .prompt-area { min-height: 520px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.75; tab-size: 2; }
+    .ro { margin: 0; padding: 18px 20px; border-radius: 10px; background: var(--fg-softer); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 13px; line-height: 1.85; white-space: pre-wrap; word-break: break-word; }
+    .kv { border-top: 1px solid var(--border); }
+    .kv-row { display: grid; grid-template-columns: 170px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; align-items: center; }
+    .kv-row .k { color: var(--muted); }
+    .where { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+    .where .card { padding: 16px 18px; }
+    .where ul { margin: 10px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.9; }
+    .where h3 { display: flex; align-items: center; gap: 8px; }
+    @media (max-width: 960px) { .split { grid-template-columns: 1fr; } .list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } .li { min-width: 210px; } }
+    @media (max-width: 720px) {
+      .st { grid-template-columns: 1fr; padding: 16px 14px 48px; gap: 16px; }
+      .st-nav { position: static; flex-direction: row; overflow-x: auto; }
+      .st-nav h1 { display: none; }
+      .st-nav a { flex: none; }
+      .editor { padding: 16px 14px; }
+      .kv-row { grid-template-columns: 1fr; gap: 4px; }
+      .where { grid-template-columns: 1fr; }
+      .prompt-area { min-height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar" data-od-id="settings-appbar">
+    <a class="brand" href="home.html"><span class="brand-mark" data-icon="logo"></span>提示词画布</a>
+    <span class="muted hide-sm">/</span><span class="hide-sm">设置</span>
+    <span class="spacer"></span>
+    <span class="save-state" data-od-id="save-state"><span class="dot dot-ok"></span><span class="save-text">改动自动写入</span></span>
+    <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
+    <a class="btn btn-ghost" href="home.html" data-icon="home"><span class="hide-sm">回首页</span></a>
+  </header>
+
+  <div class="st">
+    <nav class="st-nav" aria-label="设置分类" data-od-id="settings-nav">
+      <h1>设置</h1>
+      <a href="#workdir" data-tab="workdir" data-icon="folder">工作文件夹</a>
+      <a href="#models" data-tab="models" data-icon="cpu">模型配置</a>
+      <a href="#prompts" data-tab="prompts" data-icon="doc">系统提示词</a>
+      <a href="#format" data-tab="format" data-icon="lock">固定格式要求</a>
+    </nav>
+    <main class="st-main" id="main" data-od-id="settings-main"></main>
+  </div>
+
+  <script>
+    var MODELS = [
+      { id: 'm1', name: '主力', model: 'MiniMax-M2', url: 'https://api.minimaxi.com/v1', keySet: true, longSide: 1600, price: { cur: '¥', inp: 2.1, out: 8.4, cache: 0.21 } },
+      { id: 'm2', name: '本地假模型', model: 'mock-llm', url: 'http://127.0.0.1:3799/v1', keySet: true, longSide: 1600, price: null },
+      { id: 'm3', name: '备用', model: 'deepseek-chat', url: 'https://api.deepseek.com/v1', keySet: false, longSide: 1280, price: { cur: '¥', inp: 2, out: 8, cache: 0.5 } }
+    ];
+    var PROMPTS = [
+      { name: 'ref2va', builtin: true, def: true, desc: '有参考图，图提供人物、场景、风格或分镜', text: PROMPT_TEXTS.ref2va },
+      { name: 'i2v', builtin: true, desc: '一张图当第一帧往后演', text: PROMPT_TEXTS.i2v },
+      { name: 't2v', builtin: true, desc: '纯文字，不用图', text: PROMPT_TEXTS.t2v },
+      { name: 'ref2va-台词多', desc: '自己建的：每个镜头尽量给一句台词', text: PROMPT_TEXTS.ref2va + '\n\n## 台词\n\n- 每个镜头尽量安排一句短台词，台词写在 <d> 里，前面标 [中文]。' }
+    ];
+    var selModel = 'm1', selPrompt = 'ref2va';
+    var main = $('#main');
+
+    function tab() { var h = location.hash.replace('#', ''); return ['workdir', 'models', 'prompts', 'format'].indexOf(h) >= 0 ? h : 'models'; }
+
+    function renderWorkdir() {
+      main.innerHTML =
+        '<div class="st-head"><div><h2>工作文件夹</h2><p>画布、系统提示词、图片副本和模型配置都存在这里。放在同步盘上，两台电脑轮流打开的是同一份。</p></div></div>' +
+        '<div class="card editor" data-od-id="workdir-card"><div class="kv">' +
+          '<div class="kv-row"><span class="k">路径</span><span class="row" style="flex-wrap:wrap"><span class="mono">D:\\同步盘\\提示词画布</span><span class="tag tag-ok">' + icon('check') + '能读写</span></span></div>' +
+          '<div class="kv-row"><span class="k">里面有</span><span>10 个画布 · 4 套系统提示词 · 3 套模型配置</span></div>' +
+        '</div><div class="row" style="margin-top:16px;flex-wrap:wrap">' +
+          '<button class="btn btn-secondary" id="wdChange">' + icon('folder') + '换一个文件夹…</button>' +
+          '<button class="btn btn-ghost" id="wdOpen">' + icon('external') + '在资源管理器里打开</button></div></div>' +
+        '<div class="where">' +
+          '<div class="card"><h3>' + icon('folder') + '存在工作文件夹，两台电脑共用</h3><ul><li>画布、节点对话和版本</li><li>放进过槽位的图片副本</li><li>系统提示词</li><li>模型配置（不含密钥）</li></ul></div>' +
+          '<div class="card"><h3>' + icon('lock') + '只存在这台电脑上</h3><ul><li>模型配置的密钥</li><li>资产库导入过哪些文件夹</li><li>资产库的缩略图</li></ul></div>' +
+        '</div>';
+      $('#wdChange').onclick = function () {
+        confirmBox({ title: '换工作文件夹？', body: '换过去以后，首页只显示新文件夹里的画布。现在这个文件夹里的东西不会动，换回来还在。', ok: '选新文件夹…', onOk: function () { toast('会打开系统的「选择文件夹」窗口'); } });
+      };
+      $('#wdOpen').onclick = function () { toast('已在资源管理器里打开 D:\\同步盘\\提示词画布'); };
+    }
+
+    function modelCard(m) {
+      return '<button class="li" data-model="' + m.id + '" aria-current="' + (m.id === selModel) + '">' +
+        '<span class="t">' + esc(m.name) + '</span>' +
+        '<span class="s mono">' + esc(m.model) + ' · ' + esc(m.url.replace(/^https?:\/\//, '')) + '</span>' +
+        '<span class="tags">' + (m.keySet ? '<span class="tag tag-ok">' + icon('key') + '密钥已配置</span>' : '<span class="tag tag-warn">' + icon('key') + '这台电脑还没填密钥</span>') +
+          (m.price ? '<span class="tag mono">' + m.price.cur + m.price.inp + ' / ' + m.price.cur + m.price.out + '</span>' : '<span class="tag">没填价格</span>') + '</span></button>';
+    }
+    function renderModels() {
+      var m = MODELS.filter(function (x) { return x.id === selModel; })[0] || MODELS[0];
+      if (m) selModel = m.id;
+      main.innerHTML =
+        '<div class="st-head"><div><h2>模型配置</h2><p>决定用哪个 AI 写提示词。可以存好几套，每个节点在自己的对话面板里选用哪套。</p></div>' +
+        '<button class="btn btn-primary" id="mNew">' + icon('plus') + '新建配置</button></div>' +
+        '<div class="split"><div class="list" id="mList" data-od-id="model-config-list">' + MODELS.map(modelCard).join('') + '</div>' +
+        (m ? '<section class="card editor" data-od-id="model-config-editor"><div class="editor-head"><h2 id="mTitle">' + esc(m.name) + '</h2>' +
+          '<button class="btn btn-danger-ghost btn-sm" id="mDel">' + icon('trash') + '删除这套</button></div>' +
+          '<div id="mf">' + modelFormHTML(m) + '</div></section>' : '<p class="muted">还没有模型配置。</p>') + '</div>';
+      $('#mList').onclick = function (e) { var b = e.target.closest('[data-model]'); if (b) { selModel = b.dataset.model; renderModels(); } };
+      $('#mNew').onclick = function () {
+        var id = 'm' + (MODELS.length + 1) + Date.now().toString(36).slice(-3);
+        MODELS.push({ id: id, name: '新配置', model: '', url: '', keySet: false, longSide: 1600, price: null });
+        selModel = id; renderModels(); markSaved(); $('#mf-name').select();
+      };
+      if (!m) return;
+      bindModelForm($('#mf'), m, function () {
+        $('#mTitle').textContent = m.name || '（没起名）';
+        var card = $('[data-model="' + m.id + '"]');
+        var tmp = document.createElement('div'); tmp.innerHTML = modelCard(m); card.replaceWith(tmp.firstChild);
+        markSaved();
+      });
+      $('#mDel').onclick = function () {
+        confirmBox({ title: '删除「' + esc(m.name) + '」？', body: '用这套配置的节点，下次发消息前要重新选一套。已经发出去的消息不受影响。这台电脑上存的密钥也一起删掉。', ok: '删除', danger: true,
+          onOk: function () { MODELS = MODELS.filter(function (x) { return x !== m; }); selModel = MODELS[0] ? MODELS[0].id : null; renderModels(); markSaved(); toast('已删除'); } });
+      };
+    }
+
+    function promptCard(p) {
+      return '<button class="li" data-prompt="' + esc(p.name) + '" aria-current="' + (p.name === selPrompt) + '">' +
+        '<span class="t mono">' + esc(p.name) + '</span><span class="s">' + esc(p.desc) + '</span>' +
+        '<span class="tags">' + (p.builtin ? '<span class="tag">自带</span>' : '<span class="tag">自己建的</span>') + (p.def ? '<span class="tag tag-accent">新节点默认</span>' : '') +
+          '<span class="tag mono">' + fmtNum(p.text.length) + ' 字</span></span></button>';
+    }
+    function renderPrompts() {
+      var p = PROMPTS.filter(function (x) { return x.name === selPrompt; })[0] || PROMPTS[0];
+      if (p) selPrompt = p.name;
+      main.innerHTML =
+        '<div class="st-head"><div><h2>系统提示词</h2><p>给 AI 的长期指令，决定它按什么规矩写提示词。每个节点自己选用哪套；每次发消息用到的版本会另存一份，改了也能查到当时的原文。</p></div>' +
+        '<button class="btn btn-primary" id="pNew">' + icon('plus') + '新建</button></div>' +
+        '<div class="split"><div class="list" id="pList" data-od-id="system-prompt-list">' + PROMPTS.map(promptCard).join('') + '</div>' +
+        (p ? '<section class="card editor" data-od-id="system-prompt-editor"><div class="editor-head"><h2 class="mono">' + esc(p.name) + '.md</h2>' +
+          '<button class="btn btn-secondary btn-sm" id="pExt">' + icon('external') + '用外部编辑器打开</button>' +
+          '<button class="btn btn-danger-ghost btn-sm" id="pDel">' + icon('trash') + '删除</button></div>' +
+          '<textarea class="textarea prompt-area" id="pText" spellcheck="false">' + esc(p.text) + '</textarea>' +
+          '<p class="hint" style="margin-top:8px">改动自动写进 <span class="mono">D:\\同步盘\\提示词画布\\prompts\\' + esc(p.name) + '.md</span>。程序会在这段后面自动接上<a class="linkish" href="#format">固定格式要求</a>。</p></section>' : '') + '</div>';
+      $('#pList').onclick = function (e) { var b = e.target.closest('[data-prompt]'); if (b) { selPrompt = b.dataset.prompt; renderPrompts(); } };
+      $('#pNew').onclick = function () {
+        var d = document.createElement('dialog'); d.className = 'dialog';
+        d.innerHTML = '<div class="dialog-head"><h2>新建系统提示词</h2></div><div class="dialog-body"><div class="field"><label for="pn">名字</label><input class="input mono" id="pn" placeholder="比如：i2v-慢节奏"><p class="hint" id="pnh">会存成 prompts 文件夹里的一个 .md 文件，内容先复制当前选中的「' + esc(p.name) + '」。</p></div></div>' +
+          '<div class="dialog-foot"><button class="btn btn-secondary" value="cancel">取消</button><button class="btn btn-primary" value="ok">新建</button></div>';
+        document.body.appendChild(d);
+        d.querySelectorAll('[value]').forEach(function (b) { b.onclick = function () {
+          var v = d.querySelector('#pn').value.trim();
+          if (b.value === 'ok' && (!v || PROMPTS.some(function (x) { return x.name === v; }))) { d.querySelector('#pnh').className = 'hint is-error'; d.querySelector('#pnh').textContent = v ? '已经有叫「' + v + '」的了' : '先起个名字'; return; }
+          d.close(b.value);
+        }; });
+        d.addEventListener('close', function () {
+          var v = d.querySelector('#pn').value.trim();
+          if (d.returnValue === 'ok') { PROMPTS.push({ name: v, desc: '自己建的', text: p.text }); selPrompt = v; renderPrompts(); markSaved(); }
+          d.remove();
+        });
+        d.showModal();
+      };
+      if (!p) return;
+      var t;
+      $('#pText').oninput = function (e) {
+        p.text = e.target.value;
+        clearTimeout(t); t = setTimeout(function () {
+          var c = $('[data-prompt="' + p.name + '"]'); var tmp = document.createElement('div'); tmp.innerHTML = promptCard(p); c.replaceWith(tmp.firstChild);
+        }, 300);
+        markSaved();
+      };
+      $('#pExt').onclick = function () { toast('已用默认编辑器打开 ' + p.name + '.md，外面改完回来这里会自动刷新'); };
+      $('#pDel').onclick = function () {
+        confirmBox({ title: '删除「' + esc(p.name) + '」？', body: (p.def ? '这是新节点默认用的一套，删掉后新节点要自己选。<br><br>' : '') + '用这套的节点下次发消息前要重新选一套。已经发出去的消息还能查到当时的原文。', ok: '删除', danger: true,
+          onOk: function () { PROMPTS = PROMPTS.filter(function (x) { return x !== p; }); selPrompt = PROMPTS[0] ? PROMPTS[0].name : null; renderPrompts(); markSaved(); toast('已删除'); } });
+      };
+    }
+
+    function renderFormat() {
+      main.innerHTML =
+        '<div class="st-head"><div><h2>固定格式要求</h2><p>程序自动接在每套系统提示词后面（中间空两行）。程序靠这个格式把提示词框从回复里切出来，所以这里只能看，不能改。</p></div>' +
+        '<span class="tag">' + icon('lock') + '只能看</span></div>' +
+        '<pre class="ro" data-od-id="format-requirement">' + esc(FORMAT_REQUIREMENT) + '</pre>';
+    }
+
+    function render() {
+      var t = tab();
+      $$('.st-nav a').forEach(function (a) { a.setAttribute('aria-current', a.dataset.tab === t ? 'page' : 'false'); });
+      ({ workdir: renderWorkdir, models: renderModels, prompts: renderPrompts, format: renderFormat })[t]();
+      scrollTo(0, 0);
+    }
+    addEventListener('hashchange', render);
+    render();
+  </script>
+</body>
+</html>

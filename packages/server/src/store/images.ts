@@ -1,4 +1,4 @@
-import { JPEG_QUALITIES, needsJpeg, planResize, type ImageRecord, type Message } from '@media-agent/shared';
+import { JPEG_QUALITIES, needsJpeg, planResize, type ChecklistPath, type ImageRecord, type Message } from '@media-agent/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -74,19 +74,28 @@ async function storeImage(
       .flatten({ background: '#ffffff' })
       .jpeg({ quality: LLM_QUALITY })
       .toBuffer();
-    await writeFileAtomic(canvasImagePath(work, canvasId, image), copy.data);
-    await writeFileAtomic(llmImagePath(work, canvasId, image), llm);
-    await writeJsonAtomic(imagesFile(work, canvasId), { ...images, [image.id]: image });
+    // 处理图的这段时间里画布可能被删了：只建 images 这一层，画布文件夹不在就报错，不在原处重新建出来
+    await fs.mkdir(imagesDir(work, canvasId)).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') throw new HttpError(404, '找不到这个画布');
+      if (err.code !== 'EEXIST') throw err;
+    });
+    await writeFileAtomic(canvasImagePath(work, canvasId, image), copy.data, false);
+    await writeFileAtomic(llmImagePath(work, canvasId, image), llm, false);
+    await writeJsonAtomic(imagesFile(work, canvasId), { ...images, [image.id]: image }, false);
     return image;
   });
 }
 
-// 5.7 上传清单里这张图该传哪个文件：没处理过、原文件还在就用原文件，否则用画布副本
-export async function checklistPath(work: string, canvasId: string, image: ImageRecord): Promise<{ path: string; kind: 'original' | 'canvas'; note?: string }> {
+// 5.7 上传清单里这张图该传哪个文件：没处理过、原文件还在就用原文件，否则用画布副本；顺带给出文件大小
+export async function checklistPath(work: string, canvasId: string, image: ImageRecord): Promise<ChecklistPath> {
   const original = image.originalPath;
-  if (!image.processed && original && (await fs.access(original).then(() => true, () => false))) return { path: original, kind: 'original' };
+  const originalStat = !image.processed && original ? await fs.stat(original).catch(() => null) : null;
+  if (originalStat) return { path: original, kind: 'original', size: originalStat.size };
   const note = image.processed ? '已处理，请上传这份' : original ? '原图不在了，用这份' : '拖进来的图，用这份';
-  return { path: canvasImagePath(work, canvasId, image), kind: 'canvas', note };
+  const copy = canvasImagePath(work, canvasId, image);
+  const copyStat = await fs.stat(copy).catch(() => null);
+  if (!copyStat) throw new HttpError(404, originalStat === null && original && !image.processed ? '原文件和程序存的那份都找不到了' : '程序存的那份找不到了');
+  return { path: copy, kind: 'canvas', note, size: copyStat.size };
 }
 
 // 5.6：长边超过 5760 缩小、短边不到 256 放大；处理后仍超过 30 MB 转 JPEG 逐步降质量。没触发任何条件就原样复制

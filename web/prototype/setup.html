@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>第一次设置 · 提示词画布</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <script src="shared/app.js"></script>
+  <script src="shared/model-form.js"></script>
+  <style>
+    .su { max-width: 1040px; margin: 0 auto; padding: 48px 28px 64px; display: grid; grid-template-columns: 280px 1fr; gap: 40px; align-items: start; }
+    .su-intro h1 { margin-bottom: 10px; }
+    .su-intro p { color: var(--muted); font-size: 14px; }
+    .su-steps { list-style: none; margin: 28px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; counter-reset: s; }
+    .su-steps li { position: relative; display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding: 10px 10px 10px 8px; border-radius: 10px; color: var(--muted); }
+    .su-steps li::before { counter-increment: s; content: counter(s); display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12.5px; }
+    .su-steps li b { display: block; font-weight: 600; font-size: 13.5px; color: var(--fg); }
+    .su-steps li span { font-size: 12.5px; }
+    .su-steps li.is-current { background: var(--fg-soft); }
+    .su-steps li.is-current::before { background: var(--accent); border-color: var(--accent); color: oklch(99% 0 0); }
+    .su-steps li.is-done::before { content: "✓"; background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+    .su-card { padding: 28px 28px 0; box-shadow: 0 24px 60px -30px oklch(0% 0 0 / .5); }
+    .su-card h2 { font-size: 22px; }
+    .su-card > .lead { margin: 6px 0 22px; color: var(--muted); font-size: 14px; max-width: 60ch; }
+    .su-foot { display: flex; align-items: center; gap: 8px; margin: 28px -28px 0; padding: 14px 28px; border-top: 1px solid var(--border); background: var(--fg-softer); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+    .tree { margin: 18px 0 0; padding: 14px 16px; border-radius: 10px; background: var(--fg-softer); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.9; overflow-x: auto; white-space: pre; }
+    .tree .c { color: var(--muted); font-family: var(--font-body); }
+    .sum { border-top: 1px solid var(--border); margin-top: 8px; }
+    .sum-row { display: grid; grid-template-columns: 110px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+    .sum-row .k { color: var(--muted); }
+    .sum-row .v { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    @media (max-width: 860px) {
+      .su { grid-template-columns: 1fr; gap: 20px; padding: 24px 14px 48px; }
+      .su-steps { flex-direction: row; margin-top: 16px; overflow-x: auto; }
+      .su-steps li { grid-template-columns: 24px auto; padding: 6px 10px 6px 6px; gap: 8px; white-space: nowrap; }
+      .su-steps li::before { width: 24px; height: 24px; }
+      .su-steps li span { display: none; }
+      .su-card { padding: 20px 16px 0; }
+      .su-foot { margin: 22px -16px 0; padding: 12px 16px; }
+      .sum-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <span class="brand"><span class="brand-mark" data-icon="logo"></span>提示词画布</span>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
+  </header>
+
+  <main class="su">
+    <aside data-od-id="setup-steps">
+      <div class="su-intro">
+        <h1>先设置两件事</h1>
+        <p>第一次打开，这里还什么都没有。选好工作文件夹、填一套模型配置，就能开始写提示词。</p>
+      </div>
+      <ol class="su-steps" id="steps">
+        <li><div><b>工作文件夹</b><span>画布和图片副本存哪</span></div></li>
+        <li><div><b>模型配置</b><span>用哪个 AI 写提示词</span></div></li>
+        <li><div><b>开始用</b><span>去首页建第一张画布</span></div></li>
+      </ol>
+    </aside>
+    <section class="card su-card" id="card" data-od-id="setup-card" aria-live="polite"></section>
+  </main>
+
+  <script>
+    var step = 0;
+    var state = { dir: '', cfg: { name: '主力', model: '', url: '', keySet: false, longSide: 1600, price: null } };
+    var form = null;
+
+    function renderSteps() {
+      $$('#steps li').forEach(function (li, i) {
+        li.className = i < step ? 'is-done' : i === step ? 'is-current' : '';
+        li.setAttribute('aria-current', i === step ? 'step' : 'false');
+      });
+    }
+
+    function step1() {
+      $('#card').innerHTML =
+        '<h2>选工作文件夹</h2>' +
+        '<p class="lead">画布、系统提示词、图片副本都存在这里。建议放在同步盘里，两台电脑就能共用同一份。</p>' +
+        '<div class="field" data-od-id="field-workdir"><label for="dir">文件夹</label>' +
+          '<div class="input-group"><input class="input mono" id="dir" placeholder="D:\\同步盘\\提示词画布" value="' + esc(state.dir) + '" spellcheck="false">' +
+          '<button class="btn btn-secondary" id="pick">' + icon('folder') + '选择…</button></div>' +
+          '<p class="hint" id="dirHint">没有这个文件夹的话会新建。</p></div>' +
+        '<div id="treeWrap"></div>' +
+        '<div class="su-foot"><span class="grow meta">密钥不会存进这个文件夹</span><button class="btn btn-primary btn-lg" id="next">下一步' + icon('arrow-right') + '</button></div>';
+      function tree() {
+        var d = $('#dir').value.trim();
+        $('#treeWrap').innerHTML = d ? '<p class="label" style="margin-top:20px">会在里面建好这些</p><div class="tree">' + esc(d) + '\n' +
+          '├─ model-configs.json   <span class="c">模型配置，不含密钥</span>\n' +
+          '├─ prompts\\             <span class="c">系统提示词，放进自带的 ref2va、i2v、t2v</span>\n' +
+          '├─ canvases\\            <span class="c">画布、节点对话、放进槽位的图片副本</span>\n' +
+          '└─ .trash\\              <span class="c">删掉的画布和节点</span></div>' +
+          '<p class="hint" style="margin-top:8px">文件夹里已经有同名的系统提示词时，不会覆盖。</p>' : '';
+      }
+      tree();
+      $('#dir').oninput = function () { $('#dir').classList.remove('is-error'); $('#dirHint').className = 'hint'; $('#dirHint').textContent = '没有这个文件夹的话会新建。'; tree(); };
+      $('#pick').onclick = function () { $('#dir').value = 'D:\\同步盘\\提示词画布'; $('#dir').oninput(); toast('会打开系统的「选择文件夹」窗口'); };
+      $('#next').onclick = function () {
+        var d = $('#dir').value.trim(), h = $('#dirHint');
+        var bad = !d ? '先选一个文件夹' : /^C:\\(Windows|Program Files)/i.test(d) ? '这个文件夹不让写入：拒绝访问。换一个自己的文件夹' : !/^[A-Za-z]:\\|^\\\\/.test(d) ? '要填完整路径，比如 D:\\同步盘\\提示词画布' : '';
+        if (bad) { $('#dir').classList.add('is-error'); h.className = 'hint is-error'; h.textContent = bad; $('#dir').focus(); return; }
+        state.dir = d;
+        var b = $('#next'); b.disabled = true; b.innerHTML = '<span class="spinner"></span>正在建目录…';
+        setTimeout(function () { step = 1; render(); }, 800);
+      };
+    }
+
+    function step2() {
+      $('#card').innerHTML =
+        '<h2>填一套模型配置</h2>' +
+        '<p class="lead">决定用哪个 AI 来写提示词。以后可以在设置里再加几套，每个节点自己选用哪套。</p>' +
+        '<div id="mf">' + modelFormHTML(state.cfg) + '</div>' +
+        '<div class="su-foot"><button class="btn btn-ghost" id="back">' + icon('chev-left') + '上一步</button><span class="grow"></span><button class="btn btn-primary btn-lg" id="next">保存并继续' + icon('arrow-right') + '</button></div>';
+      form = bindModelForm($('#mf'), state.cfg);
+      $('#back').onclick = function () { form.read(); step = 0; render(); };
+      $('#next').onclick = function () {
+        if (!form.validate()) { var e = $('#mf .is-error'); if (e) e.focus(); return; }
+        form.storeKey();
+        step = 2; render();
+      };
+    }
+
+    function step3() {
+      var c = state.cfg;
+      $('#card').innerHTML =
+        '<h2>设置好了</h2>' +
+        '<p class="lead">这些以后都能在设置里改。</p>' +
+        '<div class="sum">' +
+          '<div class="sum-row"><span class="k">工作文件夹</span><span class="v"><span class="mono">' + esc(state.dir) + '</span><span class="tag tag-ok">' + icon('check') + '目录建好了</span></span></div>' +
+          '<div class="sum-row"><span class="k">模型配置</span><span class="v">' + esc(c.name) + ' · <span class="mono">' + esc(c.model) + '</span><span class="tag tag-ok">' + icon('check') + '密钥已配置</span>' + (c.price ? '<span class="tag">填了价格</span>' : '') + '</span></div>' +
+          '<div class="sum-row"><span class="k">系统提示词</span><span class="v">放进了 3 套：<span class="mono">ref2va</span>（新节点默认用）、<span class="mono">i2v</span>、<span class="mono">t2v</span></span></div>' +
+        '</div>' +
+        '<div class="su-foot"><button class="btn btn-ghost" id="back">' + icon('chev-left') + '上一步</button><span class="grow"></span><a class="btn btn-primary btn-lg" href="home.html">进入首页' + icon('arrow-right') + '</a></div>';
+      $('#back').onclick = function () { step = 1; render(); };
+    }
+
+    function render() { renderSteps(); [step1, step2, step3][step](); }
+    render();
+  </script>
+</body>
+</html>

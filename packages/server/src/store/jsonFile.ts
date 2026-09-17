@@ -26,16 +26,17 @@ async function rename(tmp: string, file: string): Promise<void> {
   }
 }
 
-// 先写临时文件再改名，写到一半断电也不会留下半个文件
-export async function writeFileAtomic(file: string, data: string | Uint8Array): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
+// 先写临时文件再改名，写到一半断电也不会留下半个文件。
+// 往画布文件夹里写时 createDir 传 false：画布刚被挪进回收站的话直接报错，不在原处重新建出来
+export async function writeFileAtomic(file: string, data: string | Uint8Array, createDir = true): Promise<void> {
+  if (createDir) await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, data);
   await rename(tmp, file);
 }
 
-export function writeJsonAtomic(file: string, data: unknown): Promise<void> {
-  return writeFileAtomic(file, JSON.stringify(data, null, 2));
+export function writeJsonAtomic(file: string, data: unknown, createDir = true): Promise<void> {
+  return writeFileAtomic(file, JSON.stringify(data, null, 2), createDir);
 }
 
 export const trashName = (kind: string, name: string) => `${new Date().toISOString().replace(/[:.]/g, '-')}-${kind}-${name}`;

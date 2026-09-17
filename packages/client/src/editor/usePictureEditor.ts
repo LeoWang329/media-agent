@@ -11,40 +11,50 @@ import { PictureRef } from './PictureRef';
 
 type Options = {
   initialText: string;
-  slots: string[]; // 只用来把开头文字里的 <Picture N> 还原成小标签
+  slots: string[]; // 开头文字里的 <Picture N> 按它还原成图片标签
+  nodeId?: string; // 标签编号按这个节点现在的槽位算；不传就一直按 slots 编号（手动改一条回复的提示词）
   ariaLabel: string;
   className: string;
   placeholder?: string;
-  autofocus?: boolean;
+  autofocus?: boolean; // 打开就把光标放在开头，照原型
   onChange?: (doc: JSONContent) => void;
   onEnter?: () => void; // 传了就拦下 Enter（输入框用来发送），Shift+Enter 还是换行
-  onAt?: (position: number) => void; // 输入 @ 的位置，用来弹选图窗口
+  onAt?: (editor: Editor, typedAt: boolean) => void; // 按了 @，弹引用图片的小窗；typedAt：@ 已经打进去了
+  onEscape?: () => void;
 };
 
-// 只有段落和文字的纯文本编辑器，外加图片小标签
+// 只有段落和文字的纯文本编辑器，外加图片标签
 export function usePictureEditor(options: Options): Editor | null {
   const latest = useRef(options);
   latest.current = options;
+  const self = useRef<Editor | null>(null);
 
   const editor = useEditor({
     extensions: [
       Document,
       Paragraph,
       Text,
-      PictureRef,
+      PictureRef.configure({ nodeId: options.nodeId ?? null, fixedSlots: options.nodeId ? null : options.slots }),
       UndoRedo,
       Placeholder.configure({ placeholder: () => latest.current.placeholder ?? '' }),
     ],
     content: textToDoc(options.initialText, options.slots),
-    autofocus: options.autofocus ? 'end' : false,
+    autofocus: options.autofocus ? 'start' : false,
     editorProps: {
-      attributes: { class: `picture-editor ${options.className}`, 'aria-label': options.ariaLabel },
-      handleTextInput: (_view, from, _to, text) => {
-        if (text === '@') latest.current.onAt?.(from);
+      attributes: { class: options.className, 'aria-label': options.ariaLabel, role: 'textbox', 'aria-multiline': 'true' },
+      // 按 @ 不打出这个字，直接弹小窗；输入法打出来的 @ 也弹，插图时再删掉它
+      handleTextInput: (_view, _from, _to, text) => {
+        if ((text === '@' || text === '＠') && self.current) latest.current.onAt?.(self.current, true);
         return false;
       },
       handleKeyDown: (view, event) => {
-        if (event.key !== 'Enter' || event.isComposing || view.composing || !latest.current.onEnter) return false;
+        if (event.isComposing || view.composing) return false;
+        if (event.key === '@' && latest.current.onAt && self.current) {
+          latest.current.onAt(self.current, false);
+          return true;
+        }
+        if (event.key === 'Escape') latest.current.onEscape?.();
+        if (event.key !== 'Enter' || !latest.current.onEnter) return false;
         if (event.shiftKey) return splitBlock(view.state, view.dispatch);
         latest.current.onEnter();
         return true;
@@ -52,10 +62,11 @@ export function usePictureEditor(options: Options): Editor | null {
     },
     onUpdate: ({ editor }) => latest.current.onChange?.(editor.getJSON()),
   });
+  self.current = editor;
 
-  // 挂上 DOM 之后才能真的聚焦；点「编辑」那一帧焦点还在按钮上，等这一帧过去再抢回来
+  // 挂上 DOM 之后才能真的聚焦；点「手动改」那一帧焦点还在按钮上，等这一帧过去再抢回来
   useEffect(() => {
-    if (latest.current.autofocus) requestAnimationFrame(() => editor?.commands.focus('end'));
+    if (latest.current.autofocus) requestAnimationFrame(() => editor?.commands.focus('start'));
   }, [editor]);
 
   return editor;

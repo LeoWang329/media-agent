@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { HttpError } from '../httpError';
 import { trashName, writeFileAtomic } from './jsonFile';
 
-// 程序固定附加的格式要求只维护 docs/prompts/format-requirement.md 这一份
+// 程序固定用的两段说明只维护 docs/prompts/ 里这两份：接在系统提示词后面的格式要求、翻译提示词框时的说明
 const FORMAT_REQUIREMENT_DOC = fileURLToPath(new URL('../../../../docs/prompts/format-requirement.md', import.meta.url));
+const TRANSLATE_DOC = fileURLToPath(new URL('../../../../docs/prompts/translate.md', import.meta.url));
 
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
@@ -88,7 +89,11 @@ export async function readPromptVersion(work: string, name: string, hash: string
   }
 }
 
-export async function readFormatRequirement(): Promise<string> {
-  const lines = (await fs.readFile(FORMAT_REQUIREMENT_DOC, 'utf8')).split(/\r?\n/);
+// 说明文件里「---」以下才是发给模型的
+async function textBelowRule(file: string): Promise<string> {
+  const lines = (await fs.readFile(file, 'utf8')).split(/\r?\n/);
   return lines.slice(lines.findIndex((line) => line.trim() === '---') + 1).join('\n').trim();
 }
+
+export const readFormatRequirement = () => textBelowRule(FORMAT_REQUIREMENT_DOC);
+export const readTranslateInstructions = () => textBelowRule(TRANSLATE_DOC);

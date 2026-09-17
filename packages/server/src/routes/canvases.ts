@@ -1,10 +1,13 @@
-import { addMessage, DEFAULT_IMAGE_LONG_SIDE, editedPromptMessage, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
+import { addMessage, descendantIds, editedPromptMessage, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
 import express, { type Request } from 'express';
 import { randomUUID } from 'node:crypto';
 import { readConfig, requireWorkFolder } from '../config';
 import { thumbnail } from '../assets/thumbs';
 import { HttpError } from '../httpError';
-import { runGeneration, stopGeneration } from '../llm/generation';
+import { isGenerating, runGeneration, stopGeneration, stopGenerations } from '../llm/generation';
+import { imageLongSide } from '../llm/imageLongSide';
+import { translatePrompt } from '../llm/translate';
+import { revealInFolder } from '../native/reveal';
 import { allowedPath } from '../paths';
 import {
   canvasDetail,
@@ -12,8 +15,10 @@ import {
   createNode,
   forkNode,
   listCanvases,
+  listNodes,
   readCanvas,
   readNode,
+  restoreCanvas,
   trashCanvas,
   restoreNodes,
   trashNodes,
@@ -30,7 +35,12 @@ export function canvasRoutes(configDir: string): express.Router {
   const ids = (req: Request) => ({ canvasId: v.uuid(req.params.canvasId), nodeId: v.uuid(req.params.nodeId) });
 
   router.get('/canvases', async (_req, res) => {
-    res.json(await listCanvases(await work()));
+    res.json(await listCanvases(await work(), isGenerating));
+  });
+
+  // 撤销删除画布：trash 是删的时候返回的那个文件夹名
+  router.post('/canvases/restore', async (req, res) => {
+    res.json({ id: await restoreCanvas(await work(), v.trashName(req.body?.trash)) });
   });
 
   router.post('/canvases', async (req, res) => {
@@ -38,7 +48,7 @@ export function canvasRoutes(configDir: string): express.Router {
   });
 
   router.get('/canvases/:canvasId', async (req, res) => {
-    res.json(await canvasDetail(await work(), v.uuid(req.params.canvasId)));
+    res.json(await canvasDetail(await work(), v.uuid(req.params.canvasId), isGenerating));
   });
 
   router.patch('/canvases/:canvasId', async (req, res) => {
@@ -58,9 +68,9 @@ export function canvasRoutes(configDir: string): express.Router {
   router.delete('/canvases/:canvasId', async (req, res) => {
     const w = await work();
     const canvasId = v.uuid(req.params.canvasId);
-    (await canvasDetail(w, canvasId)).nodes.forEach((node) => stopGeneration(node.id));
-    await trashCanvas(w, canvasId);
-    res.status(204).end();
+    // 等生成收完尾再挪进回收站，不然收尾时写的节点文件会在原处重新建出这个画布的文件夹
+    await stopGenerations((await readCanvas(w, canvasId)).nodes.map((layout) => layout.id));
+    res.json({ trash: await trashCanvas(w, canvasId) });
   });
 
   // 新建空节点：模型配置取第一个，系统提示词取 default
@@ -92,9 +102,10 @@ export function canvasRoutes(configDir: string): express.Router {
 
   router.delete('/canvases/:canvasId/nodes/:nodeId', async (req, res) => {
     const { canvasId, nodeId } = ids(req);
-    const { deleted, trash } = await trashNodes(await work(), canvasId, nodeId);
-    deleted.forEach(stopGeneration);
-    res.json({ deleted, trash });
+    const w = await work();
+    // 和删画布一样先等生成收完尾，撤销回来的回复才完整、带着「已叫停」
+    await stopGenerations([nodeId, ...descendantIds(await listNodes(w, canvasId), nodeId)]);
+    res.json(await trashNodes(w, canvasId, nodeId));
   });
 
   // 撤销删除节点：trash 是删的时候返回的那个文件夹名
@@ -155,12 +166,7 @@ export function canvasRoutes(configDir: string): express.Router {
     });
   });
 
-  // 发给模型的小图按节点所选模型配置的发图长边缩
-  const llmLongSide = async (w: string, canvasId: string, nodeId: unknown) => {
-    if (nodeId === undefined) return DEFAULT_IMAGE_LONG_SIDE;
-    const node = await readNode(w, canvasId, v.uuid(nodeId));
-    return (await readConfig(configDir)).modelConfigs.find((m) => m.id === node.modelConfigId)?.imageLongSide ?? DEFAULT_IMAGE_LONG_SIDE;
-  };
+  const llmLongSide = (w: string, canvasId: string, nodeId: unknown) => imageLongSide(configDir, w, canvasId, nodeId === undefined ? undefined : v.uuid(nodeId));
 
   // 放进槽位的图先复制进画布文件夹
   router.post('/canvases/:canvasId/images', async (req, res) => {
@@ -184,6 +190,14 @@ export function canvasRoutes(configDir: string): express.Router {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
     res.json(await checklistPath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId))));
+  });
+
+  // 上传清单里的「在资源管理器里显示」：按图片查该传的那个文件，页面不传路径
+  router.post('/canvases/:canvasId/images/:imageId/reveal', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    revealInFolder((await checklistPath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)))).path);
+    res.status(204).end();
   });
 
   router.get('/canvases/:canvasId/images/:imageId/file', async (req, res) => {
@@ -229,6 +243,15 @@ export function canvasRoutes(configDir: string): express.Router {
         return addMessage(node, edited);
       }),
     );
+  });
+
+  // 翻译提示词框：问一次模型，译文存进这条回复，返回这份译文；同一个框同一种语言再翻就换掉旧的
+  router.post('/canvases/:canvasId/nodes/:nodeId/messages/:messageId/translate', async (req, res) => {
+    const { canvasId, nodeId } = ids(req);
+    const promptIndex = v.index(req.body?.promptIndex, '提示词框');
+    const language = v.language(req.body?.language);
+    const instruction = req.body?.instruction === undefined ? '' : v.text(req.body.instruction, '翻译要求');
+    res.json(await translatePrompt({ configDir, work: await work(), canvasId, nodeId, messageId: req.params.messageId, promptIndex }, language, instruction));
   });
 
   router.post('/canvases/:canvasId/nodes/:nodeId/stop', (req, res) => {

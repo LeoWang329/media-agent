@@ -70,12 +70,15 @@ export function editedUserMessage(original: Message, text: string, id: string, c
 }
 
 // 手动改提示词：同一个父消息下新建一条 assistant 版本，正文是把那个框换掉之后的全文，不调模型。
-// usage 不带过来，这一版没花 token；框里的星、当时用的模型和提示词版本照旧
+// usage 不带过来，这一版没花 token；改的那个框的译文对不上了，也不带；框里的星、别的框的译文、当时用的模型和提示词版本照旧
 export function editedPromptMessage(original: Message, promptIndex: number, promptText: string, id: string, createdAt: string): Message | null {
   const text = replacePromptText(original.text, promptIndex, promptText);
   if (text === null) return null;
   const { title, prompts } = parseReply(text);
   const edited: Message = { ...original, id, createdAt, text, parsed: { ...(title !== undefined && { title }), prompts }, editedFromMessageId: original.id };
   delete edited.usage;
+  const translations = original.translations?.filter((t) => t.promptIndex !== promptIndex);
+  if (translations?.length) edited.translations = translations;
+  else delete edited.translations;
   return edited;
 }

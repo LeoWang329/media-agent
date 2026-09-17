@@ -4,7 +4,7 @@ export type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; 
 
 export type ChatCompletionMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: ContentPart[] }
+  | { role: 'user'; content: string | ContentPart[] }
   | { role: 'assistant'; content: string };
 
 // 系统提示词和固定格式要求之间空两行

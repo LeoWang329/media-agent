@@ -1,391 +1,544 @@
-import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_PRICING, type Config, type ModelConfigWithKey, type ModelPricing } from '@media-agent/shared';
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_PRICING, type Config, type ModelConfigWithKey } from '@media-agent/shared';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
+import { isPriced, ModelForm } from '../components/ModelForm';
+import { confirmBox } from '../ui/confirm';
+import { fmtNum } from '../ui/copy';
+import { Dialog } from '../ui/Dialog';
+import { Icon, type IconName } from '../ui/Icon';
+import { SaveState, trackWrite } from '../ui/saveState';
+import { ThemeToggle } from '../ui/theme';
+import { toast } from '../ui/toast';
 
-type Status = { kind: 'ok' | 'error' | 'pending'; text: string };
+type Tab = 'workdir' | 'models' | 'prompts' | 'format';
 
-const PRICE_FIELDS = [
-  ['input', '输入'],
-  ['output', '输出'],
-  ['cached', '缓存命中'],
-] as const satisfies [keyof ModelPricing, string][];
+const TABS: [Tab, string, IconName][] = [
+  ['workdir', '工作文件夹', 'folder'],
+  ['models', '模型配置', 'cpu'],
+  ['prompts', '系统提示词', 'doc'],
+  ['format', '固定格式要求', 'lock'],
+];
 
-type SectionProps = { config: Config; onSaved: (config: Config) => void };
+const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
 export function Settings() {
+  const { hash } = useLocation();
+  const hashTab = hash.replace('#', '') as Tab;
+  const tab: Tab = TABS.some(([id]) => id === hashTab) ? hashTab : 'models';
   const [config, setConfig] = useState<Config | null>(null);
-  const [error, setError] = useState('');
 
   useEffect(() => {
-    api<Config>('/config').then(setConfig, (err: Error) => setError(err.message));
+    document.title = '设置 · 提示词画布';
+    api<Config>('/config').then(setConfig, failed);
   }, []);
 
-  if (error) return <main className="page"><p className="status error">{error}</p></main>;
-  if (!config) return null;
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
+
   return (
-    <main className="page">
-      <header className="topbar">
-        <h1>设置</h1>
-        <Link to="/">返回首页</Link>
+    <>
+      <header className="appbar" data-od-id="settings-appbar">
+        <Link className="brand" to="/"><span className="brand-mark"><Icon name="logo" /></span>提示词画布</Link>
+        <span className="muted hide-sm">/</span>
+        <span className="hide-sm">设置</span>
+        <span className="spacer" />
+        <SaveState idle="改动自动写入" />
+        <ThemeToggle />
+        <Link className="btn btn-ghost" to="/"><Icon name="home" /><span className="hide-sm">回首页</span></Link>
       </header>
-      <WorkFolderSection config={config} onSaved={setConfig} />
-      {/* 模型配置和系统提示词都存在工作文件夹里，换了工作文件夹就重新加载 */}
-      <ModelConfigsSection key={config.workFolder ?? ''} config={config} onSaved={setConfig} />
-      {config.workFolder && <PromptsSection key={config.workFolder} />}
-      <FormatRequirementSection />
-      <AssetFoldersSection config={config} onSaved={setConfig} />
-    </main>
+
+      <div className="st">
+        <nav className="st-nav" aria-label="设置分类" data-od-id="settings-nav">
+          <h1>设置</h1>
+          {TABS.map(([id, label, icon]) => (
+            <Link key={id} to={{ hash: id }} data-tab={id} aria-current={tab === id ? 'page' : 'false'}>
+              <Icon name={icon} />{label}
+            </Link>
+          ))}
+        </nav>
+        <main className="st-main" id="main" data-od-id="settings-main">
+          {config && tab === 'workdir' && <WorkdirTab config={config} onConfig={setConfig} />}
+          {/* 模型配置和系统提示词都存在工作文件夹里，换了工作文件夹就重新加载 */}
+          {config && tab === 'models' && (
+            // 改动记在页面这一层：切到别的分类再切回来，看到的还是刚改过的列表
+            <ModelsTab key={config.workFolder} config={config} onItems={(modelConfigs) => setConfig((c) => c && { ...c, modelConfigs })} />
+          )}
+          {config && tab === 'prompts' && <PromptsTab key={config.workFolder} workFolder={config.workFolder} />}
+          {tab === 'format' && <FormatTab />}
+        </main>
+      </div>
+    </>
   );
 }
 
-function WorkFolderSection({ config, onSaved }: SectionProps) {
-  const [folder, setFolder] = useState(config.workFolder ?? '');
-  const [status, setStatus] = useState<Status | null>(null);
-  const [busy, setBusy] = useState(false);
+type WorkFolderStatus = { path: string; writable: boolean; canvases: number; prompts: number; modelConfigs: number };
 
-  async function run(task: () => Promise<void>) {
-    setBusy(true);
+function WorkdirTab({ config, onConfig }: { config: Config; onConfig: (config: Config) => void }) {
+  const navigate = useNavigate();
+  const [status, setStatus] = useState<WorkFolderStatus | null>(null);
+
+  useEffect(() => {
     setStatus(null);
+    if (config.workFolder) api<WorkFolderStatus>('/work-folder').then(setStatus, failed);
+  }, [config.workFolder]);
+
+  const pickAndSwitch = async () => {
     try {
-      await task();
+      const { path } = await api<{ path: string | null }>('/assets/pick-folder', { method: 'POST', body: { start: config.workFolder ?? undefined } });
+      if (!path) return;
+      onConfig(await trackWrite(api<Config>('/config', { method: 'PUT', body: { workFolder: path } })));
+      toast(`已换到 ${path}`);
     } catch (err) {
-      setStatus({ kind: 'error', text: (err as Error).message });
-    } finally {
-      setBusy(false);
+      // 弹不出系统窗口时，去首次设置页手填路径
+      toast((err as Error).message, { tone: 'warn', ms: 4500, action: '去填写', onAction: () => navigate('/setup') });
     }
-  }
+  };
 
-  async function save(path: string) {
-    const next = await api<Config>('/config', { method: 'PUT', body: { workFolder: path } });
-    onSaved(next);
-    setFolder(next.workFolder ?? '');
-    setStatus({ kind: 'ok', text: '已保存' });
-  }
-
-  const pick = () =>
-    run(async () => {
-      setStatus({ kind: 'pending', text: '请在弹出的窗口里选择文件夹' });
-      const { path } = await api<{ path: string | null }>('/assets/pick-folder', { method: 'POST' });
-      setStatus(null);
-      if (path) await save(path);
+  const change = async () => {
+    if (!config.workFolder) return pickAndSwitch();
+    const ok = await confirmBox({
+      title: '换工作文件夹？',
+      body: '换过去以后，首页只显示新文件夹里的画布。现在这个文件夹里的东西不会动，换回来还在。',
+      ok: '选新文件夹…',
     });
+    if (ok) await pickAndSwitch();
+  };
+
+  const open = async () => {
+    try {
+      await api('/work-folder/open', { method: 'POST' });
+      toast(`已在资源管理器里打开 ${config.workFolder}`);
+    } catch (err) {
+      failed(err);
+    }
+  };
 
   return (
-    <section className="card">
-      <h2>工作文件夹</h2>
-      {!config.workFolder && <p className="status pending">请先选择工作文件夹</p>}
-      <div className="row">
-        <input
-          aria-label="工作文件夹路径"
-          value={folder}
-          placeholder="例如 D:\同步盘\提示词画布"
-          onChange={(e) => setFolder(e.target.value)}
-        />
-        <button type="button" onClick={pick} disabled={busy}>选择</button>
-        <button type="button" onClick={() => run(() => save(folder))} disabled={busy || !folder.trim()}>保存</button>
+    <>
+      <div className="st-head">
+        <div>
+          <h2>工作文件夹</h2>
+          <p>画布、系统提示词、图片副本和模型配置都存在这里。放在同步盘上，两台电脑轮流打开的是同一份。</p>
+        </div>
       </div>
-      {status && <p className={`status ${status.kind}`}>{status.text}</p>}
-    </section>
+      <div className="card editor" data-od-id="workdir-card">
+        <div className="kv">
+          <div className="kv-row">
+            <span className="k">路径</span>
+            <span className="row" style={{ flexWrap: 'wrap' }}>
+              {config.workFolder ? <span className="mono">{config.workFolder}</span> : <span className="muted">还没选</span>}
+              {status && (status.writable
+                ? <span className="tag tag-ok"><Icon name="check" />能读写</span>
+                : <span className="tag tag-danger"><Icon name="x" />写不进去</span>)}
+            </span>
+          </div>
+          {status && (
+            <div className="kv-row">
+              <span className="k">里面有</span>
+              <span>{status.canvases} 个画布 · {status.prompts} 套系统提示词 · {status.modelConfigs} 套模型配置</span>
+            </div>
+          )}
+        </div>
+        <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-secondary" id="wdChange" onClick={() => void change()}>
+            <Icon name="folder" />{config.workFolder ? '换一个文件夹…' : '选文件夹…'}
+          </button>
+          {config.workFolder && (
+            <button type="button" className="btn btn-ghost" id="wdOpen" onClick={() => void open()}>
+              <Icon name="external" />在资源管理器里打开
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="where">
+        <div className="card">
+          <h3><Icon name="folder" />存在工作文件夹，两台电脑共用</h3>
+          <ul><li>画布、节点对话和版本</li><li>放进过槽位的图片副本</li><li>系统提示词</li><li>模型配置（不含密钥）</li></ul>
+        </div>
+        <div className="card">
+          <h3><Icon name="lock" />只存在这台电脑上</h3>
+          <ul><li>模型配置的密钥</li><li>资产库导入过哪些文件夹</li><li>资产库的缩略图</li></ul>
+        </div>
+      </div>
+    </>
   );
 }
 
-function ModelConfigsSection({ config, onSaved }: SectionProps) {
-  const [items, setItems] = useState<ModelConfigWithKey[]>(config.modelConfigs);
-  const [dirty, setDirty] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<Status | null>(null);
-  const [testStatus, setTestStatus] = useState<Record<string, Status>>({});
+const SAVE_DELAY = 500;
 
-  function edit(next: ModelConfigWithKey[]) {
-    setItems(next);
-    setDirty(true);
-    setSaveStatus(null);
-  }
+// 改一次存一次太频繁，停手半秒再存；切走之前没存的立刻存
+function useDebouncedSave<T>(save: (value: T) => Promise<unknown>) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pending = useRef<{ value: T } | null>(null);
+  const latestSave = useRef(save);
+  latestSave.current = save;
 
-  const update = (id: string, patch: Partial<ModelConfigWithKey>) =>
-    edit(items.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  const flush = useCallback(async () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const item = pending.current;
+    pending.current = null;
+    if (item) await latestSave.current(item.value).catch(failed);
+  }, []);
 
-  const setPrice = (m: ModelConfigWithKey, patch: Partial<ModelPricing>) => update(m.id, { pricing: { ...m.pricing, ...patch } });
+  const schedule = useCallback(
+    (value: T) => {
+      pending.current = { value };
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void flush(), SAVE_DELAY);
+    },
+    [flush],
+  );
 
-  const add = () =>
-    edit([...items, { id: crypto.randomUUID(), name: '', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE, pricing: DEFAULT_PRICING }]);
+  const isPending = useCallback(() => pending.current !== null, []);
 
-  async function save(): Promise<boolean> {
-    try {
-      const next = await api<Config>('/config', { method: 'PUT', body: { modelConfigs: items } });
-      onSaved(next);
-      setItems(next.modelConfigs);
-      setDirty(false);
-      setSaveStatus({ kind: 'ok', text: '已保存' });
-      return true;
-    } catch (err) {
-      setSaveStatus({ kind: 'error', text: (err as Error).message });
-      return false;
-    }
-  }
+  useEffect(() => () => void flush(), [flush]);
+  return { schedule, flush, isPending };
+}
 
-  // 测试的是服务端存着的配置，所以有没保存的修改时先保存
-  async function test(id: string) {
-    const show = (status: Status) => setTestStatus((all) => ({ ...all, [id]: status }));
-    show({ kind: 'pending', text: '测试中…' });
-    if (dirty && !(await save())) {
-      show({ kind: 'error', text: '保存失败，没有测试' });
-      return;
-    }
-    try {
-      const result = await api<{ ok: boolean; error?: string }>('/llm/test', { method: 'POST', body: { modelConfigId: id } });
-      show(result.ok ? { kind: 'ok', text: '连接成功' } : { kind: 'error', text: `连接失败：${result.error}` });
-    } catch (err) {
-      show({ kind: 'error', text: `连接失败：${(err as Error).message}` });
-    }
-  }
+function ModelsTab({ config, onItems: setItems }: { config: Config; onItems: (list: ModelConfigWithKey[]) => void }) {
+  const items = config.modelConfigs;
+  const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
+  const selected = items.find((m) => m.id === selectedId) ?? items[0];
+  const save = (list: ModelConfigWithKey[]) => trackWrite(api<Config>('/config', { method: 'PUT', body: { modelConfigs: list } }));
+  const { schedule, flush } = useDebouncedSave(save);
 
   if (!config.workFolder) {
-    return (
-      <section className="card">
-        <h2>模型配置</h2>
-        <p className="status pending">模型配置存在工作文件夹里，先设置工作文件夹</p>
-      </section>
-    );
+    return <p className="muted">模型配置存在工作文件夹里，先在「工作文件夹」里选一个。</p>;
   }
 
+  const replace = (next: ModelConfigWithKey) => {
+    const list = items.map((m) => (m.id === next.id ? next : m));
+    setItems(list);
+    schedule(list);
+    return list;
+  };
+
+  const create = async () => {
+    await flush();
+    const item: ModelConfigWithKey = { id: crypto.randomUUID(), name: '新配置', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE, pricing: DEFAULT_PRICING };
+    const list = [...items, item];
+    setItems(list);
+    setSelectedId(item.id);
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>('#mf-name')?.select());
+    await save(list).catch(failed);
+  };
+
+  const remove = async (m: ModelConfigWithKey) => {
+    const ok = await confirmBox({
+      title: `删除「${m.name}」？`,
+      body: '用这套配置的节点，下次发消息前要重新选一套。已经发出去的消息不受影响。这台电脑上存的密钥也一起删掉。',
+      ok: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    await flush();
+    const list = items.filter((x) => x.id !== m.id);
+    setItems(list);
+    setSelectedId(list[0]?.id ?? null);
+    try {
+      await save(list);
+      toast('已删除');
+    } catch (err) {
+      failed(err);
+    }
+  };
+
   return (
-    <section className="card">
-      <h2>模型配置</h2>
-      {items.map((m) => (
-        <div className="model-config" key={m.id}>
-          <label>
-            <span>名字</span>
-            <input value={m.name} onChange={(e) => update(m.id, { name: e.target.value })} />
-          </label>
-          <label>
-            <span>接口地址</span>
-            <input value={m.baseUrl} placeholder="例如 https://api.openai.com/v1" onChange={(e) => update(m.id, { baseUrl: e.target.value })} />
-          </label>
-          <label>
-            <span>API 密钥</span>
-            {/* 已保存的密钥显示成 ******，点进去全选，直接粘贴新的就会替换 */}
-            <input
-              value={m.apiKey}
-              placeholder="只存在本机，换一台机器要再填一次"
-              onFocus={(e) => e.target.select()}
-              onChange={(e) => update(m.id, { apiKey: e.target.value })}
-            />
-          </label>
-          <label>
-            <span>模型名</span>
-            <input value={m.model} onChange={(e) => update(m.id, { model: e.target.value })} />
-          </label>
-          <label>
-            <span>发图长边</span>
-            <input
-              type="number"
-              min={1}
-              value={Number.isNaN(m.imageLongSide) ? '' : m.imageLongSide}
-              onChange={(e) => update(m.id, { imageLongSide: e.target.valueAsNumber })}
-            />
-          </label>
-          <div className="label-row">
-            <span>价格</span>
-            <div className="prices">
-              <select aria-label="币种" value={m.pricing.currency} onChange={(e) => setPrice(m, { currency: e.target.value as ModelPricing['currency'] })}>
-                <option value="¥">¥</option>
-                <option value="$">$</option>
-              </select>
-              {PRICE_FIELDS.map(([key, label]) => (
-                <label className="price" key={key}>
-                  <span>{label}</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={m.pricing[key] || ''}
-                    onChange={(e) => setPrice(m, { [key]: e.target.valueAsNumber || 0 })}
-                  />
-                </label>
-              ))}
-              <span className="muted">每百万 tokens，留空就不算钱</span>
-            </div>
-          </div>
-          <div className="row">
-            <button type="button" onClick={() => test(m.id)}>测试连接</button>
-            <button type="button" onClick={() => edit(items.filter((x) => x.id !== m.id))}>删除</button>
-            {testStatus[m.id] && <span className={`status ${testStatus[m.id].kind}`}>{testStatus[m.id].text}</span>}
-          </div>
+    <>
+      <div className="st-head">
+        <div>
+          <h2>模型配置</h2>
+          <p>决定用哪个 AI 写提示词。可以存好几套，每个节点在自己的对话面板里选用哪套。</p>
         </div>
-      ))}
-      <div className="row actions">
-        <button type="button" onClick={add}>新增模型配置</button>
-        <button type="button" onClick={save} disabled={!dirty}>保存</button>
-        {saveStatus && <span className={`status ${saveStatus.kind}`}>{saveStatus.text}</span>}
+        <button type="button" className="btn btn-primary" id="mNew" onClick={() => void create()}>
+          <Icon name="plus" />新建配置
+        </button>
       </div>
-    </section>
+      <div className="split">
+        <div className="list" id="mList" data-od-id="model-config-list">
+          {items.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className="li"
+              data-model={m.id}
+              aria-current={m.id === selected?.id ? 'true' : 'false'}
+              onClick={() => void flush().then(() => setSelectedId(m.id))}
+            >
+              <span className="t">{m.name}</span>
+              <span className="s mono">{m.model} · {m.baseUrl.replace(/^https?:\/\//, '')}</span>
+              <span className="tags">
+                {m.apiKey
+                  ? <span className="tag tag-ok"><Icon name="key" />密钥已配置</span>
+                  : <span className="tag tag-warn"><Icon name="key" />这台电脑还没填密钥</span>}
+                {isPriced(m.pricing)
+                  ? <span className="tag mono">{m.pricing.currency}{m.pricing.input} / {m.pricing.currency}{m.pricing.output}</span>
+                  : <span className="tag">没填价格</span>}
+              </span>
+            </button>
+          ))}
+        </div>
+        {selected ? (
+          <section className="card editor" data-od-id="model-config-editor">
+            <div className="editor-head">
+              <h2 id="mTitle">{selected.name || '（没起名）'}</h2>
+              <button type="button" className="btn btn-danger-ghost btn-sm" id="mDel" onClick={() => void remove(selected)}>
+                <Icon name="trash" />删除这套
+              </button>
+            </div>
+            <div id="mf">
+              <ModelForm
+                key={selected.id}
+                value={selected}
+                onChange={replace}
+                beforeTest={async (item) => {
+                  replace(item);
+                  await flush();
+                }}
+              />
+            </div>
+          </section>
+        ) : (
+          <p className="muted">还没有模型配置。</p>
+        )}
+      </div>
+    </>
   );
 }
 
-function PromptsSection() {
-  const [names, setNames] = useState<string[]>([]);
-  const [current, setCurrent] = useState<string | null>(null);
-  const [text, setText] = useState('');
-  const [savedText, setSavedText] = useState('');
-  const [status, setStatus] = useState<Status | null>(null);
-  const dirty = current !== null && text !== savedText;
+type Prompt = { name: string; text: string };
 
-  async function run(task: () => Promise<void>) {
-    setStatus(null);
-    try {
-      await task();
-    } catch (err) {
-      setStatus({ kind: 'error', text: (err as Error).message });
-    }
-  }
+const BUILTIN: Record<string, string> = {
+  ref2va: '有参考图，图提供人物、场景、风格或分镜',
+  i2v: '一张图当第一帧往后演',
+  t2v: '纯文字，不用图',
+};
+const DEFAULT_PROMPT = 'ref2va';
 
-  async function openPrompt(name: string) {
-    const prompt = await api<{ name: string; text: string }>(promptUrl(name));
-    setCurrent(name);
-    setText(prompt.text);
-    setSavedText(prompt.text);
-  }
+// 自己建的没有说明，拿正文第一行
+const describe = (p: Prompt) => BUILTIN[p.name] ?? (p.text.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean) || '自己建的');
 
-  async function reloadList(select?: string | null) {
-    const list = await api<string[]>('/prompts');
-    setNames(list);
-    const next = select !== undefined ? select : list[0];
-    if (next && list.includes(next)) await openPrompt(next);
-    else {
-      setCurrent(null);
-      setText('');
-      setSavedText('');
-    }
-  }
+function PromptsTab({ workFolder }: { workFolder: string | null }) {
+  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const selected = prompts.find((p) => p.name === selectedName) ?? prompts[0];
+  const { schedule, flush, isPending } = useDebouncedSave((p: Prompt) =>
+    trackWrite(api(promptUrl(p.name), { method: 'PUT', body: { text: p.text } })),
+  );
 
-  useEffect(() => {
-    void run(() => reloadList());
+  const load = useCallback(async (select?: string) => {
+    const names = await api<string[]>('/prompts');
+    const list = await Promise.all(names.map((name) => api<Prompt>(promptUrl(name))));
+    setPrompts(list);
+    if (select !== undefined) setSelectedName(select);
   }, []);
 
-  const confirmDiscard = () => !dirty || window.confirm(`「${current}」有没保存的修改，不要了吗？`);
+  useEffect(() => {
+    if (workFolder) load().catch(failed);
+  }, [workFolder, load]);
 
-  const create = () =>
-    run(async () => {
-      if (!confirmDiscard()) return;
-      const name = window.prompt('新系统提示词的名字')?.trim();
-      if (!name) return;
-      await api('/prompts', { method: 'POST', body: { name, text: '' } });
-      await reloadList(name);
-    });
+  // 用外部编辑器改完切回来，把文件里的新内容读回来（这边正在改的不动）
+  const selectedPromptName = selected?.name;
+  useEffect(() => {
+    if (!selectedPromptName) return;
+    const onFocus = () => {
+      if (isPending()) return;
+      api<Prompt>(promptUrl(selectedPromptName)).then(
+        (fresh) => setPrompts((list) => list.map((p) => (p.name === fresh.name && p.text !== fresh.text ? fresh : p))),
+        () => {},
+      );
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [selectedPromptName, isPending]);
 
-  const remove = () =>
-    run(async () => {
-      if (!current || !window.confirm(`删除系统提示词「${current}」？会移到工作文件夹的 .trash 里。`)) return;
-      await api(promptUrl(current), { method: 'DELETE' });
-      await reloadList();
+  if (!workFolder) return <p className="muted">系统提示词存在工作文件夹里，先在「工作文件夹」里选一个。</p>;
+
+  const sep = workFolder.includes('\\') ? '\\' : '/';
+
+  const edit = (text: string) => {
+    const next = { ...selected!, text };
+    setPrompts((list) => list.map((p) => (p.name === next.name ? next : p)));
+    schedule(next);
+  };
+
+  const remove = async (p: Prompt) => {
+    const ok = await confirmBox({
+      title: `删除「${p.name}」？`,
+      body: (
+        <>
+          {p.name === DEFAULT_PROMPT && <>这是新节点默认用的一套，删掉后新节点要自己选。<br /><br /></>}
+          用这套的节点下次发消息前要重新选一套。已经发出去的消息还能查到当时的原文。
+        </>
+      ),
+      ok: '删除',
+      danger: true,
     });
+    if (!ok) return;
+    try {
+      await flush();
+      await trackWrite(api(promptUrl(p.name), { method: 'DELETE' }));
+      await load();
+      setSelectedName(null);
+      toast('已删除');
+    } catch (err) {
+      failed(err);
+    }
+  };
+
+  const openExternal = async (p: Prompt) => {
+    try {
+      await flush();
+      await api(`${promptUrl(p.name)}/open`, { method: 'POST' });
+      toast(`已用默认编辑器打开 ${p.name}.md，外面改完回来这里会自动刷新`);
+    } catch (err) {
+      failed(err);
+    }
+  };
 
   return (
-    <section className="card">
-      <h2>系统提示词</h2>
-      <div className="prompts-layout">
-        <ul className="prompt-list">
-          {names.map((name) => (
-            <li key={name}>
-              <button
-                type="button"
-                className={name === current ? 'active' : ''}
-                onClick={() =>
-                  void run(async () => {
-                    if (confirmDiscard()) await openPrompt(name);
-                  })
-                }
-              >
-                {name}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="prompt-editor">
-          <textarea aria-label="系统提示词内容" value={text} disabled={current === null} onChange={(e) => setText(e.target.value)} />
-          <div className="row">
-            <button
-              type="button"
-              disabled={!dirty}
-              onClick={() =>
-                void run(async () => {
-                  await api(promptUrl(current!), { method: 'PUT', body: { text } });
-                  setSavedText(text);
-                  setStatus({ kind: 'ok', text: '已保存，之后的回复按这一版写' });
-                })
-              }
-            >
-              保存
-            </button>
-            <button type="button" onClick={() => void create()}>新建</button>
-            <button type="button" disabled={current === null} onClick={() => void remove()}>删除</button>
-            <button
-              type="button"
-              disabled={current === null}
-              onClick={() =>
-                void run(async () => {
-                  await api(`${promptUrl(current!)}/open`, { method: 'POST' });
-                })
-              }
-            >
-              用外部编辑器打开
-            </button>
-            {status && <span className={`status ${status.kind}`}>{status.text}</span>}
-          </div>
+    <>
+      <div className="st-head">
+        <div>
+          <h2>系统提示词</h2>
+          <p>给 AI 的长期指令，决定它按什么规矩写提示词。每个节点自己选用哪套；每次发消息用到的版本会另存一份，改了也能查到当时的原文。</p>
         </div>
+        <button type="button" className="btn btn-primary" id="pNew" onClick={() => setCreating(true)}>
+          <Icon name="plus" />新建
+        </button>
       </div>
-    </section>
+      <div className="split">
+        <div className="list" id="pList" data-od-id="system-prompt-list">
+          {prompts.map((p) => (
+            <button
+              key={p.name}
+              type="button"
+              className="li"
+              data-prompt={p.name}
+              aria-current={p.name === selected?.name ? 'true' : 'false'}
+              onClick={() => void flush().then(() => setSelectedName(p.name))}
+            >
+              <span className="t mono">{p.name}</span>
+              <span className="s">{describe(p)}</span>
+              <span className="tags">
+                {p.name in BUILTIN ? <span className="tag">自带</span> : <span className="tag">自己建的</span>}
+                {p.name === DEFAULT_PROMPT && <span className="tag tag-accent">新节点默认</span>}
+                <span className="tag mono">{fmtNum(p.text.length)} 字</span>
+              </span>
+            </button>
+          ))}
+        </div>
+        {selected && (
+          <section className="card editor" data-od-id="system-prompt-editor">
+            <div className="editor-head">
+              <h2 className="mono">{selected.name}.md</h2>
+              <button type="button" className="btn btn-secondary btn-sm" id="pExt" onClick={() => void openExternal(selected)}>
+                <Icon name="external" />用外部编辑器打开
+              </button>
+              <button type="button" className="btn btn-danger-ghost btn-sm" id="pDel" onClick={() => void remove(selected)}>
+                <Icon name="trash" />删除
+              </button>
+            </div>
+            <textarea
+              className="textarea prompt-area"
+              id="pText"
+              aria-label="系统提示词内容"
+              spellCheck={false}
+              value={selected.text}
+              onChange={(e) => edit(e.target.value)}
+            />
+            <p className="hint" style={{ marginTop: 8 }}>
+              改动自动写进 <span className="mono">{`${workFolder}${sep}prompts${sep}${selected.name}.md`}</span>。程序会在这段后面自动接上
+              <Link className="linkish" to={{ hash: 'format' }}>固定格式要求</Link>。
+            </p>
+          </section>
+        )}
+      </div>
+      {creating && (
+        <NewPromptDialog
+          from={selected}
+          existing={prompts.map((p) => p.name)}
+          onClose={() => setCreating(false)}
+          onCreated={async (name) => {
+            setCreating(false);
+            await load(name);
+          }}
+        />
+      )}
+    </>
   );
 }
 
-// 和画布页左栏同一份列表，导入在左栏做
-function AssetFoldersSection({ config, onSaved }: SectionProps) {
+type NewPromptProps = { from: Prompt | undefined; existing: string[]; onClose: () => void; onCreated: (name: string) => Promise<void> };
+
+function NewPromptDialog({ from, existing, onClose, onCreated }: NewPromptProps) {
+  const [name, setName] = useState('');
   const [error, setError] = useState('');
 
-  const remove = async (folder: string) => {
+  const create = async () => {
+    const value = name.trim();
+    if (!value) return setError('先起个名字');
+    if (existing.includes(value)) return setError(`已经有叫「${value}」的了`);
     try {
-      const assetFolders = await api<string[]>('/assets/folders', { method: 'DELETE', body: { path: folder } });
-      onSaved({ ...config, assetFolders });
-      setError('');
+      await trackWrite(api('/prompts', { method: 'POST', body: { name: value, text: from?.text ?? '' } }));
+      await onCreated(value);
     } catch (err) {
       setError((err as Error).message);
     }
   };
 
   return (
-    <section className="card">
-      <h2>资产库文件夹</h2>
-      {config.assetFolders.length === 0 && <p className="muted">还没有导入文件夹，在画布页左栏点「导入文件夹」。</p>}
-      <ul className="folder-list">
-        {config.assetFolders.map((folder) => (
-          <li key={folder}>
-            <span>{folder}</span>
-            <button type="button" onClick={() => void remove(folder)}>移除</button>
-          </li>
-        ))}
-      </ul>
-      <p className="muted">移除只是不在资产库里显示，不会动文件。</p>
-      {error && <p className="status error">{error}</p>}
-    </section>
+    <Dialog label="新建系统提示词" onClose={onClose}>
+      <div className="dialog-head"><h2>新建系统提示词</h2></div>
+      <div className="dialog-body">
+        <div className="field">
+          <label htmlFor="pn">名字</label>
+          <input
+            className="input mono"
+            id="pn"
+            placeholder="比如：i2v-慢节奏"
+            autoFocus
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              setError('');
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && void create()}
+          />
+          <p className={error ? 'hint is-error' : 'hint'} id="pnh">
+            {error || (from ? `会存成 prompts 文件夹里的一个 .md 文件，内容先复制当前选中的「${from.name}」。` : '会存成 prompts 文件夹里的一个 .md 文件，内容先空着。')}
+          </p>
+        </div>
+      </div>
+      <div className="dialog-foot">
+        <button type="button" className="btn btn-secondary" onClick={onClose}>取消</button>
+        <button type="button" className="btn btn-primary" onClick={() => void create()}>新建</button>
+      </div>
+    </Dialog>
   );
 }
 
-function FormatRequirementSection() {
+function FormatTab() {
   const [text, setText] = useState('');
 
   useEffect(() => {
-    api<{ text: string }>('/format-requirement').then(
-      (res) => setText(res.text),
-      (err: Error) => setText(`读取失败：${err.message}`),
-    );
+    api<{ text: string }>('/format-requirement').then((res) => setText(res.text), failed);
   }, []);
 
   return (
-    <section className="card">
-      <h2>程序固定附加的格式要求</h2>
-      <p className="muted">每次发给模型时，自动接在系统提示词后面，这里只能看不能改。</p>
-      <pre className="readonly-text">{text}</pre>
-    </section>
+    <>
+      <div className="st-head">
+        <div>
+          <h2>固定格式要求</h2>
+          <p>程序自动接在每套系统提示词后面（中间空两行）。程序靠这个格式把提示词框从回复里切出来，所以这里只能看，不能改。</p>
+        </div>
+        <span className="tag"><Icon name="lock" />只能看</span>
+      </div>
+      <pre className="ro" data-od-id="format-requirement">{text}</pre>
+    </>
   );
 }

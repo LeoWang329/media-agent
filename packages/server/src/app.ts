@@ -1,12 +1,14 @@
 import express, { type ErrorRequestHandler } from 'express';
 import http from 'node:http';
 import path from 'node:path';
-import { maskConfig, readConfig, updateConfig } from './config';
+import { maskConfig, readConfig, requireWorkFolder, updateConfig } from './config';
 import { HttpError } from './httpError';
 import { testConnection } from './llm/testConnection';
+import { openExternal } from './native/openExternal';
 import { assetRoutes } from './routes/assets';
 import { canvasRoutes } from './routes/canvases';
 import { promptRoutes } from './routes/prompts';
+import { workFolderStatus } from './store/workFolder';
 
 export type AppOptions = {
   configDir: string;
@@ -25,6 +27,17 @@ export function createApp({ configDir, clientDist }: AppOptions): express.Expres
 
   api.put('/config', async (req, res) => {
     res.json(maskConfig(await updateConfig(configDir, req.body)));
+  });
+
+  api.get('/work-folder', async (_req, res) => {
+    const work = await requireWorkFolder(configDir);
+    const { modelConfigs } = await readConfig(configDir);
+    res.json({ path: work, modelConfigs: modelConfigs.length, ...(await workFolderStatus(work)) });
+  });
+
+  api.post('/work-folder/open', async (_req, res) => {
+    openExternal(await requireWorkFolder(configDir));
+    res.status(204).end();
   });
 
   api.post('/llm/test', async (req, res) => {

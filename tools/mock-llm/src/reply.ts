@@ -17,6 +17,17 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   const texts = parts.flatMap((p) => (p.type === 'text' ? [p.text] : []));
   const userText = texts.join('\n');
 
+  // 翻译提示词框：系统消息里写着「翻译成某种语言」，回复标出语言和要求，后面接原文
+  const system = toParts(messages.find((m) => m.role === 'system')?.content ?? null)
+    .flatMap((p) => (p.type === 'text' ? [p.text] : []))
+    .join('\n');
+  const language = system.match(/翻译成([^\s。，,]+)/)?.[1];
+  if (language) {
+    const requirement = system.match(/用户对这次翻译的要求[^\n]*\n([\s\S]*)$/)?.[1].trim();
+    const reply = [`译文（${language}）${requirement ? `，按要求：${requirement}` : ''}`, userText].join('\n');
+    return { reply, userText, fail: userText.includes('报错'), slow: userText.includes('慢') };
+  }
+
   const pictureLabels: string[] = [];
   let imageCount = 0;
   parts.forEach((part, i) => {

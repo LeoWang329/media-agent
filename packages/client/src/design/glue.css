@@ -1,0 +1,23 @@
+/* 原型是手写 DOM，搬进 React 和 Tiptap 后要补的几条，不改原型的样子 */
+
+/* 输入框和手动改提示词用的 Tiptap：里面是一段一段的 p，占位文字挂在第一段上 */
+.composer-input p { margin: 0; }
+.composer-input p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
+  color: color-mix(in oklch, var(--muted) 80%, transparent);
+}
+
+/* 框外的文字是 Markdown：段落之间的换行不另占一行，段落里的换行照留 */
+.intro.markdown { white-space: normal; }
+.intro.markdown p, .intro.markdown li { white-space: pre-wrap; }
+.intro.markdown > * + * { margin-top: .6em; }
+.intro.markdown ul, .intro.markdown ol { margin: 0; padding-left: 1.4em; }
+.intro.markdown pre { white-space: pre-wrap; margin: 0; font-family: var(--font-mono); font-size: 13px; }
+
+/* 资产库：图片网格自己滚，弹窗本身不滚；这样滚到底才会接着加载 */
+.as-body { grid-template-rows: minmax(0, 1fr); }
+.as-main { min-height: 0; }
+@media (max-width: 720px) { .as-body { grid-template-rows: auto minmax(0, 1fr); } }
+
+/* 槽位上「尺寸不符」：原型没画，沿用「处理过」的角标，字换成红色 */
+.slot .proc.is-misfit { color: oklch(78% 0.15 25); }

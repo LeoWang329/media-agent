@@ -39,7 +39,7 @@ describe('资产库', () => {
     expect((await fs.stat(tmp)).isDirectory()).toBe(true);
   });
 
-  it('列文件夹：只列支持的格式和 heic（标不支持），按文件名排序；新加的文件刷新后出现；子文件夹树', async () => {
+  it('列文件夹：连子文件夹一起列，只列支持的格式和 heic（标不支持），按文件名排序；新加的文件刷新后出现；子文件夹树带张数', async () => {
     const root = path.join(tmp, 'root');
     await image(path.join(root, 'b10.jpg'));
     await image(path.join(root, 'b2.PNG'));
@@ -55,8 +55,10 @@ describe('资产库', () => {
       ['a.webp', true],
       ['b2.PNG', true],
       ['b10.jpg', true],
+      ['c.jpg', true],
       ['photo.heic', false],
     ]);
+    expect((await t.ok<AssetFile[]>('GET', query('/assets/list', { folder: path.join(root, 'sub') }))).map((f) => f.name)).toEqual(['c.jpg']);
     expect(files[0]).toMatchObject({ path: path.join(root, 'a.webp'), size: expect.any(Number), mtime: expect.any(Number) });
 
     await image(path.join(root, 'new.jpg'));
@@ -64,8 +66,8 @@ describe('资产库', () => {
     expect((await t.ok<AssetFile[]>('GET', query('/assets/list', { folder: root, refresh: '1' }))).map((f) => f.name)).toContain('new.jpg');
 
     const tree = await t.ok<FolderTree>('GET', query('/assets/tree', { root }));
-    const names = (node: FolderTree): unknown => [node.name, node.children.map(names)];
-    expect(names(tree)).toEqual(['root', [['empty', []], ['sub', [['deeper', []]]]]]);
+    const names = (node: FolderTree): unknown => [node.name, node.count, node.children.map(names)];
+    expect(names(tree)).toEqual(['root', 6, [['empty', 0, []], ['sub', 1, [['deeper', 1, []]]]]]);
   });
 
   it('搜索跨全部导入的文件夹，按文件名不区分大小写', async () => {

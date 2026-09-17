@@ -51,10 +51,24 @@ export type ImageRecord = {
 // 资产库里的一个文件；supported 为假的（heic 等）只显示不能用
 export type AssetFile = { path: string; name: string; size: number; mtime: number; supported: boolean };
 
-// 资产库文件夹树，只含文件夹
-export type FolderTree = { path: string; name: string; children: FolderTree[] };
+// 资产库文件夹树，只含文件夹；count 是这个文件夹里（含子文件夹）列得出来的图片张数
+export type FolderTree = { path: string; name: string; count: number; children: FolderTree[] };
 
 export type PromptBox = { index: number; label?: string; text: string; summary: string };
+
+export type TranslateLanguage = '英文' | '中文' | '日文' | '韩文';
+
+// 提示词框的译文。同一个框同一种语言只留最新一份；instruction 是翻译时写的要求，没写是空字符串
+export type PromptTranslation = {
+  promptIndex: number;
+  language: TranslateLanguage;
+  instruction: string;
+  text: string;
+  createdAt: string;
+  modelConfigId: string;
+  modelName: string;
+  usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
+};
 
 export type Message = {
   id: string;
@@ -75,10 +89,12 @@ export type Message = {
   systemPromptHash?: string;
   parsed?: { title?: string; prompts: PromptBox[] };
   stars?: number[];
+  translations?: PromptTranslation[];
   editedFromMessageId?: string;
   videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];
   usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string; // 生成失败时的错误，text 为空
+  stopped?: boolean; // 生成到一半被叫停，text 是叫停前收到的部分
 };
 
 // 画布上的一个节点，就是一段对话
@@ -89,6 +105,7 @@ export type ChatNode = {
   titleIsManual: boolean;
   parentNodeId: string | null;
   forkedFromMessageId: string | null;
+  copiedCount?: number; // 岔出时从原节点复制来几条消息（之前岔出的节点没记）
   modelConfigId: string;
   systemPromptName: string;
   slots: string[];
@@ -102,18 +119,29 @@ export type ChatNode = {
   updatedAt: string;
 };
 
-export type CanvasListItem = { id: string; title: string; updatedAt: string; nodeCount: number };
+// cover 是最近放进槽位的那张图的 id，没放过图时为 null；generating 是正在生成回复的节点数
+export type CanvasListItem = { id: string; title: string; updatedAt: string; nodeCount: number; cover: string | null; generating: number };
 
 export type NodeSummary = CanvasNodeLayout & {
   title: string;
   parentNodeId: string | null;
   slots: string[];
+  duration: number;
+  aspectRatio: AspectRatio;
   summary: string;
   directionCount: number;
   starred: boolean;
+  failed: boolean; // 当前路径最后一条回复失败了
+  generating: boolean;
 };
 
-export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, ImageRecord> };
+// originalMissing：原文件已经不在了（只查槽位里正放着的图）
+export type CanvasImage = ImageRecord & { originalMissing?: boolean };
+
+export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, CanvasImage> };
+
+// 上传清单里一张图该传哪个文件；size 是那个文件的字节数
+export type ChecklistPath = { path: string; kind: 'original' | 'canvas'; note?: string; size: number };
 
 export type StreamEvent =
   | { type: 'user'; message: Message }

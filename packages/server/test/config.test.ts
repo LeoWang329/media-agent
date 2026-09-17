@@ -90,6 +90,19 @@ describe('本机配置', () => {
     expect(await fs.readFile(defaultPrompt, 'utf8')).toBe('改过的提示词');
   });
 
+  it('工作文件夹状态：没设时 400；设好后能写入，数得出画布、系统提示词和模型配置', async () => {
+    expect((await request(app).get('/api/work-folder')).status).toBe(400);
+
+    const workFolder = path.join(tmp, 'work');
+    await request(app).put('/api/config').send({ workFolder }).expect(200);
+    await request(app).post('/api/canvases').send({ title: '一张画布' }).expect(201);
+    await request(app).put('/api/config').send({ modelConfigs: [modelConfig('m1', 'http://x/v1')] }).expect(200);
+
+    const res = await request(app).get('/api/work-folder');
+    expect(res.body).toEqual({ path: workFolder, writable: true, canvases: 1, prompts: 3, modelConfigs: 1 });
+    expect((await fs.readdir(workFolder)).some((name) => name.startsWith('.write-test'))).toBe(false);
+  });
+
   it('模型配置存工作文件夹、key 按 id 存本机；读取时打码，提交打码值不改 key，删掉配置 key 也删掉', async () => {
     expect((await request(app).put('/api/config').send({ modelConfigs: [] })).status).toBe(400);
 

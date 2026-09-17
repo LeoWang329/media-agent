@@ -1,0 +1,22 @@
+{
+  "$schema": "https://open-design.ai/schemas/plugin.v1.json",
+  "specVersion": "1.0.0",
+  "name": "skill-plugin-mu49g2pr",
+  "title": "提示词画布 · 好看的标准、诊断和改法",
+  "version": "0.1.0",
+  "description": "截图都在同一个文件夹里：`before-*` 是这轮改之前，`after-*` 是这轮修完之后。",
+  "od": {
+    "kind": "skill",
+    "taskKind": "new-generation",
+    "context": {
+      "skills": [
+        {
+          "path": "./SKILL.md"
+        }
+      ]
+    },
+    "capabilities": [
+      "prompt:inject"
+    ]
+  }
+}

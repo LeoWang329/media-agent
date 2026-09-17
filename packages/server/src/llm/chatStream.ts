@@ -3,7 +3,7 @@ import type { ChatCompletionMessage, Message, ModelConfigWithKey } from '@media-
 type Options = {
   modelConfig: ModelConfigWithKey;
   messages: ChatCompletionMessage[];
-  signal: AbortSignal;
+  signal?: AbortSignal;
   onDelta: (text: string) => void;
 };
 

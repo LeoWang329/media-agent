@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>提示词画布</title>
+    <script>
+      // 明暗在页面画出来之前定好，不然会先闪一下亮色；没选过默认暗色
+      try {
+        document.documentElement.setAttribute('data-theme', localStorage.getItem('pc-theme') || 'dark');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

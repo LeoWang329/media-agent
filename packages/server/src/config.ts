@@ -70,12 +70,14 @@ export async function updateConfig(configDir: string, body: unknown): Promise<Co
   return changeLocalConfig(configDir, async (local) => {
     if ('workFolder' in input) {
       const value = typeof input.workFolder === 'string' ? input.workFolder.trim() : '';
-      if (!path.isAbsolute(value)) throw new HttpError(400, '工作文件夹要填完整路径，例如 D:\\同步盘\\提示词画布');
+      if (!path.isAbsolute(value)) throw new HttpError(400, '要填完整路径，比如 D:\\同步盘\\提示词画布');
       const workFolder = path.resolve(value);
       try {
         await initWorkFolder(workFolder);
       } catch (err) {
-        throw new HttpError(400, `工作文件夹初始化失败：${(err as Error).message}`);
+        const { code, message } = err as NodeJS.ErrnoException;
+        if (code === 'EPERM' || code === 'EACCES') throw new HttpError(400, '这个文件夹不让写入：拒绝访问。换一个自己的文件夹');
+        throw new HttpError(400, `工作文件夹初始化失败：${message}`);
       }
       local.workFolder = workFolder;
     }

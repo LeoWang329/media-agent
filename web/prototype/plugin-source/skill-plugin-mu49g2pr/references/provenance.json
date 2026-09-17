@@ -1,0 +1,19 @@
+{
+  "candidateId": "bd983d0f-4756-48ac-ab20-199fdf9adee6",
+  "projectId": "6c8644d9-79d5-4ae6-a2fd-5f3343d71b42",
+  "runId": "0c24138b-ab7e-4681-be2b-da141815bcbf",
+  "conversationId": "be0915d1-f594-4e5e-93a9-d90719cc6b4f",
+  "provenance": {
+    "summary": "Detected from review/design-direction.md after a successful run.",
+    "detectedAt": 1789565347701
+  },
+  "sourceRefs": [
+    {
+      "kind": "file",
+      "value": "review/design-direction.md",
+      "label": "review/design-direction.md",
+      "size": 8004,
+      "copied": true
+    }
+  ]
+}

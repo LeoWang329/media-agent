@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>新年广告片 · 提示词画布</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <link rel="stylesheet" href="shared/canvas.css" />
+  <script src="shared/app.js"></script>
+</head>
+<body class="ws">
+
+  <!-- 画布 -->
+  <main class="ws-viewport" id="viewport" data-od-id="canvas-viewport" aria-label="节点画布">
+    <div class="ws-world" id="world">
+      <svg class="ws-edges" id="edges" aria-hidden="true"></svg>
+      <div id="nodes"></div>
+    </div>
+  </main>
+
+  <!-- 左上：返回首页 + 画布名 + 写入状态 -->
+  <header class="ws-float ws-top" data-od-id="canvas-topbar">
+    <a class="btn btn-ghost btn-icon" href="home.html" title="回到首页" aria-label="回到首页" data-icon="home"></a>
+    <div class="ws-crumb">
+      <a href="home.html" class="muted hide-sm">画布</a>
+      <span class="muted hide-sm">/</span>
+      <button class="ws-title-btn" id="canvasTitle" title="点击改名" data-od-id="canvas-title">新年广告片</button>
+    </div>
+    <span class="vr hide-sm"></span>
+    <span class="save-state hide-sm" data-od-id="save-state"><span class="dot dot-ok"></span><span class="save-text">已写入 17:42:05</span></span>
+  </header>
+
+  <!-- 右上：画布工具 -->
+  <nav class="ws-float ws-tools" id="tools" aria-label="画布工具" data-od-id="canvas-tools">
+    <button class="btn btn-ghost" id="btnNewNode" data-icon="plus" data-od-id="btn-new-node"><span class="hide-sm">新建节点</span></button>
+    <button class="btn btn-ghost hide-sm" id="btnLayout" data-icon="layout" data-od-id="btn-auto-layout">自动排整齐</button>
+    <span class="vr hide-sm"></span>
+    <button class="btn btn-ghost btn-icon hide-sm" id="btnUndo" data-icon="undo" aria-label="撤销" data-od-id="btn-undo"></button>
+    <button class="btn btn-ghost btn-icon hide-sm" id="btnRedo" data-icon="redo" aria-label="重做" data-od-id="btn-redo"></button>
+    <span class="vr hide-sm"></span>
+    <button class="btn btn-ghost hide-sm" id="btnAssets" data-icon="image" data-od-id="btn-assets"><span class="hide-md">资产库</span></button>
+    <button class="btn btn-ghost btn-icon hide-sm" data-theme-toggle></button>
+    <a class="btn btn-ghost btn-icon hide-sm" href="settings.html" data-icon="gear" aria-label="设置" title="设置"></a>
+    <button class="btn btn-ghost btn-icon show-sm" id="btnMore" data-icon="more" aria-label="更多"></button>
+  </nav>
+
+  <!-- 左下：缩放 -->
+  <div class="ws-float ws-zoom" data-od-id="canvas-zoom">
+    <button class="btn btn-ghost btn-icon btn-sm" id="zoomOut" data-icon="minus" aria-label="缩小"></button>
+    <button class="btn btn-ghost btn-sm mono" id="zoomVal" title="回到 100%">100%</button>
+    <button class="btn btn-ghost btn-icon btn-sm" id="zoomIn" data-icon="plus" aria-label="放大"></button>
+    <span class="vr"></span>
+    <button class="btn btn-ghost btn-icon btn-sm" id="zoomFit" data-icon="fit" aria-label="显示全部节点" title="显示全部节点"></button>
+  </div>
+
+  <!-- 右侧：节点对话面板 -->
+  <aside class="drawer" id="drawer" aria-label="节点对话" data-od-id="node-drawer">
+    <div class="drawer-resize" id="drawerResize" title="拖动调宽"></div>
+    <header class="dr-head" data-od-id="drawer-head">
+      <div class="dr-head-row">
+        <button class="btn btn-ghost btn-icon show-sm" id="drBack" data-icon="chev-left" aria-label="返回画布"></button>
+        <div class="dr-title-wrap grow">
+          <button class="dr-title" id="drTitle" title="点击改名" data-od-id="drawer-node-title"></button>
+          <div class="dr-sub" id="drSub"></div>
+        </div>
+        <button class="btn btn-ghost btn-icon" id="drMenu" data-icon="more" aria-label="节点操作"></button>
+        <button class="btn btn-ghost btn-icon hide-sm" id="drClose" data-icon="x" aria-label="收起面板"></button>
+      </div>
+      <div class="dr-config" data-od-id="node-config">
+        <label class="cfg"><span data-icon="cpu" data-icon-class="icon-sm"></span>
+          <select id="cfgModel" aria-label="模型配置"></select></label>
+        <label class="cfg"><span data-icon="doc" data-icon-class="icon-sm"></span>
+          <select id="cfgSys" aria-label="系统提示词"></select></label>
+        <span class="meta grow dr-cost" id="drCost"></span>
+      </div>
+    </header>
+
+    <div class="dr-body" id="thread" data-od-id="thread"></div>
+
+    <footer class="dr-dock" data-od-id="composer-dock">
+      <div class="pending" id="pending" hidden data-od-id="pending-changes"></div>
+
+      <div class="slots-head">
+        <span class="panel-title">参考图 <span class="mono" id="slotCount">0/9</span></span>
+        <div class="param">
+          <span class="meta">时长</span>
+          <div class="stepper" data-od-id="duration-stepper">
+            <button id="durDown" aria-label="减少一秒">−</button><output id="durVal">8 秒</output><button id="durUp" aria-label="增加一秒">+</button>
+          </div>
+        </div>
+        <div class="param">
+          <span class="meta">比例</span>
+          <select class="select select-sm mono" id="ratioSel" aria-label="画面比例" data-od-id="ratio-select">
+            <option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>1:1</option><option>21:9</option>
+          </select>
+        </div>
+        <span class="grow"></span>
+        <button class="btn btn-ghost btn-sm" id="slotAssets" data-icon="image" data-od-id="btn-slot-from-assets"><span class="hide-sm">资产库</span></button>
+        <button class="btn btn-ghost btn-sm" id="slotLocal" data-icon="folder" data-od-id="btn-slot-from-disk"><span class="hide-sm">电脑里的图</span></button>
+        <button class="btn btn-ghost btn-sm" id="slotCollage" data-icon="grid" data-od-id="btn-collage"><span class="hide-sm">拼图</span></button>
+      </div>
+      <div class="slots" id="slots" data-od-id="slots"></div>
+
+      <div class="composer" id="composer" data-od-id="composer">
+        <div class="composer-input" id="input" contenteditable="true" role="textbox" aria-multiline="true"
+             data-placeholder="写需求，比如「第二个方向再慢一点」。按 @ 可以把某张图插进句子里"></div>
+        <div class="composer-error" id="composerError" hidden></div>
+        <div class="composer-bar">
+          <button class="btn btn-ghost btn-sm" id="btnRef" data-icon="at" data-od-id="btn-insert-ref">引用图片</button>
+          <span class="meta hide-sm">Enter 发送 · Shift+Enter 换行</span>
+          <span class="grow"></span>
+          <button class="btn btn-primary" id="btnSend" data-icon="send" data-od-id="btn-send">发送</button>
+        </div>
+      </div>
+    </footer>
+  </aside>
+
+  <!-- 资产库 -->
+  <dialog class="dialog dialog-wide" id="dlgAssets" aria-label="资产库" data-od-id="dialog-assets">
+    <div class="dialog-head as-head">
+      <div class="stack" style="gap:2px">
+        <h2 id="asTitle">资产库</h2>
+        <span class="meta" id="asSub">图片原地引用，不会复制到别处</span>
+      </div>
+      <label class="as-search"><span data-icon="search" data-icon-class="icon-sm"></span>
+        <input class="input" id="asSearch" type="search" placeholder="按文件名搜索全部导入过的文件夹" /></label>
+      <button class="btn btn-ghost btn-icon" data-close data-icon="x" aria-label="关闭"></button>
+    </div>
+    <div class="as-body">
+      <nav class="as-side" id="asSide" aria-label="导入的文件夹"></nav>
+      <section class="as-main">
+        <div class="as-crumb row-between"><span id="asCrumb" class="mono meta"></span><span class="meta" id="asCount"></span></div>
+        <div class="as-grid" id="asGrid"></div>
+      </section>
+    </div>
+    <div class="dialog-foot as-foot">
+      <span class="meta grow" id="asSel"></span>
+      <button class="btn btn-secondary" data-close>取消</button>
+      <button class="btn btn-primary" id="asConfirm">放进槽位</button>
+    </div>
+  </dialog>
+
+  <!-- 上传清单 -->
+  <dialog class="dialog dialog-sheet" id="dlgUpload" style="width:min(780px, calc(100vw - 32px))" aria-label="上传清单" data-od-id="dialog-upload-list">
+    <div class="dialog-head">
+      <div class="stack" style="gap:2px; min-width:0">
+        <h2>上传清单</h2>
+        <span class="meta" id="upSub"></span>
+      </div>
+      <div class="row">
+        <button class="btn btn-secondary btn-sm" id="upCopyPrompt" data-icon="copy">复制提示词</button>
+        <button class="btn btn-ghost btn-icon" data-close data-icon="x" aria-label="关闭"></button>
+      </div>
+    </div>
+    <div class="dialog-body" id="upBody"></div>
+    <div class="dialog-foot">
+      <span class="meta grow" id="upFootNote"></span>
+      <button class="btn btn-secondary" id="upCopyAll" data-icon="copy">复制全部路径</button>
+      <button class="btn btn-primary" data-close>好了</button>
+    </div>
+  </dialog>
+
+  <!-- 拼图 -->
+  <dialog class="dialog dialog-wide" id="dlgCollage" aria-label="拼图" data-od-id="dialog-collage">
+    <div class="dialog-head">
+      <div class="stack" style="gap:2px">
+        <h2>拼图</h2>
+        <span class="meta">几张图拼成一张宫格图，只占一个槽位</span>
+      </div>
+      <button class="btn btn-ghost btn-icon" data-close data-icon="x" aria-label="关闭"></button>
+    </div>
+    <div class="cl-body">
+      <aside class="cl-settings" id="clSettings"></aside>
+      <section class="cl-stage"><div class="cl-board" id="clBoard"></div><p class="meta cl-tip" id="clTip"></p></section>
+      <aside class="cl-pick" id="clPick"></aside>
+    </div>
+    <div class="dialog-foot">
+      <span class="meta grow" id="clFoot"></span>
+      <button class="btn btn-secondary" data-close>取消</button>
+      <button class="btn btn-secondary" id="clSave">只保存</button>
+      <button class="btn btn-primary" id="clSaveSlot">保存并放进槽位</button>
+    </div>
+  </dialog>
+
+  <!-- 当时的系统提示词原文 -->
+  <dialog class="dialog" id="dlgSys" style="width:min(720px, calc(100vw - 32px))" aria-label="系统提示词原文" data-od-id="dialog-system-prompt-snapshot">
+    <div class="dialog-head">
+      <div class="stack" style="gap:2px">
+        <h2 id="sysTitle"></h2>
+        <span class="meta">发这条消息时用的原文。之后在设置里改过，这里也不会变。</span>
+      </div>
+      <button class="btn btn-ghost btn-icon" data-close data-icon="x" aria-label="关闭"></button>
+    </div>
+    <div class="dialog-body"><pre class="sys-pre" id="sysPre"></pre></div>
+    <div class="dialog-foot">
+      <button class="btn btn-secondary" id="sysCopy" data-icon="copy">复制原文</button>
+      <button class="btn btn-primary" data-close>关闭</button>
+    </div>
+  </dialog>
+
+  <!-- 翻译提示词：左边选语言、写要求，右边看译文 -->
+  <dialog class="dialog dialog-sheet tr-dialog" id="dlgTranslate" aria-label="翻译提示词" data-od-id="dialog-translate">
+    <div class="dialog-head tr-head">
+      <div class="stack tr-title" style="gap:2px">
+        <h2>翻译提示词</h2>
+        <div class="tr-sub" id="trSub" data-od-id="translate-source"></div>
+      </div>
+      <label class="tr-proto" title="只在原型里有，用来切到各种状态看样子，正式程序里没有" data-od-id="translate-prototype-states">
+        <span>原型</span>
+        <select class="select select-sm" id="trProto" aria-label="原型：切换翻译弹窗的状态">
+          <option value="">切到某种状态…</option>
+          <option value="empty">这种语言还没翻过</option>
+          <option value="first">第一次翻，正在翻</option>
+          <option value="again">重新翻译中，旧译文还在</option>
+          <option value="done">翻好了：写了要求，有价格</option>
+          <option value="plain">翻好了：没写要求，没填价格</option>
+          <option value="longModel">翻好了：模型名很长</option>
+          <option value="failConfig">翻译失败：节点没有可用的模型配置</option>
+          <option value="failApi">翻译失败：接口返回一长串英文</option>
+          <option value="closedDone">翻好时弹窗已经关了</option>
+          <option value="fresh">一种都没翻过（刚打开停在英文）</option>
+          <option value="finishNow">让正在翻的马上翻完</option>
+        </select>
+      </label>
+      <button class="btn btn-ghost btn-icon tr-close" data-close data-icon="x" aria-label="关闭" title="关闭（Esc）"></button>
+    </div>
+    <div class="tr-body">
+      <aside class="tr-side" data-od-id="translate-settings">
+        <div class="stack" style="gap:6px">
+          <span class="panel-title" id="trLangTitle">翻成</span>
+          <div class="tr-langs" id="trLangs" role="group" aria-labelledby="trLangTitle" data-od-id="translate-languages"></div>
+        </div>
+        <button class="btn btn-secondary tr-req-toggle" id="trReqToggle" aria-expanded="false">改要求、重新翻译<span data-icon="chev-down" data-icon-class="icon-sm"></span></button>
+        <div class="tr-req-wrap">
+          <div class="field">
+            <label for="trReq">要求<span class="muted">（选填）</span></label>
+            <textarea class="textarea" id="trReq" rows="3" placeholder="比如：台词也翻译；语气口语一点" data-od-id="translate-requirement"></textarea>
+          </div>
+          <div class="tr-go">
+            <button class="btn btn-primary" id="trRun" data-od-id="translate-run">翻译</button>
+            <span class="meta"><span class="kbd">Ctrl</span> + <span class="kbd">Enter</span></span>
+          </div>
+          <div class="tr-rules" data-od-id="translate-default-rules">
+            <p>不写要求时，下面这些保持原文不翻：</p>
+            <ul>
+              <li>各部分的英文名，比如 <code>summary:</code></li>
+              <li><code>&lt;Picture 1&gt;</code>、<code>&lt;Subject 1&gt;</code>、<code>[Shot 1] At 00:02.500</code> 这类标记</li>
+              <li><code>&lt;d&gt;</code> 里的台词</li>
+              <li>英文双引号里的画面文字，比如招牌、字幕</li>
+            </ul>
+          </div>
+        </div>
+      </aside>
+      <section class="tr-main" id="trMain" data-od-id="translate-result"></section>
+    </div>
+  </dialog>
+
+  <!-- 从电脑直接选图 -->
+  <input type="file" id="localFile" accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.gif" multiple hidden />
+
+  <script src="shared/canvas-data.js"></script>
+  <script src="shared/canvas-graph.js"></script>
+  <script src="shared/canvas-panel.js"></script>
+  <script src="shared/canvas-overlays.js"></script>
+</body>
+</html>

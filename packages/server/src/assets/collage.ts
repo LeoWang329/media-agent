@@ -18,7 +18,7 @@ function badgeLayer(width: number, height: number, badges: CollageBadge[]): Buff
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${shapes.join('')}</svg>`);
 }
 
-// 同一秒里拼第二张时，名字后面加 -2、-3
+// 已经有同名文件时，名字后面加 -2、-3
 async function freeName(folder: string, name: string): Promise<string> {
   const base = name.slice(0, -'.jpg'.length);
   for (let i = 1; ; i += 1) {
@@ -27,7 +27,8 @@ async function freeName(folder: string, name: string): Promise<string> {
   }
 }
 
-export async function makeCollage(folder: string, input: CollageInput): Promise<{ path: string; width: number; height: number }> {
+// name 是存成的文件名（以 .jpg 结尾），不给就按时间起名
+export async function makeCollage(folder: string, input: CollageInput, name?: string): Promise<{ path: string; width: number; height: number }> {
   const layout = collageLayout(input.rows, input.columns, input.cell, input.numbers);
   const layers: OverlayOptions[] = [];
   for (const [index, file] of input.files.entries()) {
@@ -46,7 +47,7 @@ export async function makeCollage(folder: string, input: CollageInput): Promise<
     .composite(layers)
     .jpeg({ quality: COLLAGE_JPEG_QUALITY })
     .toBuffer();
-  const target = await freeName(folder, collageFileName(new Date()));
+  const target = await freeName(folder, name ?? collageFileName(new Date()));
   await writeFileAtomic(target, jpeg);
   return { path: target, width: layout.width, height: layout.height };
 }

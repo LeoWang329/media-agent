@@ -152,18 +152,25 @@ describe('上传清单里这张图该传哪个文件', () => {
 
   it('没处理过、原文件还在就用原文件；处理过、原文件没了、拖进来的都用画布副本', async () => {
     const normal = await importImage(FIXTURES.first);
-    expect(await checklist(normal.id)).toEqual({ path: path.join(fixtures, FIXTURES.first), kind: 'original' });
+    expect(await checklist(normal.id)).toEqual({ path: path.join(fixtures, FIXTURES.first), kind: 'original', size: (await fs.stat(path.join(fixtures, FIXTURES.first))).size });
 
     const big = await importImage(FIXTURES.big);
-    expect(await checklist(big.id)).toEqual({ path: path.join(imagesDir(), `${big.sha256}.jpg`), kind: 'canvas', note: '已处理，请上传这份' });
+    const bigCopy = path.join(imagesDir(), `${big.sha256}.jpg`);
+    expect(await checklist(big.id)).toEqual({ path: bigCopy, kind: 'canvas', note: '已处理，请上传这份', size: (await fs.stat(bigCopy)).size });
 
     // 原文件放在工作文件夹里，放进槽位之后删掉
     const temp = path.join(t.work, '临时原图.jpg');
     await fs.copyFile(path.join(fixtures, FIXTURES.second), temp);
     const moved = await t.ok('POST', `/canvases/${canvasId}/images`, { path: temp });
     expect(await checklist(moved.id)).toMatchObject({ kind: 'original' });
+    await t.ok('PATCH', nodeUrl, { slots: [moved.id, normal.id] });
+    const images = async () => (await t.ok('GET', `/canvases/${canvasId}`)).images;
+    expect((await images())[moved.id].originalMissing).toBeUndefined();
     await fs.rm(temp);
-    expect(await checklist(moved.id)).toEqual({ path: path.join(imagesDir(), `${moved.sha256}.jpg`), kind: 'canvas', note: '原图不在了，用这份' });
+    expect(await checklist(moved.id)).toEqual({ path: path.join(imagesDir(), `${moved.sha256}.jpg`), kind: 'canvas', note: '原图不在了，用这份', size: expect.any(Number) });
+    // 槽位里的图原文件不在了，画布详情里标出来；原文件还在的不标
+    expect((await images())[moved.id].originalMissing).toBe(true);
+    expect((await images())[normal.id].originalMissing).toBeUndefined();
 
     const query = new URLSearchParams({ name: FIXTURES.third });
     const res = await fetch(`${t.base}/canvases/${canvasId}/images/upload?${query}`, {
@@ -172,6 +179,6 @@ describe('上传清单里这张图该传哪个文件', () => {
       body: await fs.readFile(path.join(fixtures, FIXTURES.third)),
     });
     const dropped = (await res.json()) as ImageRecord;
-    expect(await checklist(dropped.id)).toEqual({ path: path.join(imagesDir(), `${dropped.sha256}.jpg`), kind: 'canvas', note: '拖进来的图，用这份' });
+    expect(await checklist(dropped.id)).toEqual({ path: path.join(imagesDir(), `${dropped.sha256}.jpg`), kind: 'canvas', note: '拖进来的图，用这份', size: expect.any(Number) });
   });
 });

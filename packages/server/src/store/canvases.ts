@@ -1,4 +1,5 @@
 import {
+  activePath,
   cardSummary,
   descendantIds,
   forkChain,
@@ -6,6 +7,7 @@ import {
   isStarred,
   type Canvas,
   type CanvasDetail,
+  type CanvasImage,
   type CanvasListItem,
   type CanvasNodeLayout,
   type ChatNode,
@@ -18,9 +20,9 @@ import { readImages } from './images';
 import { readJson, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
 
-// fork 出的节点放在原节点右侧、已有子节点的下方
-const FORK_OFFSET_X = 320;
-const FORK_OFFSET_Y = 240;
+// fork 出的节点放在原节点右侧、已有子节点的下方（卡片宽 264，横向留 80 的空）
+const FORK_OFFSET_X = 344;
+const FORK_OFFSET_Y = 230;
 
 const now = () => new Date().toISOString();
 const canvasDir = (work: string, canvasId: string) => path.join(work, 'canvases', canvasId);
@@ -28,13 +30,23 @@ const canvasFile = (work: string, canvasId: string) => path.join(canvasDir(work,
 const nodesDir = (work: string, canvasId: string) => path.join(canvasDir(work, canvasId), 'nodes');
 const nodeFile = (work: string, canvasId: string, nodeId: string) => path.join(nodesDir(work, canvasId), `${nodeId}.json`);
 
-export async function listCanvases(work: string): Promise<CanvasListItem[]> {
+// 首页卡片：封面取最近放进槽位的那张图，只读 images.json，不去读每个节点文件
+export async function listCanvases(work: string, isGenerating: (nodeId: string) => boolean): Promise<CanvasListItem[]> {
   const entries = await fs.readdir(path.join(work, 'canvases'), { withFileTypes: true });
   const items: CanvasListItem[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const canvas = await readJson<Canvas>(canvasFile(work, entry.name));
-    if (canvas) items.push({ id: canvas.id, title: canvas.title, updatedAt: canvas.updatedAt, nodeCount: canvas.nodes.length });
+    if (!canvas) continue;
+    const latest = Object.values(await readImages(work, canvas.id)).sort((a, b) => b.addedAt.localeCompare(a.addedAt))[0];
+    items.push({
+      id: canvas.id,
+      title: canvas.title,
+      updatedAt: canvas.updatedAt,
+      nodeCount: canvas.nodes.length,
+      cover: latest?.id ?? null,
+      generating: canvas.nodes.filter((layout) => isGenerating(layout.id)).length,
+    });
   }
   return items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -58,7 +70,7 @@ export function updateCanvas(work: string, canvasId: string, change: (canvas: Ca
     const canvas = await readCanvas(work, canvasId);
     await change(canvas);
     canvas.updatedAt = now();
-    await writeJsonAtomic(canvasFile(work, canvasId), canvas);
+    await writeJsonAtomic(canvasFile(work, canvasId), canvas, false);
     return canvas;
   });
 }
@@ -70,23 +82,57 @@ export async function listNodes(work: string, canvasId: string): Promise<ChatNod
   return nodes.filter((node): node is ChatNode => node !== null);
 }
 
-export async function canvasDetail(work: string, canvasId: string): Promise<CanvasDetail> {
+const exists = (file: string) => fs.access(file).then(() => true, () => false);
+
+export async function canvasDetail(work: string, canvasId: string, isGenerating: (nodeId: string) => boolean): Promise<CanvasDetail> {
   const canvas = await readCanvas(work, canvasId);
   const nodes = new Map((await listNodes(work, canvasId)).map((node) => [node.id, node]));
-  return {
-    canvas,
-    images: await readImages(work, canvasId),
-    nodes: canvas.nodes.flatMap((layout) => {
-      const node = nodes.get(layout.id);
-      if (!node) return [];
-      return [{ ...layout, title: node.title, parentNodeId: node.parentNodeId, slots: node.slots, ...cardSummary(node), starred: isStarred(node) }];
+  const summaries = canvas.nodes.flatMap((layout) => {
+    const node = nodes.get(layout.id);
+    if (!node) return [];
+    return [
+      {
+        ...layout,
+        title: node.title,
+        parentNodeId: node.parentNodeId,
+        slots: node.slots,
+        duration: node.duration,
+        aspectRatio: node.aspectRatio,
+        ...cardSummary(node),
+        starred: isStarred(node),
+        failed: Boolean(activePath(node).at(-1)?.error),
+        generating: isGenerating(node.id),
+      },
+    ];
+  });
+  // 槽位里正放着的图查一下原文件还在不在，槽位上标「副本」要用
+  const images: Record<string, CanvasImage> = await readImages(work, canvasId);
+  const inSlots = new Set(summaries.flatMap((n) => n.slots));
+  await Promise.all(
+    [...inSlots].map(async (id) => {
+      const image = images[id];
+      if (image?.originalPath && !(await exists(image.originalPath))) images[id] = { ...image, originalMissing: true };
     }),
-  };
+  );
+  return { canvas, images, nodes: summaries };
 }
 
-export async function trashCanvas(work: string, canvasId: string): Promise<void> {
+// 删除画布：整个文件夹移到 .trash，返回回收站里那个文件夹的名字，撤销时用
+export async function trashCanvas(work: string, canvasId: string): Promise<string> {
   await readCanvas(work, canvasId);
-  await withLock(`canvas:${canvasId}`, () => fs.rename(canvasDir(work, canvasId), path.join(work, '.trash', trashName('canvas', canvasId))));
+  const trash = trashName('canvas', canvasId);
+  await withLock(`canvas:${canvasId}`, () => fs.rename(canvasDir(work, canvasId), path.join(work, '.trash', trash)));
+  return trash;
+}
+
+// 撤销删除画布：从 .trash 挪回 canvases；同名画布已经在了就不挪
+export async function restoreCanvas(work: string, trash: string): Promise<string> {
+  const dir = path.join(work, '.trash', trash);
+  const canvas = await readJson<Canvas>(path.join(dir, 'canvas.json'));
+  if (!canvas || !trash.endsWith(`-canvas-${canvas.id}`)) throw new HttpError(404, '回收站里找不到要恢复的画布');
+  if (await exists(canvasDir(work, canvas.id))) throw new HttpError(409, '这个画布已经在了');
+  await withLock(`canvas:${canvas.id}`, () => fs.rename(dir, canvasDir(work, canvas.id)));
+  return canvas.id;
 }
 
 export async function readNode(work: string, canvasId: string, nodeId: string): Promise<ChatNode> {
@@ -98,7 +144,7 @@ export async function readNode(work: string, canvasId: string, nodeId: string): 
 export function updateNode(work: string, canvasId: string, nodeId: string, change: (node: ChatNode) => ChatNode): Promise<ChatNode> {
   return withLock(`node:${nodeId}`, async () => {
     const next = { ...change(await readNode(work, canvasId, nodeId)), updatedAt: now() };
-    await writeJsonAtomic(nodeFile(work, canvasId, nodeId), next);
+    await writeJsonAtomic(nodeFile(work, canvasId, nodeId), next, false);
     return next;
   });
 }
@@ -129,7 +175,7 @@ export async function createNode(
     createdAt: time,
     updatedAt: time,
   };
-  await writeJsonAtomic(nodeFile(work, canvasId, node.id), node);
+  await writeJsonAtomic(nodeFile(work, canvasId, node.id), node, false);
   await updateCanvas(work, canvasId, (canvas) => {
     canvas.nodes.push({ id: node.id, x: fields.x, y: fields.y, collapsed: false });
   });
@@ -148,6 +194,7 @@ export async function forkNode(work: string, canvasId: string, sourceId: string,
     titleIsManual: false,
     parentNodeId: source.id,
     forkedFromMessageId: messageId,
+    copiedCount: Object.keys(chain.messages).length,
     modelConfigId: source.modelConfigId,
     systemPromptName: source.systemPromptName,
     slots: chain.slots,
@@ -160,7 +207,7 @@ export async function forkNode(work: string, canvasId: string, sourceId: string,
     createdAt: time,
     updatedAt: time,
   };
-  await writeJsonAtomic(nodeFile(work, canvasId, node.id), node);
+  await writeJsonAtomic(nodeFile(work, canvasId, node.id), node, false);
   await updateCanvas(work, canvasId, async (canvas) => {
     const siblingIds = (await listNodes(work, canvasId)).filter((n) => n.parentNodeId === source.id && n.id !== node.id).map((n) => n.id);
     const parent = canvas.nodes.find((layout) => layout.id === source.id);

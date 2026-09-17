@@ -10,3 +10,4 @@ export * from './imageRules';
 export * from './slotDiff';
 export * from './collage';
 export * from './cost';
+export * from './translate';

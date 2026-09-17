@@ -1,4 +1,4 @@
-import type { AspectRatio, CanvasNodeLayout } from '@media-agent/shared';
+import { TRANSLATE_LANGUAGES, type AspectRatio, type CanvasNodeLayout, type TranslateLanguage } from '@media-agent/shared';
 import { HttpError } from '../httpError';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -66,6 +66,11 @@ export function slots(value: unknown): string[] {
 export function duration(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 4 || value > 15) throw new HttpError(400, '时长要是 4 到 15 的整数');
   return value;
+}
+
+export function language(value: unknown): TranslateLanguage {
+  if (!TRANSLATE_LANGUAGES.includes(value as TranslateLanguage)) throw new HttpError(400, `翻译语言只能是${TRANSLATE_LANGUAGES.join('、')}`);
+  return value as TranslateLanguage;
 }
 
 export function aspectRatio(value: unknown): AspectRatio {

@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BUILTIN_PROMPTS } from './prompts';
+import { listCanvases } from './canvases';
+import { BUILTIN_PROMPTS, listPrompts } from './prompts';
 
 // 三套自带的系统提示词只维护 docs/prompts/ 里这三份：参考模式、图当首帧、纯文字
 const builtinFile = (name: string) => fileURLToPath(new URL(`../../../../docs/prompts/${name}.md`, import.meta.url));
@@ -18,4 +20,18 @@ export async function initWorkFolder(root: string): Promise<void> {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
   }
+}
+
+// 设置页上显示的：能不能写进去、里面有几个画布几套提示词。写不写得进去只能真写一个文件试
+export async function workFolderStatus(root: string): Promise<{ writable: boolean; canvases: number; prompts: number }> {
+  const probe = path.join(root, `.write-test-${randomUUID()}`);
+  let writable = true;
+  try {
+    await fs.writeFile(probe, '');
+    await fs.rm(probe, { force: true });
+  } catch {
+    writable = false;
+  }
+  const [canvases, prompts] = await Promise.all([listCanvases(root, () => false).catch(() => []), listPrompts(root).catch(() => [])]);
+  return { writable, canvases: canvases.length, prompts: prompts.length };
 }
