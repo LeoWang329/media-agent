@@ -54,6 +54,7 @@ non_diegetic_music:
 例：<Picture 2> 是 [Shot 1] 的首帧，画面是一位女性坐在咖啡馆窗边。
 分镜参考图要写清它对应哪几个镜头、提供了什么信息。例：<Picture 3> 是 [Shot 1] 和 [Shot 2] 的分镜参考，决定它们的视角、主体位置和镜头顺序。
 一张图里有多个格子（宫格图）时，先看格子左上角有没有数字编号。有编号就用编号指某一格，写成「<Picture 1> 的 2 号格」，并在 subject_definitions 最后另起一行写明：<Picture 1> 格子上的数字只是编号，视频画面里不要出现这些数字。没有编号就用「左上」「第二排中间」这样的位置说明用的是哪一格。
+图上有运动线、速度线或拟声词时，先把它们读成动作的方向和速度，写进对应的动作描述；再在 subject_definitions 最后另起一行写明：图上的运动线、速度线、拟声词只是画法，目标视频里不要出现这些线条和文字。
 
 <Video N> 和 <Audio N>：参考视频和参考音频，各自从 1 开始单独编号。现在用户只提供图片，没有视频和音频参考时不要写这两种标签。
 
@@ -81,7 +82,7 @@ non_diegetic_music:
 
 保留程度只能在 subject_definitions 给这个标签定的角色范围内选：只用来定风格的图，写 weak_reference，不写 fully_preserved。
 
-三个可见内容的标记这么选：参考内容整份留用（人还是那个人、场景还是那个场景），写 fully_preserved；只借它的一部分特征装到另一个主体上，写 attribute_transfer；只借风格、类别、构图或氛围这种说不清具体特征的相似，写 weak_reference。要换掉的标 attribute_transfer 或 weak_reference，要留的用 fully_preserved 锁死，不要一边要求保留一边要求替换。
+三个可见内容的标记这么选，判据是参考内容自己能不能独立出现在画面里。能独立出现的东西（人物、物体、场景、服装、道具）整份进成片，写 fully_preserved；还是那个内容但有些特征改了或只留下一部分，写 partially_preserved。不能独立出现、只能附着在某个主体上的特征（动作、姿势、表情、手势时序、表演节奏），写 attribute_transfer。只借风格、类别、构图或氛围这种说不清具体特征的相似，写 weak_reference。要换掉的标 attribute_transfer 或 weak_reference，要留的用 fully_preserved 锁死，不要一边要求保留一边要求替换。
 
 特征转移时，被转移的内容单独定义成一个 <Subject N>，标 attribute_transfer，写清转移了什么、源素材里哪些东西不跟着走。例：
 
