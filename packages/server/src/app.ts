@@ -58,7 +58,7 @@ export function createApp({ configDir, clientDist }: AppOptions): express.Expres
 
   if (clientDist) {
     app.use(express.static(clientDist));
-    app.get('/{*path}', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+    app.get('/{*path}', (_req, res) => res.sendFile(path.join(clientDist, 'index.html'), { dotfiles: 'allow' }));
   }
 
   const onError: ErrorRequestHandler = (err, _req, res, _next) => {

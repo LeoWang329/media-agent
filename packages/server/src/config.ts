@@ -21,6 +21,11 @@ export function defaultConfigDir(): string {
     : path.join(os.homedir(), '.media-agent');
 }
 
+// 工作文件夹要填绝对路径，示例跟着系统走：Windows 是盘符路径，macOS / Linux 是当前用户目录下
+function workFolderExample(): string {
+  return process.platform === 'win32' ? 'D:\\同步盘\\提示词画布' : path.join(os.homedir(), '提示词画布');
+}
+
 async function readLocalConfig(configDir: string): Promise<LocalConfig> {
   const saved = await readJson<Partial<LocalConfig>>(path.join(configDir, 'config.json'));
   return { workFolder: null, apiKeys: {}, assetFolders: [], lastCollageFolder: null, ...saved };
@@ -70,7 +75,7 @@ export async function updateConfig(configDir: string, body: unknown): Promise<Co
   return changeLocalConfig(configDir, async (local) => {
     if ('workFolder' in input) {
       const value = typeof input.workFolder === 'string' ? input.workFolder.trim() : '';
-      if (!path.isAbsolute(value)) throw new HttpError(400, '要填完整路径，比如 D:\\同步盘\\提示词画布');
+      if (!path.isAbsolute(value)) throw new HttpError(400, `要填完整路径，比如 ${workFolderExample()}`);
       const workFolder = path.resolve(value);
       try {
         await initWorkFolder(workFolder);

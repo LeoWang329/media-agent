@@ -203,13 +203,15 @@ export function canvasRoutes(configDir: string): express.Router {
   router.get('/canvases/:canvasId/images/:imageId/file', async (req, res) => {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
-    res.sendFile(canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId))));
+    const file = canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)));
+    res.sendFile(file, { dotfiles: 'allow' });
   });
 
   router.get('/canvases/:canvasId/images/:imageId/thumb', async (req, res) => {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
-    res.sendFile(await thumbnail(configDir, canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)))));
+    const file = canvasImagePath(w, canvasId, await readImage(w, canvasId, v.uuid(req.params.imageId)));
+    res.sendFile(await thumbnail(configDir, file), { dotfiles: 'allow' });
   });
 
   // 星打在提示词框上，卡片按「这个节点有没有星」显示

@@ -29,7 +29,9 @@ export async function startTestApp() {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
   const work = path.join(tmp, 'work');
   const mockLlm = await listen(createMockLlmApp());
-  const server = await listen(createApp({ configDir: path.join(tmp, 'config') }));
+  // 配置目录故意用点开头：macOS / Linux 上真实的配置目录就是 ~/.media-agent，
+  // 这样缩略图缓存这类放在配置目录下的文件才会走和线上一样的路径形态
+  const server = await listen(createApp({ configDir: path.join(tmp, '.config') }));
   const base = `${urlOf(server)}/api`;
 
   async function call<T = any>(method: string, url: string, body?: unknown): Promise<{ status: number; body: T }> {
