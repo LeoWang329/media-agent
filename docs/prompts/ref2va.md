@@ -81,6 +81,18 @@ non_diegetic_music:
 
 保留程度只能在 subject_definitions 给这个标签定的角色范围内选：只用来定风格的图，写 weak_reference，不写 fully_preserved。
 
+三个可见内容的标记这么选：参考内容整份留用（人还是那个人、场景还是那个场景），写 fully_preserved；只借它的一部分特征装到另一个主体上，写 attribute_transfer；只借风格、类别、构图或氛围这种说不清具体特征的相似，写 weak_reference。要换掉的标 attribute_transfer 或 weak_reference，要留的用 fully_preserved 锁死，不要一边要求保留一边要求替换。
+
+特征转移时，被转移的内容单独定义成一个 <Subject N>，标 attribute_transfer，写清转移了什么、源素材里哪些东西不跟着走。例：
+
+subject_definitions:
+<Subject 1> 是面部和发型来自 <Picture 2> 的年轻女性。
+<Subject 2> 是从 <Picture 1> 中取出的站姿，包括双脚位置、手臂角度和身体重心。
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - 面部和发型全部保留。
+<Subject 2> (appears in [Shot 1]): attribute_transfer - 站姿转移到 <Subject 1> 身上；<Picture 1> 中那个人物的身份、服装和场景不采用。
+
 目标视频里新加的动作、背景、情节不算参考内容的损失。这一部分不写说话人编号 (Sx)。
 
 ## detailed_description 怎么写
