@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readAllCanvases } from './canvases';
 import { BUILTIN_PROMPTS, listPrompts } from './prompts';
 
-// 三套自带的系统提示词只维护 docs/prompts/ 里这三份：参考模式、图当首帧、纯文字
+// 自带的五套系统提示词只维护 docs/prompts/ 里这五份：参考模式、图当首帧、纯文字、首尾帧、尾帧图
 const builtinFile = (name: string) => fileURLToPath(new URL(`../../../../docs/prompts/${name}.md`, import.meta.url));
 
 export async function initWorkFolder(root: string): Promise<void> {

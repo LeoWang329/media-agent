@@ -12,8 +12,8 @@ const TRANSLATE_DOC = fileURLToPath(new URL('../../../../docs/prompts/translate.
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
-// 自带的三套提示词，列表里按这个顺序排在前面；第一套是新建节点的默认
-export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v'];
+// 自带的五套提示词，列表里按这个顺序排在前面；第一套是新建节点的默认
+export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'fl2va', 'l2va'];
 export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
 
 const promptsDir = (work: string) => path.join(work, 'prompts');
