@@ -50,8 +50,8 @@ describe('手动改提示词', () => {
     expect(replacePromptText('<prompt>\n还没写完', 0, 'x')).toBeNull();
   });
 
-  it('生成新版本：正文是换过的全文，重新解析，记下改自哪条，usage 不带过来', () => {
-    const original = message({ usage: { promptTokens: 10, completionTokens: 20 }, stars: [0] });
+  it('生成新版本：正文是换过的全文，重新解析，记下改自哪条，usage 和思考不带过来', () => {
+    const original = message({ usage: { promptTokens: 10, completionTokens: 20 }, reasoning: '先想想', thinkingMs: 1200, stars: [0] });
     const edited = editedPromptMessage(original, 0, 'summary:\n改过的第一个方向', 'a2', '2026-09-15T01:00:00.000Z')!;
     expect(edited.id).toBe('a2');
     expect(edited.parentId).toBe('u1');
@@ -60,6 +60,8 @@ describe('手动改提示词', () => {
     expect(edited.parsed?.prompts[1].summary).toBe('第二个方向');
     expect(edited.parsed?.title).toBe('雨中奔跑');
     expect(edited.usage).toBeUndefined();
+    expect(edited).not.toHaveProperty('reasoning');
+    expect(edited).not.toHaveProperty('thinkingMs');
     expect(edited.stars).toEqual([0]);
     expect(edited.slotSnapshot).toEqual(['img-1', 'img-2']);
   });

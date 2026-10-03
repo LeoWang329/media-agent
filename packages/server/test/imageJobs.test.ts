@@ -1,0 +1,380 @@
+import {
+  builtinGraph,
+  FAMILY_DEFAULTS,
+  type ChatNode,
+  type ComfyOptions,
+  type ComfyStatus,
+  type Config,
+  type ImageJob,
+  type ImageJobEvent,
+  type Message,
+  type SharedSettings,
+} from '@media-agent/shared';
+import fs from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import path from 'node:path';
+import sharp from 'sharp';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createMockComfy, type MockComfy } from '../../../tools/mock-comfyui/src/app';
+import { sleep, startTestApp, type TestApp } from './helpers';
+
+// 小词库：blond hair 是别名，golden hair 不认识
+const LIBRARY: Record<string, string> = {
+  'tags.csv': 'tag,category,count,deprecated\n1girl,0,8000000,0\nblonde_hair,0,2000000,0\nsmile,0,4000000,0\n',
+  'aliases.csv': 'alias,tag\nblond_hair,blonde_hair\n',
+  'info.json': '{ "updatedAt": "2026-09-01" }',
+};
+
+let t: TestApp;
+let mock: MockComfy;
+let comfyUrl: string;
+let canvasId: string;
+let nodeId: string;
+let replyId: string;
+
+const nodeUrl = () => `/canvases/${canvasId}/nodes/${nodeId}`;
+const imagesUrl = (messageId: string) => `${nodeUrl()}/messages/${messageId}/images`;
+
+beforeEach(async () => {
+  mock = createMockComfy({ stepMs: 15, slowStepMs: 150 });
+  await new Promise<void>((resolve) => mock.server.listen(0, '127.0.0.1', () => resolve()));
+  comfyUrl = `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}`;
+
+  t = await startTestApp();
+  for (const [file, text] of Object.entries(LIBRARY)) {
+    await fs.mkdir(path.join(t.work, 'tags'), { recursive: true });
+    await fs.writeFile(path.join(t.work, 'tags', file), text);
+  }
+  await t.ok('PUT', '/settings', { comfy: { lanUrl: comfyUrl } });
+  await t.ok('POST', '/prompts', { name: 'il', text: '---\n用途: 生图\n底模: IL\n---\n只写标签' });
+  canvasId = (await t.ok('POST', '/canvases', { title: '出图' })).id;
+  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0 })).id;
+  await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
+  const events = await t.stream(`${nodeUrl()}/send`, { parentId: null, text: '写一个' });
+  replyId = (events.at(-1) as { message: Message }).message.id;
+});
+
+afterEach(async () => {
+  await t.cleanup();
+  await mock.close();
+});
+
+// 框里换成这些标签（手动改提示词，生成新版本），节点的出图设置改成这样；返回新版本的 id
+async function prepare(tags: string, image: Record<string, unknown> = {}): Promise<string> {
+  const node = await t.ok<ChatNode>('POST', `${nodeUrl()}/messages/${replyId}/edit-prompt`, { promptIndex: 0, text: tags });
+  await t.ok('PATCH', nodeUrl(), { image: { checkpoint: 'il-test.safetensors', count: 1, seed: 100, ...image } });
+  return Object.values(node.messages).find((m) => m.editedFromMessageId === replyId && m.parsed?.prompts[0]?.text === tags)!.id;
+}
+
+async function readJob(messageId: string, jobId: string): Promise<ImageJob | undefined> {
+  return (await t.ok<ChatNode>('GET', nodeUrl())).messages[messageId].images?.find((job) => job.id === jobId);
+}
+
+// 反复读节点，直到这一组满足条件
+async function until(messageId: string, jobId: string, done: (job: ImageJob) => boolean, timeoutMs = 8000): Promise<ImageJob> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const job = await readJob(messageId, jobId);
+    if (job && done(job)) return job;
+    if (Date.now() > deadline) throw new Error(`等太久了：${JSON.stringify(job)}`);
+    await sleep(20);
+  }
+}
+
+const settled = (job: ImageJob) => job.images.every((image) => image.status !== 'queued' && image.status !== 'running');
+
+// 收 /image-jobs/events 推来的事件
+async function watch() {
+  const controller = new AbortController();
+  const res = await fetch(`${t.base}/image-jobs/events`, { signal: controller.signal });
+  const events: ImageJobEvent[] = [];
+  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
+  void (async () => {
+    let buffer = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += value;
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop()!;
+        for (const block of blocks) if (block.startsWith('data: ')) events.push(JSON.parse(block.slice(6)));
+      }
+    } catch {
+      // 测试结束时断开
+    }
+  })();
+  return { events, close: () => controller.abort() };
+}
+
+const lastPrompts = async () => (await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: unknown; client_id: string }[];
+const tempFiles = async () => (await fs.readdir(path.join(t.work, 'image-temp'), { recursive: true })).filter((name) => name.endsWith('.png'));
+
+describe('出图任务', () => {
+  it('点生图：建一组排队的，逐张发给 ComfyUI，进度和排第几推给前端，出完的图存进临时文件夹', async () => {
+    const watcher = await watch();
+    // 「慢」让第一张跑得久一点，第二张排着队
+    const messageId = await prepare('1girl, blond hair, golden hair, (smile:1.2), 慢', { count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+
+    expect(job.images).toEqual([
+      { seed: 100, status: 'queued' },
+      { seed: 101, status: 'queued' },
+    ]);
+    expect(job.params).toEqual({
+      family: 'IL',
+      positive: 'masterpiece, best quality, 1girl, blonde hair, golden hair, (smile:1.2), 慢',
+      negative: FAMILY_DEFAULTS.IL.negative,
+      workflow: { id: null, name: '内置流程', hash: '' },
+      width: 832,
+      height: 1216,
+      checkpoint: 'il-test.safetensors',
+      loras: [],
+      steps: 28,
+      cfg: 5,
+      sampler: 'euler_ancestral',
+      scheduler: 'normal',
+      clipSkip: 2,
+    });
+
+    const done = await until(messageId, job.id, settled);
+    for (const [index, image] of done.images.entries()) {
+      expect(image).toMatchObject({ seed: 100 + index, status: 'done', width: 832, height: 1216 });
+      expect(image.file).toMatch(new RegExp(`^image-temp/\\d{4}-\\d{2}-\\d{2}/\\d{6}-${100 + index}\\.png$`));
+      expect(image.ms).toBeGreaterThan(0);
+      expect(await sharp(path.join(t.work, image.file!)).metadata()).toMatchObject({ format: 'png', width: 832, height: 1216 });
+    }
+
+    // 发出去的就是内置流程拼的 JSON，带着本机固定的 client_id
+    const prompts = await lastPrompts();
+    const { comfyClientId } = JSON.parse(await fs.readFile(path.join(t.configDir, 'config.json'), 'utf8'));
+    expect(prompts.map((body) => body.prompt)).toEqual([builtinGraph(job.params, 100), builtinGraph(job.params, 101)]);
+    expect(prompts.every((body) => body.client_id === comfyClientId)).toBe(true);
+
+    const file = await fetch(`${t.base}${imagesUrl(messageId)}/${job.id}/1/file`);
+    expect(file.headers.get('content-type')).toBe('image/png');
+    const thumb = await fetch(`${t.base}${imagesUrl(messageId)}/${job.id}/1/thumb`);
+    expect(thumb.headers.get('content-type')).toBe('image/jpeg');
+
+    watcher.close();
+    const { events } = watcher;
+    const statuses = events.flatMap((e) => (e.type === 'job' && e.job.id === job.id ? [e.job.images[0].status] : []));
+    expect(statuses).toContain('running');
+    expect(statuses.at(-1)).toBe('done');
+    expect(events.filter((e) => e.type === 'progress' && e.jobId === job.id && e.index === 0).map((e) => e.type === 'progress' && e.step)).toEqual([1, 2, 3, 4, 5]);
+    expect(events).toContainEqual({ type: 'queue', jobId: job.id, index: 1, position: 1 });
+  });
+
+  it('叫停：排队的从 ComfyUI 队列里删掉，正在跑的让它停；已经出完的留着', async () => {
+    const messageId = await prepare('1girl, 慢', { count: 3 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, job.id, (j) => j.images[0].status === 'done' && j.images[1].status === 'running');
+
+    const stopped = await t.ok<ImageJob>('POST', `${imagesUrl(messageId)}/${job.id}/stop`);
+    expect(stopped.images[2].status).toBe('stopped');
+    const final = await until(messageId, job.id, settled);
+    expect(final.images.map((image) => image.status)).toEqual(['done', 'stopped', 'stopped']);
+    expect(await (await fetch(`${comfyUrl}/queue`)).json()).toEqual({ queue_running: [], queue_pending: [] });
+    expect(await tempFiles()).toHaveLength(1);
+  });
+
+  it('几种失败的说法：底模不在、执行出错、显存不够、连不上', { timeout: 20_000 }, async () => {
+    const fail = async (tags: string, image: Record<string, unknown> = {}) => {
+      const messageId = await prepare(tags, image);
+      const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+      return (await until(messageId, job.id, settled, 15_000)).images[0];
+    };
+
+    const missing = await fail('1girl', { checkpoint: 'missing.safetensors' });
+    expect(missing.status).toBe('failed');
+    expect(missing.error).toContain("ComfyUI 不收这个任务：CheckpointLoaderSimple（1 号节点）ckpt_name: 'missing.safetensors' not in");
+    expect((await fail('1girl, 报错')).error).toBe('出图出错（KSampler）：mock-comfyui：正面提示词含「报错」，按约定出错');
+    expect((await fail('1girl, 显存')).error).toMatch(/^显存不够：CUDA out of memory/);
+
+    // 一个刚关掉的端口：ComfyUI 没开
+    const probe = http.createServer();
+    const closed = await new Promise<number>((resolve) => {
+      probe.listen(0, '127.0.0.1', () => {
+        const { port } = probe.address() as AddressInfo;
+        probe.close(() => resolve(port));
+      });
+    });
+    await t.ok('PUT', '/settings', { comfy: { lanUrl: `http://127.0.0.1:${closed}` } });
+    const unreachable = await fail('1girl');
+    expect(unreachable.status).toBe('failed');
+    expect(unreachable.error).toBe(`连不上 ComfyUI 的进度推送（http://127.0.0.1:${closed}/ws）：地址不对，或者 ComfyUI 没开`);
+  });
+
+  it('同样参数再来用同一个种子、只换种子再来随机一个，都只出一张；参数照原来那组，不跟节点现在的设置', async () => {
+    const messageId = await prepare('1girl');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, first.id, settled);
+    await t.ok('PATCH', nodeUrl(), { image: { steps: 10 } });
+
+    const same = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: first.id, index: 0, sameSeed: true } });
+    const other = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: first.id, index: 0, sameSeed: false } });
+    expect(same.params).toEqual(first.params);
+    expect(same.images).toEqual([{ seed: 100, status: 'queued' }]);
+    expect(other.images).toHaveLength(1);
+    expect(other.images[0].seed).not.toBe(100);
+    await until(messageId, same.id, settled);
+    await until(messageId, other.id, settled);
+    expect((await t.ok<ChatNode>('GET', nodeUrl())).messages[messageId].images!.map((job) => job.id)).toEqual([first.id, same.id, other.id]);
+  });
+
+  it('打星；删一张：临时文件直接删，下载过的那份不动，一张不剩整组去掉；没出完的不让删', async () => {
+    const messageId = await prepare('1girl', { count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const done = await until(messageId, job.id, settled);
+    expect((await t.ok<ImageJob>('POST', `${imagesUrl(messageId)}/${job.id}/1/star`, { on: true })).images[1].starred).toBe(true);
+
+    const folder = path.join(t.work, 'downloads');
+    await fs.mkdir(folder);
+    const { paths } = await t.ok('POST', '/images/download', { items: [{ canvasId, nodeId, messageId, jobId: job.id, index: 0 }], folder });
+
+    const left = await t.ok<ImageJob>('DELETE', `${imagesUrl(messageId)}/${job.id}/0`);
+    expect(left.images).toEqual([expect.objectContaining({ seed: 101, starred: true })]);
+    await expect(fs.stat(path.join(t.work, done.images[0].file!))).rejects.toThrow();
+    expect((await fs.stat(paths[0])).isFile()).toBe(true);
+    await t.ok('DELETE', `${imagesUrl(messageId)}/${job.id}/0`);
+    expect((await t.ok<ChatNode>('GET', nodeUrl())).messages[messageId].images).toEqual([]);
+
+    const slowId = await prepare('1girl, 慢');
+    const slow = await t.ok<ImageJob>('POST', imagesUrl(slowId), { promptIndex: 0 });
+    expect(await t.call('DELETE', `${imagesUrl(slowId)}/${slow.id}/0`)).toEqual({ status: 409, body: { error: '这张还没出完，先叫停' } });
+    await t.ok('POST', `${imagesUrl(slowId)}/${slow.id}/stop`);
+    await until(slowId, slow.id, settled);
+  });
+
+  it('下载：复制过去，文件名是节点标题加种子，重名加序号；文件夹不在资产库时 inLibrary 为假；临时文件清了用下载的那份', async () => {
+    const messageId = await prepare('1girl');
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const done = await until(messageId, job.id, settled);
+    const folder = path.join(t.work, 'downloads');
+    await fs.mkdir(folder);
+    const items = [{ canvasId, nodeId, messageId, jobId: job.id, index: 0 }];
+
+    expect(await t.ok('POST', '/images/download', { items, folder })).toEqual({ paths: [path.join(folder, '测试标题-100.png')], inLibrary: false });
+    expect((await t.ok('POST', '/images/download', { items, folder })).paths).toEqual([path.join(folder, '测试标题-100-2.png')]);
+    expect((await readJob(messageId, job.id))!.images[0].savedPath).toBe(path.join(folder, '测试标题-100-2.png'));
+    expect((await t.ok<Config>('GET', '/config')).lastDownloadFolder).toBe(folder);
+
+    await t.ok('POST', '/assets/folders', { path: folder });
+    expect((await t.ok('POST', '/images/download', { items, folder })).inLibrary).toBe(true);
+
+    const elsewhere = path.join(path.dirname(t.work), 'elsewhere');
+    await fs.mkdir(elsewhere);
+    expect((await t.call('POST', '/images/download', { items, folder: elsewhere })).status).toBe(403);
+
+    // 临时文件清了，看图用下载的那份；那份也没了是「已清理」
+    await fs.rm(path.join(t.work, done.images[0].file!));
+    const fileUrl = `${t.base}${imagesUrl(messageId)}/${job.id}/0/file`;
+    expect((await fetch(fileUrl)).status).toBe(200);
+    await fs.rm(path.join(folder, '测试标题-100-3.png'));
+    const gone = await fetch(fileUrl);
+    expect(gone.status).toBe(404);
+    expect(await gone.json()).toEqual({ error: '这张图已经清理掉了' });
+  });
+
+  it('服务重启后：出完的取回来，还在跑的接着等，ComfyUI 那边没有的标失败', async () => {
+    const messageId = await prepare('1girl, 慢', { count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, job.id, (j) => j.images[0].status === 'running' && Boolean(j.images[1].promptId));
+    await t.restart();
+
+    // 再塞一组：一张 ComfyUI 不认识，一张还没发出去
+    const file = path.join(t.work, 'canvases', canvasId, 'nodes', `${nodeId}.json`);
+    const node = JSON.parse(await fs.readFile(file, 'utf8')) as ChatNode;
+    const lost: ImageJob = {
+      ...job,
+      id: 'lost-job',
+      images: [
+        { seed: 1, promptId: 'no-such-prompt', status: 'running' },
+        { seed: 2, status: 'queued' },
+      ],
+    };
+    node.messages[messageId].images!.push(lost);
+    await fs.writeFile(file, JSON.stringify(node));
+
+    await t.imageJobs().resume();
+    const resumed = await until(messageId, job.id, settled);
+    expect(resumed.images.map((image) => image.status)).toEqual(['done', 'done']);
+    expect((await readJob(messageId, 'lost-job'))!.images).toEqual([
+      { seed: 1, promptId: 'no-such-prompt', status: 'failed', error: '程序重启时这张还没出完' },
+      { seed: 2, status: 'failed', error: '程序重启时这张还没出完' },
+    ]);
+  });
+});
+
+describe('出图设置', () => {
+  it('ComfyUI 地址存进工作文件夹，去掉末尾斜杠；底模的系列和各系列默认值只改带了的项；格式不对返回 400', async () => {
+    const settings = await t.ok<SharedSettings>('GET', '/settings');
+    expect(settings).toMatchObject({ comfy: { lanUrl: comfyUrl }, checkpoints: {}, defaults: FAMILY_DEFAULTS });
+
+    expect((await t.ok<SharedSettings>('PUT', '/settings', { comfy: { lanUrl: 'http://192.168.1.20:8188/' } })).comfy.lanUrl).toBe('http://192.168.1.20:8188');
+    expect((await t.ok<SharedSettings>('PUT', '/settings', { comfy: { lanUrl: '' } })).comfy.lanUrl).toBeNull();
+    expect((await t.call('PUT', '/settings', { comfy: { lanUrl: '192.168.1.20' } })).status).toBe(400);
+
+    await t.ok('PUT', '/settings', { checkpoints: { 'a.safetensors': 'Pony' } });
+    expect((await t.ok<SharedSettings>('PUT', '/settings', { checkpoints: { 'b.safetensors': 'IL' } })).checkpoints).toEqual({ 'a.safetensors': 'Pony', 'b.safetensors': 'IL' });
+    expect((await t.call('PUT', '/settings', { checkpoints: { 'c.safetensors': 'SD' } })).status).toBe(400);
+
+    const defaults = (await t.ok<SharedSettings>('PUT', '/settings', { defaults: { IL: { steps: 30 } } })).defaults;
+    expect(defaults).toEqual({ IL: { ...FAMILY_DEFAULTS.IL, steps: 30 }, Pony: FAMILY_DEFAULTS.Pony });
+    expect((await t.call('PUT', '/settings', { defaults: { IL: { steps: 0 } } })).status).toBe(400);
+    expect(JSON.parse(await fs.readFile(path.join(t.work, 'settings.json'), 'utf8')).defaults.IL.steps).toBe(30);
+  });
+
+  it('测试连接显示版本、显卡、显存；下拉选项从 object_info 读，两种写法都认，底模带系列', async () => {
+    expect(await t.ok<ComfyStatus>('GET', '/comfy/status')).toEqual({
+      ok: true,
+      url: comfyUrl,
+      version: '0.3.60',
+      gpu: 'NVIDIA GeForce RTX 4090',
+      vramTotal: 25757220864,
+      vramFree: 24000000000,
+    });
+    const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
+    expect(options.checkpoints).toEqual([
+      { name: 'il-test.safetensors', family: 'IL', guessed: true },
+      { name: 'pony-test.safetensors', family: 'Pony', guessed: true },
+    ]);
+    expect(options).toMatchObject({ loras: ['detail-test.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
+    expect(options.samplers).toContain('euler_ancestral');
+
+    await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });
+    expect((await t.ok<ComfyOptions>('GET', '/comfy/options')).checkpoints[0]).toEqual({ name: 'il-test.safetensors', family: 'Pony', guessed: false });
+
+    await t.ok('PUT', '/settings', { comfy: { lanUrl: null } });
+    expect(await t.ok('GET', '/comfy/status')).toEqual({ ok: false, url: null, error: '还没填局域网 ComfyUI 的地址' });
+  });
+
+  it('节点的出图设置：只有生图节点能改，没改过的按系列默认值补全，尺寸只能是九档之一；岔出去的节点带着', async () => {
+    const video = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 400, y: 0 })).id;
+    expect(await t.call('PATCH', `/canvases/${canvasId}/nodes/${video}`, { image: { count: 2 } })).toEqual({ status: 400, body: { error: '这个节点用的不是生图提示词' } });
+
+    const node = await t.ok<ChatNode>('PATCH', nodeUrl(), { image: { count: 2, loras: [{ name: 'detail-test.safetensors', strength: 0.7 }] } });
+    expect(node.image).toEqual({
+      width: 832,
+      height: 1216,
+      count: 2,
+      workflowId: null,
+      checkpoint: '',
+      loras: [{ name: 'detail-test.safetensors', strength: 0.7 }],
+      steps: 28,
+      cfg: 5,
+      sampler: 'euler_ancestral',
+      scheduler: 'normal',
+      seed: null,
+      rating: 'none',
+      negativeExtra: '',
+    });
+    expect((await t.call('PATCH', nodeUrl(), { image: { width: 1000, height: 1000 } })).status).toBe(400);
+    expect((await t.call('PATCH', nodeUrl(), { image: { count: 9 } })).status).toBe(400);
+    expect((await t.ok<ChatNode>('PATCH', nodeUrl(), { image: { width: 1216, height: 832 } })).image).toMatchObject({ width: 1216, height: 832, count: 2 });
+
+    const fork = await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: replyId });
+    expect(fork.image).toMatchObject({ width: 1216, height: 832, count: 2 });
+  });
+});

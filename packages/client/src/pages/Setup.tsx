@@ -1,4 +1,4 @@
-import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_PRICING, type Config, type ModelConfigWithKey } from '@media-agent/shared';
+import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_MODEL_THINKING, DEFAULT_PRICING, type Config, type ModelConfigWithKey } from '@media-agent/shared';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
@@ -23,6 +23,7 @@ const newConfig = (): ModelConfigWithKey => ({
   model: '',
   imageLongSide: DEFAULT_IMAGE_LONG_SIDE,
   pricing: DEFAULT_PRICING,
+  ...DEFAULT_MODEL_THINKING,
 });
 
 // 第一次打开：选工作文件夹 → 填一套模型配置 → 汇总

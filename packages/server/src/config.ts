@@ -1,18 +1,32 @@
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { API_KEY_MASK, DEFAULT_PRICING, type Config, type ModelConfig, type ModelConfigWithKey, type ModelPricing } from '@media-agent/shared';
+import {
+  API_KEY_MASK,
+  DEFAULT_MODEL_THINKING,
+  DEFAULT_PRICING,
+  THINKING_STYLES,
+  type Config,
+  type ModelConfig,
+  type ModelConfigWithKey,
+  type ModelPricing,
+  type ThinkingStyle,
+} from '@media-agent/shared';
 import { HttpError } from './httpError';
 import fs from 'node:fs/promises';
 import { readJson, writeJsonAtomic } from './store/jsonFile';
 import { withLock } from './store/locks';
 import { initWorkFolder } from './store/workFolder';
 
-// 本机 config.json；模型配置本身存在工作文件夹，这里只按 id 存 key
+// 本机 config.json；模型配置本身存在工作文件夹，这里只按 id 存 key。
+// comfyClientId 是连 ComfyUI 时用的固定身份，程序重启后用同一个，ComfyUI 才会把没跑完的任务的进度接着推过来
 type LocalConfig = {
   workFolder: string | null;
   apiKeys: Record<string, string>;
   assetFolders: string[];
   lastCollageFolder: string | null;
+  lastDownloadFolder: string | null;
+  comfyClientId?: string;
 };
 
 export function defaultConfigDir(): string {
@@ -23,21 +37,27 @@ export function defaultConfigDir(): string {
 
 async function readLocalConfig(configDir: string): Promise<LocalConfig> {
   const saved = await readJson<Partial<LocalConfig>>(path.join(configDir, 'config.json'));
-  return { workFolder: null, apiKeys: {}, assetFolders: [], lastCollageFolder: null, ...saved };
+  return { workFolder: null, apiKeys: {}, assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null, ...saved };
 }
 
 const modelConfigsFile = (workFolder: string) => path.join(workFolder, 'model-configs.json');
 
 async function readModelConfigs(workFolder: string | null): Promise<ModelConfig[]> {
   const saved = workFolder ? ((await readJson<ModelConfig[]>(modelConfigsFile(workFolder))) ?? []) : [];
-  // 以前存的没有价格
-  return saved.map((m) => ({ ...m, pricing: { ...DEFAULT_PRICING, ...m.pricing } }));
+  // 以前存的没有价格、没有思考写法
+  return saved.map((m) => ({ ...DEFAULT_MODEL_THINKING, ...m, pricing: { ...DEFAULT_PRICING, ...m.pricing } }));
 }
 
 export async function readConfig(configDir: string): Promise<Config> {
   const local = await readLocalConfig(configDir);
   const modelConfigs = (await readModelConfigs(local.workFolder)).map((m) => ({ ...m, apiKey: local.apiKeys[m.id] ?? '' }));
-  return { workFolder: local.workFolder, modelConfigs, assetFolders: local.assetFolders, lastCollageFolder: local.lastCollageFolder };
+  return {
+    workFolder: local.workFolder,
+    modelConfigs,
+    assetFolders: local.assetFolders,
+    lastCollageFolder: local.lastCollageFolder,
+    lastDownloadFolder: local.lastDownloadFolder,
+  };
 }
 
 export async function requireWorkFolder(configDir: string): Promise<string> {
@@ -85,8 +105,9 @@ export async function updateConfig(configDir: string, body: unknown): Promise<Co
     if ('modelConfigs' in input) {
       if (!local.workFolder) throw new HttpError(400, '请先设置工作文件夹');
       if (!Array.isArray(input.modelConfigs)) throw new HttpError(400, '模型配置格式不对');
-      const items = input.modelConfigs.map(parseModelConfig);
-      for (const previous of await readModelConfigs(local.workFolder)) {
+      const saved = await readModelConfigs(local.workFolder);
+      const items = input.modelConfigs.map((item) => parseModelConfig(item, saved));
+      for (const previous of saved) {
         if (!items.some((m) => m.id === previous.id)) delete local.apiKeys[previous.id];
       }
       for (const { id, apiKey } of items) {
@@ -104,6 +125,24 @@ export async function setLastCollageFolder(configDir: string, folder: string): P
   await changeLocalConfig(configDir, async (local) => {
     local.lastCollageFolder = folder;
   });
+}
+
+// 出的图下载过一次也记住，和拼图分开记
+export async function setLastDownloadFolder(configDir: string, folder: string): Promise<void> {
+  await changeLocalConfig(configDir, async (local) => {
+    local.lastDownloadFolder = folder;
+  });
+}
+
+export async function comfyClientId(configDir: string): Promise<string> {
+  const saved = (await readLocalConfig(configDir)).comfyClientId;
+  if (saved) return saved;
+  let id = '';
+  await changeLocalConfig(configDir, async (local) => {
+    local.comfyClientId ??= randomUUID();
+    id = local.comfyClientId;
+  });
+  return id;
 }
 
 const samePath = (a: string, b: string) => path.relative(a, b) === '';
@@ -146,7 +185,19 @@ function parsePricing(value: unknown): ModelPricing {
   };
 }
 
-function parseModelConfig(item: unknown): ModelConfigWithKey {
+// 请求里没带思考写法的（界面上还没有这两项时存的），沿用原来存的
+function parseThinking(fields: Record<string, unknown>, previous: ModelConfig | undefined): Pick<ModelConfig, 'thinkingStyle' | 'thinkingModel'> {
+  const { thinkingStyle, thinkingModel } = fields;
+  if (thinkingStyle !== undefined && !THINKING_STYLES.includes(thinkingStyle as ThinkingStyle)) throw new HttpError(400, '思考写法不对');
+  if (thinkingModel !== undefined && typeof thinkingModel !== 'string') throw new HttpError(400, '开思考用的模型名要是文字');
+  const fallback = previous ?? DEFAULT_MODEL_THINKING;
+  return {
+    thinkingStyle: (thinkingStyle as ThinkingStyle | undefined) ?? fallback.thinkingStyle,
+    thinkingModel: typeof thinkingModel === 'string' ? thinkingModel.trim() : fallback.thinkingModel,
+  };
+}
+
+function parseModelConfig(item: unknown, saved: ModelConfig[]): ModelConfigWithKey {
   const fields = (item ?? {}) as Record<string, unknown>;
   const text = (key: keyof ModelConfigWithKey) => {
     const value = fields[key];
@@ -159,5 +210,14 @@ function parseModelConfig(item: unknown): ModelConfigWithKey {
   if (typeof imageLongSide !== 'number' || !Number.isInteger(imageLongSide) || imageLongSide <= 0) {
     throw new HttpError(400, '发图长边要填正整数');
   }
-  return { id, name: text('name'), baseUrl: text('baseUrl'), apiKey: text('apiKey'), model: text('model'), imageLongSide, pricing: parsePricing(fields.pricing) };
+  return {
+    id,
+    name: text('name'),
+    baseUrl: text('baseUrl'),
+    apiKey: text('apiKey'),
+    model: text('model'),
+    imageLongSide,
+    pricing: parsePricing(fields.pricing),
+    ...parseThinking(fields, saved.find((m) => m.id === id)),
+  };
 }

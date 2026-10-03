@@ -1,4 +1,12 @@
-import { TRANSLATE_LANGUAGES, type AspectRatio, type CanvasNodeLayout, type TranslateLanguage } from '@media-agent/shared';
+import {
+  IMAGE_SIZES,
+  TRANSLATE_LANGUAGES,
+  type AspectRatio,
+  type CanvasNodeLayout,
+  type ImageRating,
+  type ImageSettings,
+  type TranslateLanguage,
+} from '@media-agent/shared';
 import { HttpError } from '../httpError';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -76,4 +84,52 @@ export function language(value: unknown): TranslateLanguage {
 export function aspectRatio(value: unknown): AspectRatio {
   if (!ASPECT_RATIOS.includes(value as AspectRatio)) throw new HttpError(400, '画面比例格式不对');
   return value as AspectRatio;
+}
+
+const RATINGS: ImageRating[] = ['none', 'general', 'sensitive', 'explicit'];
+
+function integer(value: unknown, what: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new HttpError(400, max === Number.MAX_SAFE_INTEGER ? `${what}要是不小于 ${min} 的整数` : `${what}要是 ${min} 到 ${max} 的整数`);
+  }
+  return value;
+}
+
+// 出图设置只改带了的项，没带的用 base（节点原来的，或者系列的默认值）
+export function imageSettings(value: unknown, base: ImageSettings): ImageSettings {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, '出图设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const next = { ...base };
+  if (fields.width !== undefined || fields.height !== undefined) {
+    const width = fields.width ?? base.width;
+    const height = fields.height ?? base.height;
+    if (!IMAGE_SIZES.some((size) => size.width === width && size.height === height)) {
+      throw new HttpError(400, `尺寸只能是 ${IMAGE_SIZES.map((size) => `${size.width}×${size.height}`).join('、')}`);
+    }
+    next.width = width as number;
+    next.height = height as number;
+  }
+  if (fields.count !== undefined) next.count = integer(fields.count, '张数', 1, 8);
+  if (fields.checkpoint !== undefined) next.checkpoint = text(fields.checkpoint, '底模');
+  if (fields.loras !== undefined) {
+    if (!Array.isArray(fields.loras)) throw new HttpError(400, 'LoRA 格式不对');
+    next.loras = fields.loras.map((lora) => {
+      const { name, strength } = (lora ?? {}) as Record<string, unknown>;
+      return { name: nonEmptyText(name, 'LoRA 名字'), strength: finiteNumber(strength, 'LoRA 强度') };
+    });
+  }
+  if (fields.steps !== undefined) next.steps = integer(fields.steps, '步数', 1);
+  if (fields.cfg !== undefined) {
+    next.cfg = finiteNumber(fields.cfg, 'CFG');
+    if (next.cfg < 0) throw new HttpError(400, 'CFG 不能小于 0');
+  }
+  if (fields.sampler !== undefined) next.sampler = nonEmptyText(fields.sampler, '采样器');
+  if (fields.scheduler !== undefined) next.scheduler = nonEmptyText(fields.scheduler, '调度器');
+  if (fields.seed !== undefined) next.seed = fields.seed === null ? null : integer(fields.seed, '种子', 0);
+  if (fields.rating !== undefined) {
+    if (!RATINGS.includes(fields.rating as ImageRating)) throw new HttpError(400, '评级只能是 none、general、sensitive、explicit');
+    next.rating = fields.rating as ImageRating;
+  }
+  if (fields.negativeExtra !== undefined) next.negativeExtra = text(fields.negativeExtra, '额外的负面词');
+  return next;
 }

@@ -71,7 +71,29 @@
     });
   }
   // 节点最后动过的时间（原型里写死；n6、n7 岔出来后还没发过消息，不进「最近动过」）
-  var TOUCHED = { n3: '17:50', n5: '17:42', n1: '17:40', n4: '17:36', n2: '17:24', n8: '17:02' };
+  var TOUCHED = { n9: '17:51', n3: '17:50', n10: '17:45', n5: '17:42', n1: '17:40', n4: '17:36', n11: '17:30', n2: '17:24', n8: '17:02' };
+
+  /* 生图节点：出过的图。框里的按「打过星的在前、新出的在前」，节点卡片按新出的在前、同一张只算一次 */
+  function boxGen(b) {
+    var out = [];
+    (b.jobs || []).forEach(function (jb) { jb.items.forEach(function (it) { if (it.st === 'done' && it.g) out.push({ it: it, ts: jb.ts, live: jb.live }); }); });
+    return out.sort(function (x, y) { return (y.it.star ? 1 : 0) - (x.it.star ? 1 : 0) || y.ts - x.ts; });
+  }
+  function nodeJobs(n) {
+    var jobs = [];
+    flatten(THR[n.id]).forEach(function (p) { if (p.role === 'ai') (p.versions[p.cur].boxes || []).forEach(function (b) { jobs = jobs.concat(b.jobs || []); }); });
+    return jobs.sort(function (a, b) { return b.ts - a.ts; });
+  }
+  function imageInfo(n) {
+    var jobs = nodeJobs(n), seen = {}, imgs = [], live = jobs.filter(function (j) { return j.live; });
+    jobs.forEach(function (jb) { jb.items.forEach(function (it) { if (it.st === 'done' && it.g && !seen[it.g]) { seen[it.g] = 1; imgs.push(it); } }); });
+    var tot = 0, dn = 0;
+    live.forEach(function (jb) { tot += jb.items.length; dn += jb.items.filter(function (it) { return it.st === 'done'; }).length; });
+    return { imgs: imgs.slice(0, 4), live: live.length ? dn + '/' + tot : null, failed: !!(jobs[0] && jobs[0].items.every(function (it) { return it.st === 'failed'; })), series: seriesOf(n.sys) };
+  }
+  function genThumb(it) {
+    return it.cleared && !it.dl ? '<span class="hm-gone">已清理</span>' : '<img class="im" src="' + GEN[it.g].src + '" alt="" loading="lazy">';
+  }
 
   var MAIN_NODES = CANVAS.nodes.map(function (n) {
     var own = flatten(THR[n.id]);
@@ -81,8 +103,9 @@
     for (var i = t.length - 1; i >= 0 && !ai; i--) if (t[i].role === 'ai' && !t[i].versions[t[i].cur].failed) ai = t[i].versions[t[i].cur];
     return {
       id: n.id, canvas: MAIN, title: n.title, href: 'canvas.html#node=' + n.id,
-      summary: ai && ai.boxes ? summaryOf(ai.boxes[0].text) : '', dirs: ai && ai.boxes ? ai.boxes.length : 0,
+      summary: isImageNode(n) ? n.summary : ai && ai.boxes ? summaryOf(ai.boxes[0].text) : '', dirs: ai && ai.boxes ? ai.boxes.length : 0,
       slots: n.slots, duration: n.duration, ratio: n.ratio, starred: hasStar(THR[n.id]),
+      image: isImageNode(n) ? imageInfo(n) : null, size: n.size,
       live: !!(lv && lv.streaming), failed: lv && lv.failed ? lv.failed : null,
       ts: at(TODAY + TOUCHED[n.id] + ':00')
     };
@@ -100,7 +123,8 @@
             key: [n.id, i, vi, j].join('-'), canvas: MAIN, nodeTitle: n.title, href: 'canvas.html#node=' + n.id,
             label: b.label || '提示词', text: b.text, summary: summaryOf(b.text), translations: b.translations || {},
             imgs: uv ? uv.imgs : n.slots, duration: uv ? uv.duration : n.duration, ratio: uv ? uv.ratio : n.ratio,
-            ts: at(TODAY + v.at + ':00')
+            image: isImageNode(n) ? { series: seriesOf(n.sys), size: uv ? uv.size : n.size, gen: boxGen(b) } : null, nodeId: n.id,
+            ts: at(TODAY + v.at + ':00') > NOW ? at(TODAY + v.at + ':00') - 864e5 : at(TODAY + v.at + ':00')   // 比「现在」晚的算昨天
           });
         });
       });
@@ -177,19 +201,28 @@
   }
   function nodeCard(r) {
     var cv = canvasOf(r.canvas);
+    var g = r.image;
     var status = r.live ? '<span class="tag hm-live"><span class="dot dot-live"></span>正在生成</span>'
-      : r.failed ? '<span class="tag tag-danger" title="' + esc(r.failed.code + ' · ' + r.failed.reason) + '">' + icon('warn') + '回复失败</span>' : '';
+      : r.failed ? '<span class="tag tag-danger" title="' + esc(r.failed.code + ' · ' + r.failed.reason) + '">' + icon('warn') + '回复失败</span>'
+      : g && g.live ? '<span class="tag hm-live"><span class="dot dot-live"></span>出图 <span class="mono">' + g.live + '</span></span>'
+      : g && g.failed ? '<span class="tag tag-danger">' + icon('warn') + '出图失败</span>' : '';
     return '<a class="hm-node' + (r.failed ? ' is-failed' : '') + '" href="' + (r.href || '#') + '" data-node="' + r.id + '" data-od-id="recent-node-' + odId(r.id) + '">' +
-      mosaic(r.slots) +
+      (g ? genMosaic(g.imgs) : mosaic(r.slots)) +
       '<div class="hm-node-body">' +
-        '<div class="hm-node-top"><h3 class="hm-node-title" title="' + esc(r.title) + '">' + esc(r.title) + '</h3>' +
+        '<div class="hm-node-top">' + (g ? '<span class="tag tag-outline hm-kind">' + icon('sparkles') + '生图 · ' + g.series + '</span>' : '') + '<h3 class="hm-node-title" title="' + esc(r.title) + '">' + esc(r.title) + '</h3>' +
           (r.starred ? '<span class="hm-star" title="有打过星的提示词" aria-label="打过星">' + icon('star', 'icon-fill icon-sm') + '</span>' : '') +
           '<span class="grow"></span>' + status + '</div>' +
         '<p class="hm-sum">' + (r.summary ? marked(r.summary) : '<span class="muted">还没有提示词</span>') + '</p>' +
         '<div class="hm-node-meta meta"><span class="hm-cv-name" title="在「' + esc(cv.title) + '」里">' + esc(cv.title) + '</span>' +
           '<span>' + when(r.ts) + '</span><span>' + (r.dirs ? r.dirs + ' 个方向' : '没有方向') + '</span>' +
-          '<span class="mono">' + r.duration + '秒 · ' + r.ratio + '</span></div>' +
+          '<span class="mono">' + (g ? esc(r.size) : r.duration + '秒 · ' + r.ratio) + '</span></div>' +
       '</div></a>';
+  }
+  function genMosaic(list) {
+    if (!list.length) return '<div class="hm-mosaic is-empty">还没<br>出过图</div>';
+    var cols = list.length === 1 ? 1 : 2, rows = Math.ceil(list.length / cols), spare = cols * rows - list.length;
+    return '<div class="hm-mosaic is-gen" style="--cols:' + cols + ';--rows:' + rows + '" aria-label="最近出的 ' + list.length + ' 张图">' +
+      list.map(function (it, i) { return '<span class="hm-cell"' + (spare && i === list.length - 1 ? ' style="grid-column:span ' + (spare + 1) + '"' : '') + '>' + genThumb(it) + '</span>'; }).join('') + '</div>';
   }
   function renderRecent() {
     var list = recentNodes();
@@ -221,10 +254,28 @@
         '<span class="grow"></span><button class="btn btn-ghost btn-sm" data-upload title="要传哪几张图、按什么顺序">' + icon('list') + '上传清单</button>' +
       '</div></article>';
   }
+  function starImageItem(s) {
+    var cv = canvasOf(s.canvas), list = Tags.parse(s.text), shown = 10, g = s.image.gen, starN = g.filter(function (x) { return x.it.star; }).length;
+    return '<article class="hm-star-item is-image" data-star="' + s.key + '" data-od-id="starred-image-' + odId(s.key) + '">' +
+      '<div class="hm-star-top"><span class="tag tag-outline hm-kind">' + icon('sparkles') + '生图 · ' + s.image.series + '</span><h3 class="hm-star-label" title="' + esc(s.label) + '">' + esc(s.label) + '</h3></div>' +
+      '<div class="tg-flow hm-tags">' + list.slice(0, shown).map(function (t) { return Tags.chip(t); }).join('') +
+        (list.length > shown ? '<span class="hm-more meta">还有 <span class="mono">' + (list.length - shown) + '</span> 个</span>' : '') + '</div>' +
+      (g.length ? '<div class="hm-gen-strip" aria-label="这个框出过的 ' + g.length + ' 张图">' + g.slice(0, 6).map(function (x) {
+          return '<span class="hm-gen' + (x.it.star ? ' is-star' : '') + '">' + genThumb(x.it) + (x.it.star ? '<i>' + icon('star', 'icon-fill') + '</i>' : '') + '</span>';
+        }).join('') + '</div><div class="meta hm-gen-meta"><span><span class="mono">' + g.length + '</span> 张' + (starN ? '，打星 <span class="mono">' + starN + '</span> 张' : '') + '</span><span class="mono">' + esc(s.image.size) + '</span></div>'
+        : '<div class="meta">还没出过图</div>') +
+      '<a class="hm-star-where" href="' + (s.href || '#') + '" data-go title="跳到这个节点">' +
+        '<span class="hm-cv-name">' + esc(cv.title) + '</span><span class="hm-sep">›</span><span class="hm-where-node">' + esc(s.nodeTitle) + '</span>' +
+        '<span class="hm-where-time">' + whenDid(s.ts, '写的') + '</span>' + icon('arrow-right', 'icon-sm') + '</a>' +
+      '<div class="hm-star-acts">' +
+        '<button class="btn btn-secondary btn-sm" data-copy="" title="复制整串标签，可以贴进 ComfyUI">' + icon('copy') + '复制</button>' +
+        '<button class="btn btn-ghost btn-sm" data-regen title="用节点现在的出图设置，再出一组">' + icon('sparkles') + '再出图</button>' +
+      '</div></article>';
+  }
   function renderStars() {
     var list = starList();
     $('#starsMeta').textContent = list.length ? list.length + ' 条 · 新写的在前' : '';
-    $('#stars').innerHTML = list.length ? list.map(starItem).join('')
+    $('#stars').innerHTML = list.length ? list.map(function (s) { return s.image ? starImageItem(s) : starItem(s); }).join('')
       : '<div class="hm-empty is-plain" data-od-id="starred-empty"><h3>还没打过星</h3><p>效果好的那版，在对话里的提示词框上点「' + icon('star', 'icon-sm hm-inline-icon') + '打星」，它就会出现在这里，以后不用再翻版本找。</p></div>';
   }
 
@@ -339,6 +390,12 @@
     if (item) {
       var s = S.stars.filter(function (x) { return x.key === item.dataset.star; })[0];
       var cp = e.target.closest('[data-copy]');
+      if (cp && s.image) { var tl = Tags.parse(s.text); copyText(Tags.join(tl), '已复制 ' + tl.length + ' 个标签'); return; }
+      if (e.target.closest('[data-regen]')) {
+        var n = nodeOf(s.nodeId);
+        toast('「' + esc(s.nodeTitle) + '」这个框又排上了 ' + n.count + ' 张，按节点现在的出图设置', { action: '去看看', onAction: function () { location.href = s.href; } });
+        return;
+      }
       if (cp) {
         var l = cp.dataset.copy, text = l ? s.translations[l].text : s.text;
         copyText(text, l ? '已复制' + l + '译文（' + fmtNum(text.length) + ' 字）' : '已复制提示词（' + fmtNum(text.length) + ' 字）');
@@ -450,8 +507,13 @@
   $('#upCopyPrompt').onclick = function () { copyText(upCur.text, '已复制提示词（' + fmtNum(upCur.text.length) + ' 字）'); };
 
   /* ─── 原型用：切到各种状态 ─────────────────────────────── */
+  var CF0 = JSON.stringify(COMFY.autodl);
   function proto(v) {
     reset();
+    Object.assign(COMFY.autodl, JSON.parse(CF0)); COMFY.use = 'lan';
+    if (v === 'autodlRunning') { COMFY.use = 'autodl'; Object.assign(COMFY.autodl, { state: 'running', idleLeft: 12, upMin: 23, byApp: true }); }
+    if (v === 'autodlForgot') Object.assign(COMFY.autodl, { state: 'running', idleLeft: 9, upMin: 41, byApp: true });
+    Comfy.render();
     switch (v) {
       case 'loading': S.view = 'loading'; break;
       case 'error': S.view = 'error'; break;
@@ -483,4 +545,5 @@
   hydrateIcons();
   reset();
   render();
+  Comfy.render();
 })();

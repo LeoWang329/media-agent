@@ -1,4 +1,14 @@
-import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_PRICING, type Config, type ModelConfigWithKey } from '@media-agent/shared';
+import {
+  DEFAULT_IMAGE_LONG_SIDE,
+  DEFAULT_MODEL_THINKING,
+  DEFAULT_PRICING,
+  THINKING_LEVELS,
+  type Config,
+  type ModelConfigWithKey,
+  type SharedSettings,
+  type ThinkingSettings,
+  type ThinkingUse,
+} from '@media-agent/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
@@ -9,15 +19,17 @@ import { Dialog } from '../ui/Dialog';
 import { Icon, type IconName } from '../ui/Icon';
 import { SaveState, trackWrite } from '../ui/saveState';
 import { ThemeToggle } from '../ui/theme';
+import { LEVEL_LABELS, STYLE_LABELS, styleNote } from '../ui/thinking';
 import { toast } from '../ui/toast';
 
-type Tab = 'workdir' | 'models' | 'prompts' | 'format';
+type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking';
 
 const TABS: [Tab, string, IconName][] = [
   ['workdir', '工作文件夹', 'folder'],
   ['models', '模型配置', 'cpu'],
   ['prompts', '系统提示词', 'doc'],
   ['format', '固定格式要求', 'lock'],
+  ['thinking', '思考', 'brain'],
 ];
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
@@ -67,6 +79,7 @@ export function Settings() {
           )}
           {config && tab === 'prompts' && <PromptsTab key={config.workFolder} workFolder={config.workFolder} />}
           {tab === 'format' && <FormatTab />}
+          {config && tab === 'thinking' && <ThinkingTab key={config.workFolder} config={config} />}
         </main>
       </div>
     </>
@@ -200,7 +213,9 @@ function useDebouncedSave<T>(save: (value: T) => Promise<unknown>) {
 
 function ModelsTab({ config, onItems: setItems }: { config: Config; onItems: (list: ModelConfigWithKey[]) => void }) {
   const items = config.modelConfigs;
-  const [selectedId, setSelectedId] = useState(items[0]?.id ?? null);
+  // 从「思考」里点某一套的「改」过来，选中那一套
+  const linked = (useLocation().state as { modelId?: string } | null)?.modelId;
+  const [selectedId, setSelectedId] = useState(linked ?? items[0]?.id ?? null);
   const selected = items.find((m) => m.id === selectedId) ?? items[0];
   const save = (list: ModelConfigWithKey[]) => trackWrite(api<Config>('/config', { method: 'PUT', body: { modelConfigs: list } }));
   const { schedule, flush } = useDebouncedSave(save);
@@ -218,7 +233,7 @@ function ModelsTab({ config, onItems: setItems }: { config: Config; onItems: (li
 
   const create = async () => {
     await flush();
-    const item: ModelConfigWithKey = { id: crypto.randomUUID(), name: '新配置', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE, pricing: DEFAULT_PRICING };
+    const item: ModelConfigWithKey = { id: crypto.randomUUID(), name: '新配置', baseUrl: '', apiKey: '', model: '', imageLongSide: DEFAULT_IMAGE_LONG_SIDE, pricing: DEFAULT_PRICING, ...DEFAULT_MODEL_THINKING };
     const list = [...items, item];
     setItems(list);
     setSelectedId(item.id);
@@ -539,6 +554,96 @@ function FormatTab() {
         <span className="tag"><Icon name="lock" />只能看</span>
       </div>
       <pre className="ro" data-od-id="format-requirement">{text}</pre>
+    </>
+  );
+}
+
+const THINKING_USE_ROWS: [ThinkingUse, string, string][] = [
+  ['chat', '写提示词', '节点里聊天时。默认跟总开关。开了思考，回复前会先显示「正在思考 N 秒」，想完才出正文。'],
+  ['translate', '翻译', '提示词框上的「翻译」。默认关，翻译用不着想，快也省钱。'],
+  ['tagging', '转标签', '标签编辑窗里「让 AI 转成标签」。默认关，几秒就该回来。'],
+];
+
+function ThinkingTab({ config }: { config: Config }) {
+  const [thinking, setThinking] = useState<ThinkingSettings | null>(null);
+  const saving = useRef(Promise.resolve());
+
+  useEffect(() => {
+    if (config.workFolder) api<SharedSettings>('/settings').then((s) => setThinking(s.thinking), failed);
+  }, [config.workFolder]);
+
+  if (!config.workFolder) return <p className="muted">思考的设置存在工作文件夹里，先在「工作文件夹」里选一个。</p>;
+  if (!thinking) return null;
+
+  // 改一项存一项，按点的顺序存，连着点几下最后存下的是最后点的那个
+  const change = (patch: Partial<ThinkingSettings>) => {
+    setThinking({ ...thinking, ...patch });
+    saving.current = saving.current.then(() => trackWrite(api('/settings', { method: 'PUT', body: { thinking: patch } })).then(() => undefined, failed));
+  };
+
+  return (
+    <>
+      <div className="st-head">
+        <div>
+          <h2>思考</h2>
+          <p>有的模型回答前会先想一会儿。想得越深越慢，花的钱也越多（想的部分按输出算钱）。这里管想不想、想多深。</p>
+        </div>
+        <span className="tag sx-where"><Icon name="folder" />存在工作文件夹，两台电脑共用</span>
+      </div>
+      <section className="card editor" data-od-id="thinking-settings">
+        <div className="kv">
+          <div className="kv-row">
+            <span className="k">总档位</span>
+            <div className="stack" style={{ gap: 6 }}>
+              <div className="seg" id="thLevel" role="group" aria-label="总档位">
+                {THINKING_LEVELS.map((level) => (
+                  <button key={level} type="button" aria-pressed={thinking.level === level} onClick={() => change({ level })}>
+                    {LEVEL_LABELS[level]}
+                  </button>
+                ))}
+              </div>
+              <span className="hint">下面选「跟总开关」的用途都按这一档。只能开关、调不了深浅的模型，低中高都当「开」。</span>
+            </div>
+          </div>
+          {THINKING_USE_ROWS.map(([use, name, note]) => (
+            <div className="kv-row" key={use}>
+              <label className="k" htmlFor={`th-${use}`}>{name}</label>
+              <div className="stack" style={{ gap: 4 }}>
+                <select
+                  className="select"
+                  style={{ width: 200 }}
+                  id={`th-${use}`}
+                  value={thinking[use]}
+                  onChange={(e) => change({ [use]: e.target.value } as Partial<ThinkingSettings>)}
+                >
+                  <option value="follow">跟总开关（现在是「{LEVEL_LABELS[thinking.level]}」）</option>
+                  {THINKING_LEVELS.map((level) => (
+                    <option key={level} value={level}>
+                      {LEVEL_LABELS[level]}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">{note}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="card editor" style={{ marginTop: 16 }} data-od-id="thinking-model-styles">
+        <h3 style={{ marginBottom: 4 }}>每套模型配置怎么开思考</h3>
+        <p className="hint" style={{ marginBottom: 12 }}>各家开思考的写法不一样，在每套模型配置里选「开思考的写法」。选「不支持」的，上面的档位对它不起作用。</p>
+        <div className="sx-list">
+          {config.modelConfigs.map((m) => (
+            <div className="sx-row" key={m.id}>
+              <b>{m.name}</b>
+              <span className="mono meta">{m.model}</span>
+              <span className="tag mono">{STYLE_LABELS[m.thinkingStyle]}</span>
+              <span className="meta grow">{styleNote(m)}</span>
+              <Link className="btn btn-ghost btn-sm" to={{ hash: 'models' }} state={{ modelId: m.id }}>改</Link>
+            </div>
+          ))}
+        </div>
+      </section>
     </>
   );
 }

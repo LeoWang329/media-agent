@@ -11,6 +11,9 @@ export type ForkChain = {
   draft: string;
 };
 
+// 出的图属于出图的那个节点，复制消息时不带过去，免得两个节点删同一个临时文件、等同一个任务
+const withoutImages = ({ images: _, ...message }: Message): Message => message;
+
 // 从 assistant 消息 fork：链含这条消息；从 user 消息 fork：链到它的上一条，它的文字放进输入框。
 // 只复制链上的消息，id 和 parentId 不变
 export function forkChain(source: Pick<ChatNode, 'messages' | 'rootIds' | 'activeChildOf'>, messageId: string, draftPrefix?: string): ForkChain {
@@ -26,7 +29,7 @@ export function forkChain(source: Pick<ChatNode, 'messages' | 'rootIds' | 'activ
   });
 
   return {
-    messages: Object.fromEntries(chain.map((m) => [m.id, m])),
+    messages: Object.fromEntries(chain.map((m) => [m.id, withoutImages(m)])),
     rootIds: chain.length ? [chain[0].id] : [],
     activeChildOf,
     slots: [...snapshotFrom.slotSnapshot],

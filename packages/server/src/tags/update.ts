@@ -1,0 +1,126 @@
+import type { TagInfo, TagUpdateEvent } from '@media-agent/shared';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { HttpError } from '../httpError';
+import { csvRow } from './csv';
+import { forgetLibrary, loadLibrary, tagsDir } from './library';
+
+// 从哪下：Danbooru 官方接口和中文对照的仓库；测试换成假的地址、不等待
+export type TagSources = { danbooru: string; zh: string; pageDelayMs: number };
+
+export const DEFAULT_TAG_SOURCES: TagSources = {
+  danbooru: 'https://danbooru.donmai.us',
+  zh: 'https://raw.githubusercontent.com/amenorira/danbooru-tags-data-zh/main',
+  pageDelayMs: 500,
+};
+
+const ZH_FILES = ['tags/artist.csv', 'tags/character.csv', 'tags/copyright.csv', 'tags/general.csv', 'tags/meta.csv', 'LICENSE'];
+const HEADERS = { 'User-Agent': 'media-agent' };
+
+let updating = false;
+
+export const tagUpdateRunning = () => updating;
+
+// 照仓库快照的做法重新下，全部下完才整体换掉工作文件夹里的 tags/；中途失败旧的不动，见 docs/dev-plan.md 5.13
+export async function updateTagLibrary(work: string, sources: TagSources, onProgress: (event: TagUpdateEvent) => void): Promise<TagInfo> {
+  if (updating) throw new HttpError(409, '词库正在更新，等这一次下完');
+  updating = true;
+  const dir = tagsDir(work);
+  const fresh = `${dir}.new-${randomUUID()}`;
+  try {
+    await fs.mkdir(path.join(fresh, 'zh'), { recursive: true });
+
+    const tags = await step('下标签', () =>
+      pages<{ id: number; name: string; post_count: number; category: number; is_deprecated: boolean }>(
+        sources,
+        'tags.json',
+        { 'search[post_count]': '>50', only: 'id,name,post_count,category,is_deprecated' },
+        (page, rows) => onProgress({ type: 'progress', step: 'tags', page, rows }),
+      ),
+    );
+    tags.sort((a, b) => b.post_count - a.post_count || a.name.localeCompare(b.name));
+    const tagRows = tags.map((t) => csvRow([t.name, t.category, t.post_count, t.is_deprecated ? 1 : 0]));
+    await fs.writeFile(path.join(fresh, 'tags.csv'), [csvRow(['tag', 'category', 'count', 'deprecated']), ...tagRows, ''].join('\n'));
+
+    const aliases = await step('下别名', () =>
+      pages<{ id: number; antecedent_name: string; consequent_name: string }>(
+        sources,
+        'tag_aliases.json',
+        { 'search[status]': 'active', only: 'id,antecedent_name,consequent_name' },
+        (page, rows) => onProgress({ type: 'progress', step: 'aliases', page, rows }),
+      ),
+    );
+    aliases.sort((a, b) => a.consequent_name.localeCompare(b.consequent_name) || a.antecedent_name.localeCompare(b.antecedent_name));
+    const aliasRows = aliases.map((a) => csvRow([a.antecedent_name, a.consequent_name]));
+    await fs.writeFile(path.join(fresh, 'aliases.csv'), [csvRow(['alias', 'tag']), ...aliasRows, ''].join('\n'));
+
+    await step('下中文对照', async () => {
+      for (const [index, file] of ZH_FILES.entries()) {
+        const res = await fetch(`${sources.zh}/${file}`, { headers: HEADERS, signal: AbortSignal.timeout(120_000) });
+        if (!res.ok) throw new Error(`${file}：HTTP ${res.status}`);
+        await fs.writeFile(path.join(fresh, 'zh', path.basename(file)), Buffer.from(await res.arrayBuffer()));
+        onProgress({ type: 'progress', step: 'zh', file: index + 1, files: ZH_FILES.length });
+      }
+    });
+
+    const today = new Date();
+    const updatedAt = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    await fs.writeFile(path.join(fresh, 'info.json'), JSON.stringify({ updatedAt }, null, 2));
+
+    // 换掉旧的：先挪开，新的改名过去，再删旧的；新的没换上就把旧的挪回来
+    const old = `${dir}.old-${randomUUID()}`;
+    const moved = await fs.rename(dir, old).then(
+      () => true,
+      (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err;
+        return false;
+      },
+    );
+    try {
+      await fs.rename(fresh, dir);
+    } catch (err) {
+      if (moved) await fs.rename(old, dir);
+      throw err;
+    }
+    await fs.rm(old, { recursive: true, force: true });
+    forgetLibrary(work);
+    return (await loadLibrary(work)).info;
+  } catch (err) {
+    await fs.rm(fresh, { recursive: true, force: true });
+    throw err;
+  } finally {
+    updating = false;
+  }
+}
+
+// 出错时说清是哪一步
+async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    throw new Error(`${name}时出错：${(err as Error).message}`);
+  }
+}
+
+// 按 id 翻页：page=a<上一页最大的 id>，每页 1000 条，翻到返回空为止；一页一页按顺序请求
+async function pages<T extends { id: number }>(
+  sources: TagSources,
+  resource: string,
+  search: Record<string, string>,
+  onPage: (page: number, rows: number) => void,
+): Promise<T[]> {
+  const rows: T[] = [];
+  let after = 0;
+  for (let page = 1; ; page += 1) {
+    const query = new URLSearchParams({ ...search, limit: '1000', page: `a${after}` });
+    const res = await fetch(`${sources.danbooru}/${resource}?${query}`, { headers: HEADERS, signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) throw new Error(`第 ${page} 页：HTTP ${res.status}`);
+    const batch = (await res.json()) as T[];
+    if (!batch.length) return rows;
+    rows.push(...batch);
+    after = Math.max(...batch.map((row) => row.id));
+    onPage(page, rows.length);
+    if (sources.pageDelayMs) await new Promise((resolve) => setTimeout(resolve, sources.pageDelayMs));
+  }
+}

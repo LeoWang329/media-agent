@@ -108,14 +108,14 @@ var Panel = (function () {
         (v.auto ? '<div class="autonote"><span class="tag tag-outline" title="程序在发送时自动附上的说明，不是手打的">自动附加</span><span>' + tokens(v.auto, v.imgs) + '</span></div>' : '') +
         '<div class="msg-text">' + tokens(v.text, v.imgs) + '</div>' +
         (imgs ? '<div class="msg-imgs">' + imgs + '</div>' : '') +
-        '<div class="meta" style="margin-top:8px">这条带了 ' + v.imgs.length + ' 张图 · ' + v.duration + ' 秒 · ' + v.ratio + '</div>' +
+        '<div class="meta" style="margin-top:8px">这条带了 ' + v.imgs.length + ' 张图 · ' + (v.size ? '<span class="mono">' + v.size + '</span> · ' + v.count + ' 张' : v.duration + ' 秒 · ' + v.ratio) + '</div>' +
       '</div></div>';
   }
   function renderUserEdit(it, k, v) {
     return '<div class="msg msg-user msg-edit">' +
       '<div class="msg-head"><span class="msg-role">改这句</span><span class="meta">改完会多出一个版本，原来的那版和它后面的对话都还在</span></div>' +
       '<textarea class="textarea" id="editArea" data-k="' + k + '">' + esc(v.text) + '</textarea>' +
-      '<p class="hint" style="margin-top:6px">只改文字。那时候带的 ' + v.imgs.length + ' 张图、' + v.duration + ' 秒、' + v.ratio + ' 照旧。</p>' +
+      '<p class="hint" style="margin-top:6px">只改文字。那时候带的 ' + v.imgs.length + ' 张图、' + (v.size ? v.size + '、' + v.count + ' 张' : v.duration + ' 秒、' + v.ratio) + ' 照旧。</p>' +
       '<div class="row"><button class="btn btn-secondary btn-sm" data-act="editCancel" data-k="' + k + '" data-src="o">取消</button>' +
       '<button class="btn btn-primary btn-sm" data-act="editSend" data-k="' + k + '" data-src="o">' + icon('send') + '发送修改</button></div></div>';
   }
@@ -141,6 +141,9 @@ var Panel = (function () {
         '</div></div></div>';
     }
 
+    html += ImgUI.thinkHTML(v);
+    if (v._thinkStart) return html + '</div>';
+    var image = isImageNode(node());
     var introLen = live ? v._is : v.intro ? v.intro.length : 0;
     var introDone = !live || v._is >= (v.intro || '').length;
     if (v.intro) html += '<div class="intro">' + tokens(v.intro.slice(0, introLen), imgs) + (live && !introDone ? '<span class="caret"></span>' : '') + '</div>';
@@ -151,6 +154,7 @@ var Panel = (function () {
       var writing = live && shown < b.text.length;
       var text = b.text.slice(0, shown);
       if (b._editing && !ro) { html += renderBoxEditor(b, k, j, imgs); return; }
+      if (image) { html += ImgUI.boxHTML(node(), v, b, k, j, src, ro, { writing: writing, shown: shown }); return; }
       var long = b.text.length > 700 && !b._open && !writing;
       html += '<div class="pbox' + (b.starred ? ' is-starred' : '') + (writing || b.incomplete ? ' is-writing' : '') + '" data-od-id="prompt-box">' +
         '<div class="pb-head"><span class="pb-label' + (b.label ? '' : ' is-plain') + '">' + esc(b.label || '提示词') + '</span>' +
@@ -206,7 +210,7 @@ var Panel = (function () {
     html += P.items.map(function (it, k) { return it.p.role === 'user' ? renderUser(it, k, 'o') : renderAI(it, k, 'o'); }).join('');
     if (!P.copied.length && !P.items.length) {
       html = '<div style="padding:48px 12px;text-align:center" class="stack"><h3>这个节点还没有对话</h3>' +
-        '<p class="muted" style="margin-top:6px;font-size:13px">先在下面放参考图、选时长和比例，再写需求发出去。<br>AI 第一次回复时会给节点起标题。</p></div>';
+        '<p class="muted" style="margin-top:6px;font-size:13px">' + (isImageNode(n) ? '用中文写想要什么样的图，AI 会写成 Danbooru 标签。<br>槽位里放图，AI 能照着图写。' : '先在下面放参考图、选时长和比例，再写需求发出去。') + '<br>AI 第一次回复时会给节点起标题。</p></div>';
     }
     elThread.innerHTML = html;
     if (keepScroll === 'bottom' || (keepScroll && nearBottom)) elThread.scrollTop = elThread.scrollHeight;
@@ -226,7 +230,13 @@ var Panel = (function () {
     else if (n.titleManual) sub.push('<span>标题手动改过，AI 不再覆盖</span>');
     $('#drSub').innerHTML = sub.join('<span>·</span>');
     $('#cfgModel').innerHTML = MODEL_CONFIGS.map(function (m) { return '<option value="' + m.id + '"' + (m.id === n.model ? ' selected' : '') + '>' + esc(m.name) + ' · ' + esc(m.model) + '</option>'; }).join('');
-    $('#cfgSys').innerHTML = SYSTEM_PROMPTS.map(function (s) { return '<option' + (s === n.sys ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join('');
+    var opt = function (s) { return '<option value="' + esc(s) + '"' + (s === n.sys ? ' selected' : '') + '>' + esc(s) + (seriesOf(s) ? ' · ' + seriesOf(s) : '') + '</option>'; };
+    $('#cfgSys').innerHTML = '<optgroup label="写视频提示词">' + SYSTEM_PROMPTS.filter(function (s) { return !seriesOf(s); }).map(opt).join('') + '</optgroup>' +
+      '<optgroup label="写生图标签">' + SYSTEM_PROMPTS.filter(seriesOf).map(opt).join('') + '</optgroup>';
+    var th = ImgUI.thinkLevel(n), te = $('#cfgThink');
+    te.innerHTML = icon('brain', 'icon-sm') + '<span>' + (th.on ? '思考 ' + th.lv : th.model ? '不思考' : '不支持思考') + '</span>';
+    te.title = th.on ? '写提示词时先思考，档位「' + th.lv + '」（跟设置里的总开关）。点一下去设置里改' : th.model ? '设置里写提示词的思考是「关」。点一下去设置里改' : '这套模型配置的「开思考的写法」是不支持。点一下去设置里改';
+    te.classList.toggle('is-on', !!th.on);
     var c = sumCost(THREADS[n.id]);
     $('#drCost').textContent = c ? '这个节点花了 ' + fmtCost(c) : '';
   }
@@ -235,7 +245,8 @@ var Panel = (function () {
   function autoNote(n) {
     var prev = lastUserVersion(n), cur = n.slots, parts = [];
     var pic = function (i) { return '<Picture ' + i + '>'; };
-    if (!prev) return (cur.length ? '参考图共 ' + cur.length + ' 张，编号如下。' : '') + '视频时长 ' + n.duration + ' 秒，画面比例 ' + n.ratio + '。';
+    var img = isImageNode(n);
+    if (!prev) return (cur.length ? '参考图共 ' + cur.length + ' 张，编号如下。' : '') + (img ? '' : '视频时长 ' + n.duration + ' 秒，画面比例 ' + n.ratio + '。');
     var p = prev.imgs;
     if (p.join() !== cur.join()) {
       if (cur.length > p.length && cur.slice(0, p.length).join() === p.join()) {
@@ -249,8 +260,8 @@ var Panel = (function () {
         parts.push('参考图已重新编号，以下是当前全部 ' + cur.length + ' 张参考图，以此为准，之前的编号作废。');
       }
     }
-    if (prev.duration !== n.duration) parts.push('视频时长改为 ' + n.duration + ' 秒。');
-    if (prev.ratio !== n.ratio) parts.push('画面比例改为 ' + n.ratio + '。');
+    if (!img && prev.duration != null && prev.duration !== n.duration) parts.push('视频时长改为 ' + n.duration + ' 秒。');
+    if (!img && prev.ratio != null && prev.ratio !== n.ratio) parts.push('画面比例改为 ' + n.ratio + '。');
     return parts.join('');
   }
   function hasPending(n) { return !!lastUserVersion(n) && !!autoNote(n); }
@@ -296,6 +307,7 @@ var Panel = (function () {
     $('#durDown').disabled = n.duration <= 4;
     $('#durUp').disabled = n.duration >= 15;
     $('#ratioSel').value = n.ratio;
+    ImgUI.renderDock(n);
   }
   function refreshDock() {
     if (!node()) return;
@@ -540,6 +552,11 @@ var Panel = (function () {
 
   /* ─── 发送与生成 ───────────────────────────────────── */
   function makeReply(n, text) {
+    if (isImageNode(n)) {
+      if (/三个方向/.test(text)) return { intro: '三个方向的区别在姿势和光线。没写质量词，程序会按 ' + seriesOf(n.sys) + ' 系列自动加。', boxes: [
+        { label: '方向一：窗台侧坐，光束', text: T_DIR1, jobs: [] }, { label: '方向二：课桌托腮，侧光', text: T_DIR2, jobs: [] }, { label: '方向三：抱书回头，逆光', text: T_DIR3, jobs: [] }] };
+      return { intro: '按你说的改了，其他标签没动。', boxes: [{ label: null, text: T_DIR1.replace('closed mouth', '(smile:1.2)').replace(', warm sunset glow', ''), jobs: [] }] };
+    }
     if (/三个方向/.test(text)) return { intro: '按你的要求给了三个方向，区别在镜头运动和有没有台词。', boxes: [
       { label: '方向一：跟拍背影，结尾甩头', text: P_DIR1 }, { label: '方向二：慢推近景，无台词', text: P_DIR2 }, { label: '方向三：手持跟拍，一句台词', text: P_DIR3 }] };
     if (n.sys === 't2v' || !n.slots.length) return { intro: '没有参考图，人物和场景都按文字定义。', boxes: [{ label: null, text: P_T2V }] };
@@ -548,9 +565,11 @@ var Panel = (function () {
   function aiVersion(n, text) {
     var r = makeReply(n, text), hist = fullThread(n).length;
     var tin = 3200 + n.slots.length * 1480 + hist * 420;
-    return { model: n.model, sys: n.sys, sysAt: '9月16日 ' + now(), at: now(), tin: tin, tout: 0, tcache: Math.round(tin * 0.78), intro: r.intro, boxes: r.boxes, _fail: /报错/.test(text) };
+    var th = ImgUI.thinkLevel(n);
+    return { model: n.model, sys: n.sys, sysAt: '9月16日 ' + now(), at: now(), tin: tin, tout: 0, tcache: Math.round(tin * 0.78), intro: r.intro, boxes: r.boxes, _fail: /报错/.test(text),
+             _thinkMs: th.on ? ({ '低': 4000, '中': 7000, '高': 11000 })[th.lv] : 0, _thinkText: th.on && th.model.think !== 'reasoning_effort' ? THINK_N9 : null };
   }
-  function send() {
+  function send(o) {
     var n = node(); if (!n || isStreaming(n)) return;
     var s = serialize(elInput);
     if (s.broken.length) {
@@ -560,8 +579,11 @@ var Panel = (function () {
     }
     if (!s.text) { elInput.focus(); return; }
     var note = autoNote(n);
-    var userPos = { role: 'user', cur: 0, versions: [{ auto: note || null, text: s.text, imgs: n.slots.slice(), duration: n.duration, ratio: n.ratio, at: '9月16日 ' + now() }] };
+    var uv = { auto: note || null, text: s.text, imgs: n.slots.slice(), at: '9月16日 ' + now() };
+    if (isImageNode(n)) { uv.size = n.size; uv.count = n.count; } else { uv.duration = n.duration; uv.ratio = n.ratio; }
+    var userPos = { role: 'user', cur: 0, versions: [uv] };
     var v = aiVersion(n, s.text);
+    if (o && o.thinkHold) { v._thinkMs = 3600000; v._thinkStart = Date.now() - 12000; }   // 原型：停在「正在思考」
     var aiPos = { role: 'ai', cur: 0, versions: [v] };
     var items = walk(THREADS[n.id], []);
     var arr = items.length ? items[items.length - 1].arr : THREADS[n.id];
@@ -588,7 +610,12 @@ var Panel = (function () {
       }, 1400);
       return;
     }
+    if (v._thinkMs && !v.thinking) v._thinkStart = v._thinkStart || Date.now();
     st.timer = setInterval(function () {
+      if (v._thinkStart) {
+        if (Date.now() - v._thinkStart < v._thinkMs) { if (!st.painted) { st.painted = true; paint(nodeId, v); } return; }
+        v.thinking = { ms: Date.now() - v._thinkStart, text: v._thinkText }; delete v._thinkStart; delete v._thinkText;
+      }
       if (v._is < v.intro.length) v._is = Math.min(v.intro.length, v._is + speed);
       else {
         var j = -1;
@@ -618,6 +645,7 @@ var Panel = (function () {
       clearInterval(st.timer); clearTimeout(st.timer); delete streams[sid];
       var v = st.v;
       v.streaming = false; v.stopped = true;
+      if (v._thinkStart) { v.thinking = { ms: Date.now() - v._thinkStart, text: null }; delete v._thinkStart; }
       v.intro = (v.intro || '').slice(0, v._is);
       v.boxes = v.boxes.map(function (b, j) {
         var shown = v._bs[j];
@@ -682,6 +710,7 @@ var Panel = (function () {
 
   /* ─── 面板上的点击 ─────────────────────────────────── */
   elThread.addEventListener('click', function (e) {
+    if (ImgUI.onThreadClick(e)) return;
     var b = e.target.closest('[data-act]'); if (!b) return;
     var n = node(), src = b.dataset.src || 'o', k = +b.dataset.k, j = b.dataset.j != null ? +b.dataset.j : null;
     var list = src === 'c' ? P.copied : P.items, it = list[k];
@@ -690,7 +719,9 @@ var Panel = (function () {
     switch (b.dataset.act) {
       case 'vprev': switchVersion(k, -1); break;
       case 'vnext': switchVersion(k, 1); break;
-      case 'copy': copyText(box.text, '已复制提示词（' + fmtNum(box.text.length) + ' 字）'); break;
+      case 'copy':
+        if (isImageNode(n)) { copyText(Tags.join(Tags.parse(box.text)), '已复制 ' + Tags.parse(box.text).length + ' 个标签（一行英文，不含固定开头）'); break; }
+        copyText(box.text, '已复制提示词（' + fmtNum(box.text.length) + ' 字）'); break;
       case 'translate': Translate.open(n, box, imgsFor(src, k)); break;
       case 'star':
         box.starred = !box.starred; renderAll(true); renderGraph(); markSaved();
@@ -748,6 +779,7 @@ var Panel = (function () {
         renderAll(true); markSaved();
         toast('存成了第 ' + it.p.versions.length + ' 版，标着「手动修改」'); break;
       }
+      default: ImgUI.act(b.dataset.act, { n: n, box: box, v: v, it: it, k: k, j: j, src: src, el: b });
     }
   });
   elThread.addEventListener('keydown', function (e) {
@@ -770,7 +802,21 @@ var Panel = (function () {
     showMenu($('#drMenu'), items);
   };
   $('#cfgModel').onchange = function (e) { var n = node(); n.model = e.target.value; markSaved(); toast('从下一条消息起用「' + modelOf(n.model).name + '」'); };
-  $('#cfgSys').onchange = function (e) { var n = node(); n.sys = e.target.value; markSaved(); toast('从下一条消息起用系统提示词「' + n.sys + '」'); };
+  $('#cfgSys').onchange = function (e) {
+    var n = node(), was = seriesOf(n.sys); n.sys = e.target.value;
+    var now = seriesOf(n.sys);
+    if (now && !n.image) {
+      var S = SERIES[now], ck = CHECKPOINTS.filter(function (c) { return c.series === now; })[0];
+      n.size = n.size || '832×1216'; n.count = n.count || 4;
+      n.image = { src: COMFY.use, workflow: 'builtin', ckpt: ck.name, loras: [], seedMode: 'random', seed: 0, steps: S.steps, cfg: S.cfg, sampler: S.sampler, scheduler: S.scheduler, rating: '全年龄', extraNeg: '' };
+    } else if (now && was !== now && n.image) {
+      var ck2 = CHECKPOINTS.filter(function (c) { return c.series === now; })[0]; n.image.ckpt = ck2.name; n.image.steps = SERIES[now].steps; n.image.cfg = SERIES[now].cfg;
+    }
+    markSaved(); renderAll(true); renderGraph();
+    if (!!was !== !!now) toast(now ? '换成了生图用的提示词，这个节点变成生图节点：面板上的时长和比例换成了尺寸和张数。已有的对话不动' : '换回了视频提示词，面板上换回时长和比例。已有的对话不动', { ms: 5000 });
+    else toast('从下一条消息起用系统提示词「' + esc(n.sys) + '」' + (now && was !== now ? '，底模换成了 ' + now + ' 系列的' : ''));
+  };
+  $('#cfgThink').onclick = function () { location.href = 'settings.html#thinking'; };
 
   function renderAll(scroll) { renderHead(); renderThread(scroll); refreshDock(); }
 
@@ -783,6 +829,16 @@ var Panel = (function () {
     },
     renderHead: renderHead,
     refreshDock: refreshDock,
+    rerender: function () { if (node()) renderAll(true); },
+    sendText: function (t, o) { elInput.textContent = t; send(o); },
+    /* 标签编辑窗、换掉不认识的标签：存成这条回复的新版本，不问 AI */
+    saveManual: function (k, j, text, msg) {
+      var it = P.items[k], v = it.p.versions[it.p.cur];
+      var boxes = v.boxes.map(function (x, i) { return { label: x.label, text: i === j ? text : x.text, starred: i === j ? false : x.starred, jobs: i === j ? [] : x.jobs }; });
+      newVersion(it, { manual: true, at: now(), model: v.model, sys: v.sys, boxes: boxes });
+      renderAll(true); renderGraph(); markSaved();
+      toast(msg + '（第 ' + it.p.versions.length + ' 版。原来那版和它出的图都还在，切回去能看到）', { ms: 4500 });
+    },
     promptHTML: promptHTML,
     prefill: function (text) {
       elInput.textContent = text; updateSendBtn();

@@ -1,8 +1,17 @@
-import { parseReply, translateMessages, withTranslation, type PromptTranslation, type TranslateLanguage } from '@media-agent/shared';
+import {
+  parseReply,
+  thinkingLevelFor,
+  thinkingRequest,
+  translateMessages,
+  withTranslation,
+  type PromptTranslation,
+  type TranslateLanguage,
+} from '@media-agent/shared';
 import { readConfig } from '../config';
 import { HttpError } from '../httpError';
 import { readNode, updateNode } from '../store/canvases';
 import { readTranslateInstructions } from '../store/prompts';
+import { readSettings } from '../store/settings';
 import { streamChatCompletion } from './chatStream';
 
 export type TranslateTarget = { configDir: string; work: string; canvasId: string; nodeId: string; messageId: string; promptIndex: number };
@@ -19,9 +28,11 @@ export async function translatePrompt(target: TranslateTarget, language: Transla
   if (!modelConfig) throw new HttpError(400, '这个节点没有可用的模型配置，请在面板顶部选一个');
 
   let text = '';
+  const level = thinkingLevelFor((await readSettings(work)).thinking, 'translate');
   const { usage } = await streamChatCompletion({
     modelConfig,
     messages: translateMessages(await readTranslateInstructions(), language, instruction, box.text),
+    thinking: level,
     onDelta: (delta) => {
       text += delta;
     },
@@ -33,7 +44,7 @@ export async function translatePrompt(target: TranslateTarget, language: Transla
     text: text.trim(),
     createdAt: new Date().toISOString(),
     modelConfigId: modelConfig.id,
-    modelName: modelConfig.model,
+    modelName: thinkingRequest(modelConfig, level).model,
     ...(usage && { usage }),
   };
   await updateNode(work, canvasId, nodeId, (current) => {

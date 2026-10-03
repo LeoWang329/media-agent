@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>设置 · 提示词画布</title>
   <link rel="stylesheet" href="shared/app.css" />
+  <link rel="stylesheet" href="shared/image.css" />
   <script src="shared/app.js"></script>
   <script src="shared/model-form.js"></script>
   <script src="shared/prompts-data.js"></script>
+  <script src="shared/canvas-data.js"></script>
+  <script src="shared/image-data.js"></script>
+  <script src="shared/image-core.js"></script>
   <style>
     .st { max-width: 1240px; margin: 0 auto; padding: 28px 28px 64px; display: grid; grid-template-columns: 200px 1fr; gap: 32px; align-items: start; }
     .st-nav { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 2px; }
@@ -38,6 +42,15 @@
     .where .card { padding: 16px 18px; }
     .where ul { margin: 10px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.9; }
     .where h3 { display: flex; align-items: center; gap: 8px; }
+    .li-sep { margin: 8px 2px 0; font-size: 11.5px; color: var(--muted); }
+    .up-alert { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; }
+    .up-alert.is-danger { background: var(--danger-soft); border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent); }
+    .up-alert.is-danger .icon { color: var(--danger); }
+    .up-alert.is-warn { background: var(--warn-soft); border: 1px solid color-mix(in oklch, var(--warn) 35%, transparent); }
+    .up-alert.is-warn .icon { color: var(--warn); }
+    .up-alert .icon { flex: none; margin-top: 3px; }
+    .ro + .ro { margin-top: 12px; }
+    .ro-title { margin: 18px 0 8px; font-size: 13.5px; font-weight: 600; }
     @media (max-width: 960px) { .split { grid-template-columns: 1fr; } .list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } .li { min-width: 210px; } }
     @media (max-width: 720px) {
       .st { grid-template-columns: 1fr; padding: 16px 14px 48px; gap: 16px; }
@@ -56,6 +69,7 @@
     <a class="brand" href="home.html"><span class="brand-mark" data-icon="logo"></span>提示词画布</a>
     <span class="muted hide-sm">/</span><span class="hide-sm">设置</span>
     <span class="spacer"></span>
+    <button class="cf-pill" data-od-id="comfy-status"></button>
     <span class="save-state" data-od-id="save-state"><span class="dot dot-ok"></span><span class="save-text">改动自动写入</span></span>
     <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
     <a class="btn btn-ghost" href="home.html" data-icon="home"><span class="hide-sm">回首页</span></a>
@@ -68,26 +82,70 @@
       <a href="#models" data-tab="models" data-icon="cpu">模型配置</a>
       <a href="#prompts" data-tab="prompts" data-icon="doc">系统提示词</a>
       <a href="#format" data-tab="format" data-icon="lock">固定格式要求</a>
+      <a href="#thinking" data-tab="thinking" data-icon="brain">思考</a>
+      <div class="st-sep">生图</div>
+      <a href="#comfy" data-tab="comfy" data-icon="server">ComfyUI</a>
+      <a href="#checkpoints" data-tab="checkpoints" data-icon="sliders">底模和默认值</a>
+      <a href="#workflows" data-tab="workflows" data-icon="list">工作流</a>
+      <a href="#taglib" data-tab="taglib" data-icon="tag">词库</a>
+      <a href="#fragments" data-tab="fragments" data-icon="copy">片段库</a>
+      <a href="#images" data-tab="images" data-icon="download">出的图</a>
     </nav>
     <main class="st-main" id="main" data-od-id="settings-main"></main>
   </div>
 
+  <!-- 只在原型里有：切到设置页的几种等待和出错状态 -->
+  <label class="proto-switch" title="只在原型里有，正式程序里没有" data-od-id="settings-prototype-states">
+    <span>原型</span>
+    <select class="select select-sm" id="proto" aria-label="原型：切换设置页的状态">
+      <option value="">正常</option>
+      <optgroup label="词库">
+        <option value="libUpdating#taglib">正在更新（约 4 分钟）</option>
+        <option value="libFail#taglib">更新失败，旧词库照用</option>
+      </optgroup>
+      <optgroup label="工作流">
+        <option value="wfBad#workflows">导入的文件格式不对</option>
+        <option value="wfMap#workflows">认不出往哪填，自己选</option>
+      </optgroup>
+      <optgroup label="ComfyUI 和 AutoDL">
+        <option value="comfyFail#comfy">局域网那台测试连不上</option>
+        <option value="booting#comfy">AutoDL 正在开机</option>
+        <option value="autodlRunning#comfy">AutoDL 运行中</option>
+        <option value="bootToken#comfy">开机失败：Token 不对</option>
+        <option value="bootBalance#comfy">开机失败：余额不够</option>
+        <option value="bootTimeout#comfy">开机失败：等太久</option>
+        <option value="bootGone#comfy">开机失败：实例被释放了</option>
+      </optgroup>
+      <optgroup label="去画布看">
+        <option value="canvas">画布上的生图和思考状态 →</option>
+      </optgroup>
+    </select>
+  </label>
+
+  <script src="shared/settings-image.js"></script>
   <script>
     var MODELS = [
-      { id: 'm1', name: '主力', model: 'MiniMax-M2', url: 'https://api.minimaxi.com/v1', keySet: true, longSide: 1600, price: { cur: '¥', inp: 2.1, out: 8.4, cache: 0.21 } },
-      { id: 'm2', name: '本地假模型', model: 'mock-llm', url: 'http://127.0.0.1:3799/v1', keySet: true, longSide: 1600, price: null },
-      { id: 'm3', name: '备用', model: 'deepseek-chat', url: 'https://api.deepseek.com/v1', keySet: false, longSide: 1280, price: { cur: '¥', inp: 2, out: 8, cache: 0.5 } }
+      { id: 'm1', name: '主力', model: 'MiniMax-M2', url: 'https://api.minimaxi.com/v1', keySet: true, longSide: 1600, think: 'reasoning_effort', price: { cur: '¥', inp: 2.1, out: 8.4, cache: 0.21 } },
+      { id: 'm2', name: '本地假模型', model: 'mock-llm', url: 'http://127.0.0.1:3799/v1', keySet: true, longSide: 1600, think: '不支持', price: null },
+      { id: 'm3', name: '备用', model: 'deepseek-chat', url: 'https://api.deepseek.com/v1', keySet: false, longSide: 1280, think: '换模型名', thinkModel: 'deepseek-reasoner', price: { cur: '¥', inp: 2, out: 8, cache: 0.5 } },
+      { id: 'm4', name: '通义', model: 'qwen-plus', url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', keySet: true, longSide: 1600, think: 'enable_thinking', price: { cur: '¥', inp: 0.8, out: 2, cache: 0.16 } }
     ];
     var PROMPTS = [
       { name: 'ref2va', builtin: true, def: true, desc: '有参考图，图提供人物、场景、风格或分镜', text: PROMPT_TEXTS.ref2va },
       { name: 'i2v', builtin: true, desc: '一张图当第一帧往后演', text: PROMPT_TEXTS.i2v },
       { name: 't2v', builtin: true, desc: '纯文字，不用图', text: PROMPT_TEXTS.t2v },
-      { name: 'ref2va-台词多', desc: '自己建的：每个镜头尽量给一句台词', text: PROMPT_TEXTS.ref2va + '\n\n## 台词\n\n- 每个镜头尽量安排一句短台词，台词写在 <d> 里，前面标 [中文]。' }
+      { name: 'ref2va-台词多', desc: '自己建的：每个镜头尽量给一句台词', text: PROMPT_TEXTS.ref2va + '\n\n## 台词\n\n- 每个镜头尽量安排一句短台词，台词写在 <d> 里，前面标 [中文]。' },
+      { name: 'il', builtin: true, series: 'IL', desc: '写 Illustrious 系列底模用的 Danbooru 标签', text: IMAGE_PROMPT_TEXT.il },
+      { name: 'pony', builtin: true, series: 'Pony', desc: '写 Pony 系列底模用的 Danbooru 标签', text: IMAGE_PROMPT_TEXT.pony },
+      { name: 'il-厚涂', series: 'IL', desc: '自己建的：每个方向都加厚涂画风', text: IMAGE_PROMPT_TEXT['il-厚涂'] }
     ];
     var selModel = 'm1', selPrompt = 'ref2va';
     var main = $('#main');
 
-    function tab() { var h = location.hash.replace('#', ''); return ['workdir', 'models', 'prompts', 'format'].indexOf(h) >= 0 ? h : 'models'; }
+    var TABS = { workdir: renderWorkdir, models: renderModels, prompts: renderPrompts, format: renderFormat,
+      thinking: function () { SImg.thinking(main); }, comfy: function () { SImg.comfy(main); }, checkpoints: function () { SImg.checkpoints(main); },
+      workflows: function () { SImg.workflows(main); }, taglib: function () { SImg.taglib(main); }, fragments: function () { SImg.fragments(main); }, images: function () { SImg.images(main); } };
+    function tab() { var h = location.hash.replace('#', ''); return TABS[h] ? h : 'models'; }
 
     function renderWorkdir() {
       main.innerHTML =
@@ -147,7 +205,7 @@
     function promptCard(p) {
       return '<button class="li" data-prompt="' + esc(p.name) + '" aria-current="' + (p.name === selPrompt) + '">' +
         '<span class="t mono">' + esc(p.name) + '</span><span class="s">' + esc(p.desc) + '</span>' +
-        '<span class="tags">' + (p.builtin ? '<span class="tag">自带</span>' : '<span class="tag">自己建的</span>') + (p.def ? '<span class="tag tag-accent">新节点默认</span>' : '') +
+        '<span class="tags">' + (p.series ? '<span class="tag tag-outline">' + icon('sparkles') + '生图 · ' + p.series + '</span>' : '') + (p.builtin ? '<span class="tag">自带</span>' : '<span class="tag">自己建的</span>') + (p.def ? '<span class="tag tag-accent">新节点默认</span>' : '') +
           '<span class="tag mono">' + fmtNum(p.text.length) + ' 字</span></span></button>';
     }
     function renderPrompts() {
@@ -156,12 +214,13 @@
       main.innerHTML =
         '<div class="st-head"><div><h2>系统提示词</h2><p>给 AI 的长期指令，决定它按什么规矩写提示词。每个节点自己选用哪套；每次发消息用到的版本会另存一份，改了也能查到当时的原文。</p></div>' +
         '<button class="btn btn-primary" id="pNew">' + icon('plus') + '新建</button></div>' +
-        '<div class="split"><div class="list" id="pList" data-od-id="system-prompt-list">' + PROMPTS.map(promptCard).join('') + '</div>' +
+        '<div class="split"><div class="list" id="pList" data-od-id="system-prompt-list"><div class="li-sep">写视频提示词</div>' + PROMPTS.filter(function (x) { return !x.series; }).map(promptCard).join('') +
+          '<div class="li-sep">写生图标签 · 节点选了这些就变成生图节点</div>' + PROMPTS.filter(function (x) { return x.series; }).map(promptCard).join('') + '</div>' +
         (p ? '<section class="card editor" data-od-id="system-prompt-editor"><div class="editor-head"><h2 class="mono">' + esc(p.name) + '.md</h2>' +
           '<button class="btn btn-secondary btn-sm" id="pExt">' + icon('external') + '用外部编辑器打开</button>' +
           '<button class="btn btn-danger-ghost btn-sm" id="pDel">' + icon('trash') + '删除</button></div>' +
           '<textarea class="textarea prompt-area" id="pText" spellcheck="false">' + esc(p.text) + '</textarea>' +
-          '<p class="hint" style="margin-top:8px">改动自动写进 <span class="mono">D:\\同步盘\\提示词画布\\prompts\\' + esc(p.name) + '.md</span>。程序会在这段后面自动接上<a class="linkish" href="#format">固定格式要求</a>。</p></section>' : '') + '</div>';
+          '<p class="hint" style="margin-top:8px">改动自动写进 <span class="mono">D:\\同步盘\\提示词画布\\prompts\\' + esc(p.name) + '.md</span>。程序会在这段后面自动接上<a class="linkish" href="#format">固定格式要求</a>' + (p.series ? '（生图那一份）。开头的「用途: 生图」「底模: ' + p.series + '」是程序认它的依据，别删' : '') + '。</p></section>' : '') + '</div>';
       $('#pList').onclick = function (e) { var b = e.target.closest('[data-prompt]'); if (b) { selPrompt = b.dataset.prompt; renderPrompts(); } };
       $('#pNew').onclick = function () {
         var d = document.createElement('dialog'); d.className = 'dialog';
@@ -175,7 +234,7 @@
         }; });
         d.addEventListener('close', function () {
           var v = d.querySelector('#pn').value.trim();
-          if (d.returnValue === 'ok') { PROMPTS.push({ name: v, desc: '自己建的', text: p.text }); selPrompt = v; renderPrompts(); markSaved(); }
+          if (d.returnValue === 'ok') { PROMPTS.push({ name: v, desc: '自己建的', series: p.series, text: p.text }); selPrompt = v; renderPrompts(); markSaved(); }
           d.remove();
         });
         d.showModal();
@@ -200,17 +259,26 @@
       main.innerHTML =
         '<div class="st-head"><div><h2>固定格式要求</h2><p>程序自动接在每套系统提示词后面（中间空两行）。程序靠这个格式把提示词框从回复里切出来，所以这里只能看，不能改。</p></div>' +
         '<span class="tag">' + icon('lock') + '只能看</span></div>' +
-        '<pre class="ro" data-od-id="format-requirement">' + esc(FORMAT_REQUIREMENT) + '</pre>';
+        '<h3 class="ro-title">写视频提示词的那几套用这份</h3><pre class="ro" data-od-id="format-requirement">' + esc(FORMAT_REQUIREMENT) + '</pre>' +
+        '<h3 class="ro-title">写生图标签的那几套（开头写了「用途: 生图」的）用这份</h3><pre class="ro" data-od-id="format-requirement-image">' + esc(FORMAT_REQUIREMENT_IMAGE) + '</pre>';
     }
 
     function render() {
       var t = tab();
       $$('.st-nav a').forEach(function (a) { a.setAttribute('aria-current', a.dataset.tab === t ? 'page' : 'false'); });
-      ({ workdir: renderWorkdir, models: renderModels, prompts: renderPrompts, format: renderFormat })[t]();
+      TABS[t]();
+      hydrateIcons(main);
       scrollTo(0, 0);
     }
     addEventListener('hashchange', render);
     render();
+    Comfy.render();
+    (function () {
+      var sel = $('#proto'), cur = (location.search.match(/proto=(\w+)/) || [])[1];
+      if (cur) { var o = [].slice.call(sel.options).filter(function (x) { return x.value.split('#')[0] === cur; })[0]; if (o) sel.value = o.value; }
+      sel.onchange = function () { var v = sel.value; location.href = v === 'canvas' ? 'canvas.html' : 'settings.html' + (v ? '?proto=' + v : '#' + tab()); };
+      if (cur === 'wfBad' || cur === 'wfMap') setTimeout(function () { SImg.importDlg(cur === 'wfBad' ? 'bad' : 'map'); }, 120);
+    })();
   </script>
 </body>
 </html>

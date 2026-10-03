@@ -6,6 +6,7 @@ export default defineConfig({
       { test: { name: 'shared', root: './packages/shared', environment: 'node' } },
       { test: { name: 'server', root: './packages/server', environment: 'node' } },
       { test: { name: 'mock-llm', root: './tools/mock-llm', environment: 'node' } },
+      { test: { name: 'mock-comfyui', root: './tools/mock-comfyui', environment: 'node' } },
     ],
   },
 });

@@ -1,10 +1,12 @@
 # 提示词画布 开发计划
 
-写给负责实现的 agent。需求访谈记录在 `docs/requirements-interview.md`，那份讲的是「为什么这么定」；这份讲「具体怎么做」。两份不该冲突，发现冲突先停下来问用户。
+写给负责实现的 agent。需求访谈记录在 `docs/requirements-interview.md`（生图那部分在 `docs/requirements-interview-image.md`），那两份讲的是「为什么这么定」；这份讲「具体怎么做」。它们不该冲突，发现冲突先停下来问用户。
 
 ## 1. 一句话说明
 
 一个本机运行的网页：左边是资产库（导入本机文件夹里的图片），中间是画布（每个节点是一段和 agent 的对话，可以从任意一条消息 fork 出新节点），右边是当前节点的对话面板（上面有 9 个图片槽位、视频时长和画面比例）。agent 按 MiniMax H3 官方写法写视频提示词，图片在提示词里用 `<Picture 1>` 到 `<Picture 9>` 引用。第一版只出提示词，不生成视频。
+
+第三批加两样：一是全局控制模型要不要思考、思考多深；二是生图：在生图节点里让模型写 Danbooru 标签提示词（底模是 IL 或 Pony 系列），能用中文搜标签、手动改，再接 ComfyUI 出图（局域网里的那台，或 AutoDL Art 上租的实例）。视频还是只出提示词。
 
 ## 2. 技术选型
 
@@ -20,6 +22,8 @@
 | 富文本输入（第二批） | Tiptap | @ 选图后显示带缩略图的小标签 |
 | 测试 | vitest（单元、服务端集成）、supertest、Playwright（端到端） | 常规 |
 | 大模型 | 直接用 fetch 调 OpenAI 兼容接口（`/v1/chat/completions`，stream） | 不依赖某家 SDK |
+| 连 ComfyUI（第三批） | Node 自带的 fetch 和 WebSocket | Node 24 都内置了，不加依赖 |
+| 标签词库（第三批） | 服务启动时读进内存，搜索时逐个比对 | 12 万个标签，比一遍十几毫秒，用不着搜索引擎 |
 
 端口：服务 `127.0.0.1:3711`，只监听本机。开发时 Vite 在 5173，代理 `/api` 到 3711。正式运行 `npm start` 由服务端托管打包好的前端，并自动打开浏览器。
 
@@ -40,14 +44,18 @@ media_agent/
       src/store/              # canvas、node、images、prompts 的读写
       src/assets/             # 资产库索引、缩略图、拼图
       src/llm/                # 拼消息、调接口、流式转发
+      src/tags/               # 词库：读取、搜索、校验、更新（第三批）
+      src/comfy/              # 连 ComfyUI 和 AutoDL、拼工作流、出图任务（第三批）
       src/native/             # 弹系统选文件夹窗口、在资源管理器里显示文件
     client/
       src/pages/              # Home、Canvas、Settings
       src/components/         # AssetLibrary、CanvasView、NodeCard、ChatPanel、SlotStrip、PromptBox、UploadChecklist、Collage、MentionEditor
       src/store/
   tools/mock-llm/             # 假的大模型服务，测试和开发用
+  tools/mock-comfyui/         # 假的 ComfyUI 和 AutoDL 接口，测试和开发用（第三批）
   tests/e2e/                  # Playwright
   tests/fixtures/images/      # 测试图片
+  data/danbooru/              # 词库快照（第三批），见 5.13
   docs/
 ```
 
@@ -55,13 +63,20 @@ media_agent/
 
 ```
 本机配置（Windows：%APPDATA%\media-agent\；其他系统：~/.media-agent/）
-  config.json                 # 工作文件夹路径、各模型配置的 key（按模型配置 id 存）、资产库导入了哪些文件夹、上次拼图存哪
+  config.json                 # 工作文件夹路径、各模型配置的 key（按模型配置 id 存）、资产库导入了哪些文件夹、上次拼图存哪；
+                              # 第三批加：AutoDL 的开发者 Token、这台机器出图用哪台 ComfyUI、上次下载出的图存哪
   thumbs/<hash>.jpg           # 资产库缩略图缓存
 
 工作文件夹（用户指定，可放同步盘）
   model-configs.json          # 模型配置（名字、接口地址、模型名、发图长边、价格），不含 key，两台机器共用
+  settings.json               # 两台机器共用的设置（第三批）：思考档位、ComfyUI 地址和 AutoDL 实例、底模属于哪个系列、各系列的默认出图参数
+  fragments.json              # 片段库（第三批）
+  tags/                       # 词库（第三批），第一次用时从仓库 data/danbooru/ 复制，「更新词库」下完整个换掉
+  workflows/<id>.json         # 导入的 ComfyUI 工作流（第三批）
+  image-temp/YYYY-MM-DD/      # 出的图先放这里（第三批），程序不自动删
   prompts/
     ref2va.md / i2v.md / t2v.md # 自带的三套系统提示词，第一次设置工作文件夹时从 docs/prompts/ 复制（已有同名的不覆盖）
+    il.md / pony.md           # 自带的两套生图系统提示词（第三批），已经设好的工作文件夹在服务启动时补上
     <其他名字>.md
     .history/<name>-<hash>.md # 每次用到的系统提示词版本存一份，按内容 hash 命名
   canvases/
@@ -150,6 +165,85 @@ type ImageRecord = {
 };
 ```
 
+第三批加的：
+
+```ts
+type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
+type ThinkingStyle = 'none' | 'reasoning-effort' | 'enable-thinking' | 'thinking-type' | 'model-switch';  // 见 5.12
+// ModelConfig 加两个字段：thinkingStyle: ThinkingStyle；thinkingModel: string（model-switch 时开思考用的模型名）
+// Message 加三个字段（只有 assistant 消息有）：reasoning?: string（思考原文）；thinkingMs?: number；images?: ImageJob[]（生图节点出的图）
+// ChatNode 加：image?: ImageSettings（生图节点才有，见 5.14）
+// 本机 config.json 加：autodlToken: string | null；comfyTarget: 'lan' | 'autodl'；lastDownloadFolder: string | null；comfyClientId: string（连 ComfyUI 用的固定身份，见 5.19）
+
+type Family = 'IL' | 'Pony';
+
+type FamilyDefaults = {                 // 一个系列的默认值，见 5.18
+  prefix: string;                       // 固定开头，比如 masterpiece, best quality
+  negative: string;                     // 默认负面词
+  rating: { general: string; sensitive: string; explicit: string };  // 三档评级在这个系列里怎么写
+  steps: number; cfg: number; sampler: string; scheduler: string; clipSkip: number;
+  upscaleModel: string | null; poseModel: string | null; styleModel: string | null; clipVision: string | null;  // 见 5.21
+};
+
+type SharedSettings = {                 // 工作文件夹 settings.json
+  thinking: { level: ThinkingLevel; chat: ThinkingLevel | 'follow'; translate: ThinkingLevel | 'follow'; tagging: ThinkingLevel | 'follow' };
+  comfy: { lanUrl: string | null; autodl: { instanceUuid: string; idleMinutes: number } | null };
+  checkpoints: Record<string, Family>;  // 底模文件名 → 系列
+  defaults: Record<Family, FamilyDefaults>;
+  taggerModel: string | null;           // 反推用的模型
+};
+
+type ImageSettings = {
+  width: number; height: number;        // 九档之一，见 5.14
+  count: number;                        // 一次出几张，1–8，默认 4
+  workflowId: string | null;            // null 是内置流程，否则是导入的工作流
+  checkpoint: string; loras: { name: string; strength: number }[];
+  steps: number; cfg: number; sampler: string; scheduler: string;
+  seed: number | null;                  // null 是每次随机
+  rating: 'none' | 'general' | 'sensitive' | 'explicit';
+  negativeExtra: string;                // 接在系列默认负面词后面
+};
+
+type ImageJob = {                       // 点一次「生图」（或放大、修脸）出的一组
+  id: string; promptIndex: number; createdAt: string;
+  kind: 'txt2img' | 'img2img' | 'pose' | 'style' | 'upscale' | 'facefix';
+  source?: { kind: 'generated'; jobId: string; index: number } | { kind: 'slot'; imageId: string };  // 从哪张图来
+  target: 'lan' | 'autodl';
+  params: {                             // 发出去的全部参数，「同样参数再来」照这个发
+    family: Family;
+    positive: string; negative: string; // 最终发给 ComfyUI 的，含固定开头和默认负面词
+    workflow: { id: string | null; name: string; hash: string };
+    width: number; height: number;
+    checkpoint?: string; loras?: { name: string; strength: number }[];       // 导入的工作流没有这几项
+    steps?: number; cfg?: number; sampler?: string; scheduler?: string; clipSkip?: number;
+    denoise?: number; strength?: number; scale?: number; model?: string;     // 放大、修脸、参考图用的
+  };
+  images: {                             // 每张图是 ComfyUI 上的一个任务
+    seed: number; promptId?: string;
+    status: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
+    file?: string;                      // 临时文件夹里的图，相对工作文件夹的路径
+    width?: number; height?: number; ms?: number;   // 出图用了多久
+    savedPath?: string;                 // 下载到哪
+    starred?: boolean;
+    error?: string;
+  }[];
+};
+
+type Fragment = {                       // 片段，工作文件夹 fragments.json
+  id: string; name: string;
+  category: 'character' | 'style' | 'quality' | 'other';
+  text: string;                         // 写法和提示词框里一样
+  createdAt: string; updatedAt: string;
+};
+
+type ImportedWorkflow = {               // 工作文件夹 workflows/<id>.json
+  id: string; name: string; hash: string; importedAt: string;
+  graph: Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: { title?: string } }>;  // ComfyUI 的 API 格式
+  fill: { positive: FillTarget; negative: FillTarget | null; seed: FillTarget | null; width: FillTarget | null; height: FillTarget | null };
+};
+type FillTarget = { node: string; input: string };
+```
+
 id 一律用 `crypto.randomUUID()`。
 
 ## 5. 核心规则
@@ -210,6 +304,8 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 时长、比例变了的句子接在上面 note 的后面。比例 `auto` 显示成「自动」。
 
+生图节点（见 5.14）不说时长和比例：第一条消息的 note 是「参考图共 K 张，编号如下。」，K 为 0 时不加 note；之后只有槽位变了才有 note，句子同上。
+
 界面上 `systemNote` 显示成用户气泡上方的一行灰字，attachments 显示成带编号的小缩略图。
 
 ### 5.5 回复怎么解析
@@ -268,9 +364,177 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 说明里默认不翻部分名字、各种标记、`<d>` 里的台词和英文引号里的画面文字，用户的要求和这些冲突时以要求为准。
 - 手动改提示词生成的新版本，不带被改那个框的译文，别的框的照旧。翻译花的钱算进面板顶上「这个节点花了」。
 
+### 5.12 思考（第三批）
+
+- 设置里一个总档位：关、低、中、高。另有三个用途，各选「跟总开关」或者某一档：写提示词（节点里聊天）、翻译（5.11）、转标签（5.15）。默认写提示词跟总开关，翻译和转标签是关。存在工作文件夹 `settings.json`，两台机器共用。
+- 每套模型配置加「思考写法」，决定档位怎么发给接口。各家的参数名，接的时候按文档逐个核对：
+  - 不支持：什么都不发，档位不起作用。
+  - reasoning_effort（OpenAI、Gemini 这类）：低中高发 `low`、`medium`、`high`；关也发 `low`，因为多数家关不掉思考，`low` 是各家都认的最低一档。
+  - enable_thinking（通义）：关发 `enable_thinking: false`；低中高发 `true`，`thinking_budget` 分别是 2000、8000、不发。
+  - thinking.type（豆包、智谱）：关发 `thinking: {type: "disabled"}`，低中高都发 `enabled`。
+  - 换模型名（DeepSeek）：关用配置里的模型名，低中高换成「开思考用的模型名」，比如 `deepseek-reasoner`。
+- 读回复时，除了 `delta.content`，也读 `delta.reasoning_content`（DeepSeek、通义）和 `delta.reasoning`（有的转发平台用这个名字）。思考原文存进 `message.reasoning`，和正文一样边收边落盘；从发出请求到收到第一个正文字的毫秒数存进 `thinkingMs`。档位是关、也没收到思考原文的，不存这两项。手动改提示词生成的新版本不调模型，也不带这两项。
+- 拼下一轮发给模型的消息时不带思考原文（5.4 只用 `text`）。
+- 显示：档位不是关时，正文出来之前显示「正在思考 N 秒」；收到过思考原文的回复，上面多一块折叠着的「思考了 N 秒」，点开看原文；没收到原文的只显示想了多久。
+- 花费照 6.4 的算法算：多数接口把思考的 token 算在 `completion_tokens` 里，不另算。
+
+### 5.13 词库（第三批）
+
+- 仓库里的 `data/danbooru/` 是 2026-10-03 下的快照，来源和覆盖情况见 `docs/requirements-interview-image.md`「查到的事实」：
+  - `tags.csv`：`tag, category, count, deprecated`，Danbooru 上用过 50 次以上的标签，124,319 个。分类 0 通用、1 画师、3 作品、4 角色、5 元标签。
+  - `aliases.csv`：`alias, tag`，官方生效的别名 41,281 条。
+  - `zh/*.csv`：`tag, category, aliases, zh, count, notes`。`zh` 是中文名；`aliases` 是常用叫法，用 `|` 隔开，有日文原名、社区叫法、英文旧写法；`notes` 是一句说明。文件开头带 BOM。MIT 许可，`zh/LICENSE` 跟着数据走。
+- 工作文件夹里没有 `tags/` 时，从仓库复制一份过去（和自带系统提示词一样）。服务启动时读进内存：以 `tags.csv` 为准，按 tag 并上中文名、常用叫法、说明；`aliases.csv` 只留指向 `tags.csv` 里有的标签的。
+- 比对标签名时，空格和下划线当成一样，不区分大小写，去掉 `\` 转义。词库里的写法是小写加下划线（`long_hair`）。
+- 搜索（打字联想用）：
+  - 英文：先比标签名开头，再比标签名中间，再比官方别名；
+  - 中文：比中文名和常用叫法，开头对上的在前；
+  - 同一档里按使用次数从多到少，已废弃的不出；最多 20 个，每个带中文名、分类、使用次数，靠别名对上的注明是哪个别名。
+- 校验，每个标签得出三种之一：
+  - 认识：在词库里，或者是这个系列固定开头、评级词里的词（5.18）。
+  - 别名：是官方别名，给出标准名。
+  - 不认识：给最接近的 5 个，先用上面的搜索取，不够再按编辑距离补。已废弃的也算不认识。LoRA 的触发词、自然语言短语也会落在这里，只标出来，不替换、不删。
+- 更新词库（设置里手动点）：服务端照快照的做法重新下，大约 4 分钟，界面上显示下到哪一步。
+  - 标签：`https://danbooru.donmai.us/tags.json?search[post_count]=%3E50&limit=1000&page=a<上一页最大的 id>&only=id,name,post_count,category,is_deprecated`，从 `page=a0` 翻到返回空为止。
+  - 别名：`https://danbooru.donmai.us/tag_aliases.json?search[status]=active&limit=1000&page=a<上一页最大的 id>&only=id,antecedent_name,consequent_name`，同样翻页。
+  - 中文对照：`https://raw.githubusercontent.com/amenorira/danbooru-tags-data-zh/main/` 下的 `tags/` 五个文件和 `LICENSE`。
+  - 请求头带 `User-Agent: media-agent`，一页一页按顺序请求，中间隔 0.5 秒。全部下完才整体换掉 `tags/`；中途失败，旧的不动，说是哪一步失败的。
+- 设置里显示词库是哪天的、多少个标签、多少个有中文。
+
+### 5.14 生图节点（第三批）
+
+- 节点选的系统提示词决定它是生图节点还是视频节点。系统提示词文件开头可以有一段用 `---` 上下围起来的说明，有这段、写着「用途: 生图」的是生图提示词，「底模」是 IL 或 Pony：
+
+  ```
+  ---
+  用途: 生图
+  底模: IL
+  ---
+  ```
+
+  发给模型时去掉这段。设置页新建系统提示词时复制当前那套，这段跟着复制；列表里标出哪些是生图用的、哪个系列。
+- 自带两套生图提示词 `il` 和 `pony`，放在 `docs/prompts/`，P9 写好先给用户看。要求：
+  - 只用 Danbooru 标准标签，英文，用英文逗号隔开；
+  - 下划线写成空格，标签名里的括号写成 `\(` `\)`；
+  - 按人数、角色、作品、外观、服装、表情和动作、构图、背景、画风的顺序排；
+  - 不写这个系列的固定开头，程序会加；
+  - 能看图的模型，照着槽位里的图写；一次可以给几个方向，每个方向一个框。
+- 生图节点的固定格式要求用 `docs/prompts/format-requirement-image.md`（P9 写）：和视频的一样用 `<title>` 和 `<prompt label="…">`；框里只放英文标签，英文逗号隔开，不写别的；标题概括这张图。设置页两份都能看。
+- 和视频节点不一样的地方：
+  - 面板上时长和比例的位置换成尺寸和张数。尺寸九档：1024×1024；竖的 896×1152、832×1216、768×1344、640×1536；横的是这四个宽高对调，默认 832×1216。张数 1 到 8，默认 4。
+  - 出图设置存在 `node.image`。节点第一次变成生图节点时，按它的系列取默认值；底模下拉只列标成这个系列的底模（5.17）。
+  - 槽位照旧：图照样发给模型看，也是参考图生图的来源（5.21）。5.4 的说明不写时长比例。
+  - 提示词框上的按钮：复制、生图、打星、编辑（打开标签编辑窗，5.15）、沿此方向 fork。没有翻译（标签下面已经显示中文）和上传清单（那是往视频平台传图用的）。
+  - 卡片上（画布和首页）：出过图的，缩略图换成最近出的图；没出过的照旧显示槽位里的图。时长比例那行换成尺寸和系列。
+- 中途换系统提示词，从视频换成生图或者反过来，已有的消息不动，面板控件跟着换。
+
+### 5.15 标签的显示、校验和编辑（第三批）
+
+- 拆标签放在 `shared/src/tags.ts`：框里的文字按英文逗号拆，括号里的逗号不拆，去掉首尾空白，空项丢掉；`(tag:1.2)` 拆出权重，`(tag)` 当 1.1；`\(` `\)` 是标签名里的括号。拆出来的每一项按 5.13 校验。
+- 框里的显示：每个标签一个小块，英文在上，中文在下；权重不是 1 的标出来；是别名的，显示标准名并注明原来写的是什么；不认识的标出来，点开看最接近的几个，点一个就换掉，存成新版本（走 5.2 的手动改提示词）。
+- 拼成提示词，出图和复制都用这一串：
+  - 别名换成标准名，不认识的原样照写；
+  - 下划线换成空格，颜文字标签保留下划线（`^_^`、`>_<`、`@_@`、`+_+`、`=_=`、`o_o`、`|_|`、`0_0`、`u_u`、`>_o`、`._.`、`x_x`、`<o>_<o>`、`3_3`、`6_9`）；
+  - 标签名里的括号写成 `\(` `\)`，权重不是 1 写成 `(tag:1.2)`；
+  - 标签之间用 `, ` 隔开。复制拿到的就是这串，不含系列固定开头。
+- 标签编辑窗：生图节点里框上的「编辑」打开它，代替 5.2 的手动改提示词窗口。做法和 @ 选图一样，用 Tiptap，标签是一行文字里的小块：
+  - 打开时框里的标签都是小块。打字时弹候选（5.13 的搜索，中文英文都行），每个候选显示英文、中文、分类、使用次数；选中候选，或者打了逗号，前面打的这段变成小块。词库里没有的英文照样变成小块，标「不认识」。
+  - 小块能拖动排序、删掉；点一下调权重，0.1 到 2.0，每次 0.1。
+  - 打的中文词库里搜不到（比如「坐在窗边看书」）：给一个「让模型转成标签」，用节点的模型配置问一次。系统消息是 `docs/prompts/to-tags.md`（P9 写）里「---」以下那段，用户消息就是这句中文，思考用「转标签」那档。回来的标签逐个校验，变成小块插在光标处。
+  - 插片段（5.16）：搜片段名，插进来的是片段里的标签，展开成普通小块，之后和片段没有关系。
+  - 选几个小块「存成片段」。
+  - 从图反推（5.21）：选一张节点槽位里的或这个节点出过的图，反推出来的标签加在末尾。
+  - 存：照 5.2 的手动改提示词，存成新版本，不调模型。
+- 视频节点的手动改不变。
+
+### 5.16 片段库（第三批）
+
+- 存在工作文件夹 `fragments.json`，两台机器共用。一个片段有名字、分类（角色、画风、质量词、其他）、标签串（写法和框里一样）。
+- 在标签编辑窗里存和插（5.15）。存的时候起名字、选分类；名字重了提示换一个。
+- 设置里「片段库」一节：按分类列出全部，能改名、改分类、改内容（同样用标签编辑窗）、删除。
+
+### 5.17 ComfyUI 和 AutoDL（第三批）
+
+- 两种来源，接法一样，都是 ComfyUI 自带的接口：局域网那台在设置里填地址（比如 `http://192.168.1.20:8188`），存 `settings.json`；AutoDL Art 上租的实例见下面。
+- 出图用哪台，在出图设置里选，记在本机 `config.json`（两台电脑可能不在同一个网络里），所有节点共用。
+- 测试连接：`GET /system_stats`，显示 ComfyUI 版本、显卡和显存。
+- 选项从 `GET /object_info` 读：底模（`CheckpointLoaderSimple` 的 `ckpt_name`）、LoRA（`LoraLoader` 的 `lora_name`）、采样器和调度器（`KSampler`）、放大模型（`UpscaleModelLoader`）、ControlNet 模型（`ControlNetLoader`）、IP-Adapter 模型（`IPAdapterModelLoader`，装了插件才有）、CLIP Vision 模型（`CLIPVisionLoader`）、反推模型（`WD14Tagger|pysssss` 的 `model`）。打开出图设置时读；同一台缓存起来，点「刷新」或换了地址才重读。
+- 底模属于哪个系列：设置里列出读到的底模，每个选 IL 或 Pony，存 `settings.json` 的 `checkpoints`。没标过的按文件名猜：名字里有 pony（不分大小写）的当 Pony，其他当 IL。
+- AutoDL：
+  - 开发者 Token 只存本机 `config.json`，和模型密钥一样不进工作文件夹；实例 uuid 和空闲多久关机（默认 15 分钟）存 `settings.json`。
+  - 填了 Token 后列出账号下的实例（`POST https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/list`，请求头 `Authorization: <Token>`），选一个。
+  - 状态用 `GET …/pro/status`；运行中时从 `GET …/pro/snapshot` 取 6006 端口的访问地址，当 ComfyUI 地址用。
+  - 出图时实例关着：先开机（`POST …/pro/power_on`，`{instance_uuid, payload: "gpu"}`），每 5 秒查一次状态；变成运行中以后，再等到 ComfyUI 的 `/system_stats` 能通，然后发任务。超过 5 分钟没好算失败。界面上显示「正在开机，等了 N 秒」。
+  - 设置里和出图设置里都能手动开机、关机（`POST …/pro/power_off`）。
+  - 自动关机：实例开着，程序这边最后一个任务结束后空闲到设定的分钟数，就关机。服务退出时（Ctrl+C），实例是程序开的而且还开着，先关机再退出。程序没开着时管不了，所以界面上要一直看得到实例开着。
+  - 访问地址要不要另外鉴权、ComfyUI 是不是开机就自己起来、跑在哪个端口，文档没写。P11 开工前先用用户的真实例核对，结果写进 P11 的报告。
+  - 出错要说清是哪种，带上 AutoDL 返回的原话：Token 不对、实例不存在、余额不够开不了机、开机超时。
+
+### 5.18 工作流（第三批）
+
+- 内置流程：程序自己拼 ComfyUI 的 API 格式 JSON，只用 ComfyUI 自带的节点。`CheckpointLoaderSimple` → 每个 LoRA 一个 `LoraLoader`，串起来 → `CLIPSetLastLayer`（`stop_at_clip_layer` 是 clip skip 取负）→ 正面、负面两个 `CLIPTextEncode` → `EmptyLatentImage`（尺寸，`batch_size` 1）→ `KSampler`（种子、步数、CFG、采样器、调度器，`denoise` 1）→ `VAEDecode` → `PreviewImage`。用 `PreviewImage` 是为了不在 ComfyUI 那台机器上留文件，它的临时目录在 ComfyUI 重启时会清掉。
+- 正面 = 系列固定开头 + 评级词（选了才加）+ 框里的标签（5.15 拼出来的那串）；负面 = 系列默认负面词 + 节点的额外负面词。
+- 出几张就发几个任务，种子依次加 1；种子是随机时，第一个随机取。每张的种子都记下，图上能「同样参数再来」（同一个种子）和「只换种子再来」。
+- 各系列的默认值存 `settings.json`，设置里能改。初始值按两个系列常见的用法填，P10 时对照官方说明再核对一遍：
+
+| | IL | Pony |
+| --- | --- | --- |
+| 固定开头 | `masterpiece, best quality` | `score_9, score_8_up, score_7_up, source_anime` |
+| 默认负面词 | `lowres, worst quality, bad quality, bad anatomy, bad hands, extra digits, jpeg artifacts, signature, watermark, username, text` | `score_6, score_5, score_4, worst quality, low quality, watermark, signature, text` |
+| 评级词（全年龄、擦边、成人） | `general`、`sensitive`、`explicit` | `rating_safe`、`rating_questionable`、`rating_explicit` |
+| 步数、CFG | 28、5 | 25、7 |
+| 采样器、调度器 | `euler_ancestral`、`normal` | `euler_ancestral`、`normal` |
+| clip skip | 2 | 2 |
+
+- 导入的工作流：
+  - 只认 API 格式，就是在 ComfyUI 里用「导出（API）」存下来的 JSON，顶层是「节点号 → `{class_type, inputs}`」。导进来的是普通工作流文件（顶层有 `nodes`、`links`）时，提示「请在 ComfyUI 里用「导出（API）」再存一份」。
+  - 程序自动找往哪填：顺着 `KSampler`（或 `KSamplerAdvanced`）的 `positive`、`negative` 连线找到两个 `CLIPTextEncode` 的 `text`；`KSampler` 的 `seed`（`KSamplerAdvanced` 是 `noise_seed`）；`EmptyLatentImage` 的 `width`、`height`。找不到或者有好几个候选的，导入窗口里列出节点（节点号、类型、`_meta.title`）让用户选。正面一定要有，其他几项可以不填。
+  - 存到工作文件夹 `workflows/<id>.json`。设置里能改名、重新指定往哪填、删除。
+  - 出图时只改这几个值，其他照原样；张数和种子照内置流程的做法。系列固定开头和默认负面词照样加，填的是整个 `text`，工作流里原来写的会被换掉。
+  - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、修脸、参考图只用内置流程。
+- 发任务前对照 `/object_info`：工作流里有这台 ComfyUI 上没有的节点类型，直接说缺哪几个，不发。内置流程用到插件节点时（5.21）也一样。
+
+### 5.19 出图任务（第三批）
+
+- 点「生图」：服务端按节点的出图设置和这个框拼好参数，建一个 `ImageJob` 挂到这条 assistant 消息的 `images` 里，每张图一项，状态是排队，存盘后返回；然后逐张 `POST /prompt`（带本程序的 `client_id`），记下每张的 `prompt_id`。
+- 一个框可以点好几次生图，每次一个 `ImageJob`，按时间排。
+- 进度：服务端对每台 ComfyUI 开一个 WebSocket（`/ws?clientId=`），收 `executing`、`progress`（第几步、共几步）、`execution_success`、`execution_error`、`execution_interrupted`；排在第几用 `GET /queue` 算。前端从 `GET /api/image-jobs/events`（SSE）收变化。进度和排队位置不存盘。
+- 出完一张：`GET /history/{prompt_id}` 找到输出的图，`GET /view` 下载下来，存进临时文件夹（5.20），这一项改成完成。
+- 叫停：还在排队的从 ComfyUI 的队列里删掉（`POST /queue`，`{delete: [prompt_id…]}`）；正在跑的 `POST /interrupt`。新版 ComfyUI 的 `/interrupt` 能带 `prompt_id`，只停这一个，接的时候核对；老版本不认，会停掉 ComfyUI 当前正在跑的任何任务。已经出完的图留着。
+- 出错要说清是哪种，带上原话：
+  - 连不上：地址不对，或者 ComfyUI 没开；
+  - `/prompt` 返回 `node_errors`：写出是哪个节点哪一项，比如底模文件不在；
+  - 执行出错：错误里有 out of memory 的说显存不够；
+  - 缺节点（5.18）。
+- 服务重启后，没完的项按 `prompt_id` 查一次 `/history`：出完了就取图；还在 ComfyUI 队列里就接着等；都不在就标失败「程序重启时这张还没出完」。接着等靠的是 `client_id` 不变：第一次连 ComfyUI 时随机生成一个存进本机 `config.json`，以后都用它，ComfyUI 才会把重启前发的任务的进度推给新连上的 WebSocket。
+- 首页打过星的生图框能「再出图」：用那个节点现在的出图设置再发一个 `ImageJob`。
+
+### 5.20 出的图：临时文件夹和下载（第三批）
+
+- 出的图存在工作文件夹 `image-temp/YYYY-MM-DD/`，文件名 `HHmmss-<种子>.png`，重名加 `-2`。程序不自动删；设置里显示这个文件夹的路径，能在资源管理器里打开。
+- 下载：和拼图保存一样，弹系统窗口选文件夹（记住上次，存本机 `lastDownloadFolder`），复制过去，文件名 `<节点标题>-<种子>.png`，文件名里不能用的字符换成 `_`，重名加序号。那个文件夹不在资产库里，问要不要导入。下载过的图上标「已下载」，`savedPath` 记下存到哪。能多选几张一起下。
+- 用户清了临时文件夹：列图时看文件还在不在；不在的，下载过就改用下载的那份，没下载过显示「已清理」。参数还在，照样能「同样参数再来」。
+- 一张图能单独打星，意思是这张好；框下面和首页列图时，打过星的排在前面。
+- 视频节点的槽位只从资产库选图，所以出的图要先下载才能放进去。
+- 节点里删一张图：从 `ImageJob` 里去掉这一项，临时文件直接删，不进 `.trash`；下载过的那份不动。一组里一张不剩了整组去掉。还没出完的不能删，先叫停。
+- 出的图属于出图的那个节点和那条回复：岔出去的节点、手动改提示词生成的新版本，都不带原来出的图。
+
+### 5.21 放大、修脸、参考图、反推（第三批）
+
+- 都是再发一个任务，结果和普通出图一样挂在框下，`kind` 记是哪种，`source` 记从哪张图来。只用内置流程。
+- 放大：在一张出的图上点。只要自带节点和一个放大模型：`LoadImage`（先用 `/upload/image` 把图传上去）→ `UpscaleModelLoader` + `ImageUpscaleWithModel` → `ImageScale` 缩到原图的 1.5 倍或 2 倍 → `VAEEncode` → `KSampler`（同样的提示词和种子，`denoise` 默认 0.35）→ `VAEDecode` → `PreviewImage`。倍数和 denoise 发之前能改。
+- 修脸：在一张出的图上点。要装 Impact Pack 和 Impact Subpack 两个插件，加一个人脸检测模型（比如 `face_yolov8m.pt`）：`LoadImage` → `UltralyticsDetectorProvider` + `FaceDetailer`（底模、提示词、种子同原图，`denoise` 默认 0.4）→ `PreviewImage`。
+- 参考图生图：点「生图」时选方式和参考图，参考图从节点的槽位里选一张：
+  - 图生图：`LoadImage` → `VAEEncode` → `KSampler`（`denoise` 默认 0.6）。只用自带节点。
+  - 姿势参考：要 comfyui_controlnet_aux 插件（用 `DWPreprocessor` 提取姿势）和 openpose 的 ControlNet 模型，接 `ControlNetLoader` + `ControlNetApplyAdvanced`（强度默认 0.8）。IL 用 Illustrious-XL ControlNet Openpose；NoobAI 一路的底模用 NoobAI-XL ControlNet-OPENPOSE；Pony 没有专门的，用通用 SDXL 的 openpose，比如 xinsir 出的，效果差一些。
+  - 画风参考：要 ComfyUI_IPAdapter_plus 插件、IP-Adapter 模型和配套的 CLIP Vision 模型，接 `IPAdapterModelLoader` + `CLIPVisionLoader` + `IPAdapterAdvanced`（`weight_type` 用 style transfer，强度默认 0.8）。IL 和 NoobAI 一路用 NoobAI 的 IP-Adapter；Pony 用通用 SDXL 的 `ip-adapter-plus_sdxl_vit-h`。
+- 程序不写死模型文件名：设置里按系列选默认用哪个放大模型、ControlNet、IP-Adapter、CLIP Vision，从 `/object_info` 读到的列表里选；上面推荐的写进设置页的说明。
+- 反推：在标签编辑窗里「从图反推」（5.15）。要装 ComfyUI-WD14-Tagger 插件：`LoadImage` → `WD14Tagger|pysssss`（`threshold` 0.35，`character_threshold` 0.85，模型用设置里选的），从 `/history` 的输出里拿标签串，按 5.15 拆开、校验。
+- 缺插件或缺模型：发任务前对照 `/object_info`，直接说「这台 ComfyUI 上没有某某节点，要装某某插件」，不发。
+
 ## 6. 界面
 
-界面全中文。
+界面全中文。第三批的界面照设计 agent 新出的原型做（给设计的需求见 `docs/design-handoff-image.md`），原型出来后把文件名补到对应的小节里。
 
 ### 6.1 首页 `/`
 
@@ -280,6 +544,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 这台机器上要处理的事：只在有问题时出现在最上面。现在只有一种：某套模型配置在本机还没填密钥，按钮去设置里的模型配置。
 - 最近动过的节点：跨全部画布，最多 8 个，按节点最后改动的时间排。只算自己发过消息的节点，岔出来还没发过消息的不算。卡片上有槽位缩略图、标题、星、正在生成或回复失败、概述、画布名、多久前动过、几个方向、时长和比例。点一下进画布并打开这个节点的对话，地址是 `/canvas/:id#node=节点 id`，画布读出来后去掉 `#node=`。
 - 打过星的提示词：宽屏在右栏，滚动时一直在；窄于 1080 像素排在最近节点下面。所有版本里打过星的框都列，新写的在前。每条有框名、概述、这条回复当时带的图和时长比例、「画布 › 节点」（点了跳到这个节点）、多久前写的；能复制原文、复制翻过的各语言译文、看上传清单。
+- 生图节点（第三批）：最近动过的节点卡片上，出过图的显示最近出的图（5.14）；打过星的生图框列出标签（带中文）和这个框出过的图，能复制、「再出图」（5.19），没有译文和上传清单。
 - 全部画布：按最近动过排，画布本身或里面任一节点改过都算。卡片上有封面（最近放进槽位的图）、几个节点正在生成、节点数、几个节点打过星、多久前动过。能按名字找。菜单和右键：打开、改名、删除（移到 `.trash/`，确认一次，底部提示条里能撤销）。
 - 读工作文件夹时显示占位卡片和「正在读取」；读不出来（同步盘没连上、文件夹被挪走）整页提示「打不开工作文件夹」，能重试或去设置里换，这时新建画布点不了。一个画布都没有时显示「还没有画布」和新建按钮。
 - 没设工作文件夹时，进首页直接跳到首次设置。
@@ -302,6 +567,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 2. 消息列表。用户消息靠右：上方灰字 `systemNote`，气泡内文字，下方带编号的小缩略图。assistant 消息靠左：框外文字按 Markdown 渲染；每个提示词框是一个组件，标签在框顶，内容用等宽以外的可读字体、保留换行；框底一排按钮：复制、翻译（见 5.11）、星标、编辑、上传清单、沿此方向 fork。消息悬停出操作：用户消息「编辑」「从这里 fork」；assistant 消息「重新生成」「从这里 fork」；有兄弟版本时显示 `‹ 1/2 ›`。失败的消息显示错误和「重试」。
 3. 槽位区：一行 9 格，填了的显示缩略图和编号，悬停显示删除；支持 5.1 里的拖拽。右边是时长（4–15 下拉）和比例下拉。点有图的格子出菜单，第一项「放大看」：弹窗显示画布里存的那张图，先整张放进窗口，点图切换原始大小，点图外面的空白或 Esc 关掉。
 4. 输入框：Enter 发送，Shift+Enter 换行；发送中显示「停止」。第二批换成 Tiptap 编辑器，输入 @ 弹出选图窗口，选中的图在框里显示成带缩略图的小标签。
+5. 生图节点（第三批，规则见 5.12 到 5.21）：槽位区右边是尺寸、张数和出图设置；提示词框里的标签显示成带中文的小块，框下面挂着出的图，每次生图一组，排队、进度、失败、叫停都显示在这里；点一张看大图和全部参数，能下载、打星、删除、在资源管理器里显示、同样参数再来、只换种子再来、放大、修脸。回复上面是思考（5.12）。画布上一直看得到现在用哪台 ComfyUI 和它的状态，用 AutoDL 时还有开机中、运行中、多久后自动关机。
 
 ### 6.3 资产库（左栏）
 
@@ -319,6 +585,15 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 系统提示词：列出 `prompts/*.md`，右侧文本编辑器，保存、新建、删除、「用外部编辑器打开」（服务端 `start <文件>`）。自带三套：`ref2va`（参考模式，六个部分，新建节点默认用它）、`i2v`（一张图当首帧，开头带对齐指令行加三个部分）、`t2v`（纯文字，三个部分），列表里按这个顺序排在前面。
 - 程序固定附加的格式要求：只读显示。
 - 资产库文件夹列表（和左栏同一份数据）。
+- 第三批加的：
+  - 模型配置加「思考写法」和「开思考用的模型名」；思考一节：总档位和三个用途（5.12）。
+  - 系统提示词列表标出生图用的和系列；自带的 `il`、`pony` 排在视频的三套后面；生图的固定格式要求也能看（5.14）。
+  - ComfyUI：局域网地址和测试连接；AutoDL 的 Token、实例、开机关机、空闲多久自动关机（5.17）。
+  - 底模和默认值：读到的底模各属哪个系列，两个系列各自的默认值和默认模型，反推用哪个模型（5.17、5.18、5.21）。
+  - 工作流：导入、改名、重新指定往哪填、删除（5.18）。
+  - 词库：哪天的、多少个标签、多少个有中文，「更新词库」和进度（5.13）。
+  - 片段库（5.16）。
+  - 出的图：临时文件夹的路径，能在资源管理器里打开（5.20）。
 
 ## 7. 服务端接口
 
@@ -365,9 +640,39 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            POST     /assets/reveal                   {path} 在资源管理器里显示
            POST     /assets/collage                  {files,rows,columns,cell,numbers,folder} → {path,folder,width,height,inLibrary}
 大模型     POST     /llm/test                        {modelConfigId} → {ok, error?}
+
+第三批（/config 另加本机的 comfyTarget、autodlToken（GET 时打码）、lastDownloadFolder；comfyClientId 只在服务端用，不返回）：
+设置       GET/PUT  /settings                        工作文件夹 settings.json
+词库       GET      /tags/search?q=                  见 5.13
+           POST     /tags/check                      {tags, family} → 每个标签的校验结果
+           GET      /tags/info                       哪天的、多少个标签、多少个有中文
+           POST     /tags/update                     → SSE，下到哪一步
+           POST     /tags/convert                    {canvasId, nodeId, text} → 标签（让模型转，5.15）
+片段       GET/POST /fragments
+           PATCH/DELETE /fragments/:id
+ComfyUI    GET      /comfy/status?target=lan|autodl  连不连得上、版本、显卡；AutoDL 另有实例状态和多久后自动关机
+           GET      /comfy/options?target=&refresh=1 底模、LoRA、采样器、各种模型、有哪些节点类型
+           GET      /comfy/autodl/instances          用本机 Token 列实例
+           POST     /comfy/autodl/power              {on} 开机或关机
+工作流     GET      /workflows
+           POST     /workflows                       {name, json} → 存好的工作流，带自动找到的填值位置和候选节点
+           PATCH    /workflows/:id                   {name, fill}
+           DELETE   /workflows/:id
+出图       POST     /canvases/:id/nodes/:nid/messages/:mid/images   {promptIndex, kind, source?, reference?, again?} → ImageJob
+                    reference 是参考图 {imageId, strength}；again 是「同样参数再来」「只换种子再来」{jobId, index, sameSeed}
+           POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/stop
+           DELETE   /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index          删一张
+           POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/star     {on}
+           POST     /images/download                 {items: [{canvasId, nodeId, messageId, jobId, index}], folder} → {paths, inLibrary}
+           GET      /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/file    出的图；临时文件清掉了用下载的那份，都不在返回 404（显示「已清理」）
+           GET      /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/thumb   缩略图，找图的办法同上
+           POST     /images/tagger                   {canvasId, imageId} 或 {canvasId, nodeId, messageId, jobId, index} → 反推出的标签
+           GET      /image-jobs/events               SSE，见下面
 ```
 
-SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（send 和 edit 先发这个）、`{type:'assistant-start', message}`、`{type:'delta', text}`、`{type:'done', message}`（含解析结果和 usage）、`{type:'error', message}`。服务端收到流的每一段就落盘一次 `text`（节流 1 秒），中断后再打开也能看到已收到的部分。
+出图事件（`/image-jobs/events`，第三批）：`{type:'job', canvasId, nodeId, messageId, job}`（任务或其中一张的状态变了，发整个任务）、`{type:'progress', jobId, index, step, total}`、`{type:'queue', jobId, index, position}`、`{type:'autodl', state, since, idleLeftMs}`。
+
+SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（send 和 edit 先发这个）、`{type:'assistant-start', message}`、`{type:'delta', text}`、`{type:'done', message}`（含解析结果和 usage）、`{type:'error', message}`。第三批加 `{type:'reasoning', text}`，是思考原文的一段（5.12）。服务端收到流的每一段就落盘一次 `text`（节流 1 秒），中断后再打开也能看到已收到的部分。
 
 调接口时 `stream: true`，解析 `data:` 行；`usage` 有就记，含命中缓存的输入 token 数。请求失败或非 2xx，把状态码和返回体前 500 字写进 `error`。
 
@@ -423,6 +728,44 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 完成标准：10.2 第 4 条。
 
+### 第三批：思考和生图
+
+在新分支上做，每个阶段单独能回退。每个阶段的界面照设计 agent 出的原型做，原型还没出来的阶段先不开工。
+
+### P8 思考
+
+做：5.12 全部：模型配置的思考写法、设置里的档位、发请求时带参数、读思考原文、「正在思考」和折叠的思考原文；mock-llm 照 9.1 补上思考的部分。
+
+完成标准：10.3 第 1 条。
+
+### P9 词库和标签
+
+做：5.13 词库（复制、读取、搜索、校验、更新）；5.14 生图节点（系统提示词开头的说明段；自带的 `il`、`pony` 和生图的固定格式要求，写好先给用户看；面板换成尺寸和张数；框上的按钮）；5.15 标签显示、拼提示词、标签编辑窗、让模型转标签（`to-tags.md` 也写好给用户看；从图反推留到 P12）；5.16 片段库；设置里的词库、片段库两节。这一步还不能出图，标签复制出去能在别处用。
+
+完成标准：10.3 第 2、3、4 条。
+
+### P10 出图：局域网 ComfyUI 和内置流程
+
+做：5.17 局域网那台（地址、测试连接、读选项、底模属于哪个系列）；5.18 内置流程和两个系列的默认值；节点的出图设置；5.19 出图任务；5.20 临时文件夹和下载；图挂在框下、大图和参数、再来；卡片和首页显示出的图，首页再出图；`tools/mock-comfyui`（9.5）。
+
+完成标准：10.3 第 5 到 8 条；用户用自己局域网的 ComfyUI 做 11.3 第 3 条。
+
+### P11 导入工作流和 AutoDL
+
+开工前：用用户的 AutoDL 实例核对 5.17 里文档没写的三件事。
+
+做：5.18 导入的工作流和缺节点检查；5.17 AutoDL 全部（Token、选实例、开机关机、自动关机、退出时关机）；mock-comfyui 加上 AutoDL 的几个接口。
+
+完成标准：10.3 第 9、10 条；用户做 11.3 第 4 条。
+
+### P12 放大、修脸、参考图、反推
+
+开工前：用户在局域网那台和 AutoDL 实例上装好 5.21 要的插件和模型（程序的缺节点提示能帮着查漏）。
+
+做：5.21 全部；设置里按系列选默认模型、反推模型。
+
+完成标准：10.3 第 11、12、13 条；用户做 11.3 第 5 条。
+
 ## 9. 测试
 
 ### 9.1 mock-llm
@@ -435,6 +778,10 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - 默认输出 `<title>测试标题</title>` 和一个提示词框，框里有六个部分，`summary:` 那行写「[reference generation] 测试概述，引用了 <Picture 1>」。
 - 用户文字含「三个方向」→ 三个带 label 的框；含「只回答」→ 不输出框；含「报错」→ 同样的文字第一次请求返回 500，再请求就正常回复（测重试）；含「慢」→ 每段间隔 500 毫秒、总共 6 秒（测停止）。
 - 系统消息里写着「翻译成某种语言」（翻译提示词框）→ 不按上面几条出回复：第一行写「译文（语言）」，系统消息里带了用户的翻译要求时接「，按要求：……」，下面接用户消息原文。提示词原文含「报错」「慢」时照样按上面的约定失败一次、慢慢写。
+- 第三批：
+  - 请求里带了思考参数（`reasoning_effort`、`enable_thinking`、`thinking_budget`、`thinking`，或者模型名以 `reasoner` 结尾）→ 正文最后一行写「思考参数：」加收到的参数原样，测试靠它断言发了什么；这些参数表示开着思考时（`enable_thinking` 是假、`thinking.type` 是 disabled 的不算），正文前先用 `reasoning_content` 分 4 段发「思考：……」，共 1 秒。没带思考参数的不写这一行，原来的用例不受影响。翻译的回复同样处理。
+  - 系统消息里写着「转成 Danbooru 标签」（5.15 的转标签）→ 只回 `sitting, window, book, reading`。
+  - 系统消息里写着「框里只放英文标签」（生图的固定格式要求）→ 出 `<title>测试图片</title>` 和一个框：`1girl, solo, long hair, blond hair, golden hair, smile, hatsune miku`。blond hair 是官方别名，golden hair 不认识，测 5.15。用户文字含「三个方向」时出三个框。
 
 ### 9.2 单元测试（vitest，`packages/shared`）
 
@@ -446,6 +793,14 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - `imageRules`：给定宽高和字节数，返回要不要缩、缩到多大、要不要转 JPEG，覆盖 5760、256 和 30 MB 三条边界。
 - `collageLayout`：格子坐标、fit-inside 尺寸、编号位置。
 - `summaryForCard`：多框时取第一个，80 字截断。
+- 第三批：
+  - `thinkingParams`：五种写法各配四个档位。
+  - `tags`：拆标签、权重、括号转义、颜文字、拼回去。
+  - 词库的搜索排序和校验：用一份几十行的小词库，覆盖开头和中间、中文名和常用叫法、别名、不认识给候选、已废弃。
+  - 系统提示词开头说明段的解析。
+  - 内置流程拼出的 JSON：IL 和 Pony 的 clip skip、LoRA 串联、放大、修脸、三种参考图。
+  - 导入工作流自动找填值位置：一个 KSampler、KSamplerAdvanced、两个候选、普通格式文件。
+  - 种子依次加 1；临时文件名和下载文件名。
 
 ### 9.3 服务端集成测试（vitest + supertest，用临时工作文件夹）
 
@@ -458,10 +813,28 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - 资产库：扫描只列支持的格式；搜索跨根文件夹；路径越界返回 403。
 - 停止生成后消息保留已收到的部分。
 - 30 MB 的用例用 `it.skip` 标出并写明原因（生成大图慢），改为手动验收。
+- 第三批：
+  - 词库接口（用小词库）；更新词库对着 mock 起的假 Danbooru 接口，全部下完才换掉，中途失败旧的不动。
+  - 出图任务对 mock-comfyui 的全过程：排队、进度、完成，文件出现在 `image-temp/当天/`；叫停排队的和正在跑的；几种失败的说法；服务重启后接着取图。
+  - 下载：复制过去，文件夹不在资产库时 `inLibrary` 为假。
+  - AutoDL：出图时自动开机，空闲到点自动关机（用假时钟）。
+  - 缺节点时不发任务。
 
 ### 9.4 端到端（Playwright，对 mock-llm）
 
-用例见第 10 节。测试前用脚本生成 `tests/fixtures/images/`：五张 800×600 的纯色带文字 JPEG、一张 6000×4000、一张 200×150、一个 `.heic` 空文件。
+用例见第 10 节。测试前用脚本生成 `tests/fixtures/images/`：五张 800×600 的纯色带文字 JPEG、一张 6000×4000、一张 200×150、一个 `.heic` 空文件。第三批的用例还要起 mock-comfyui。
+
+### 9.5 mock-comfyui（第三批）
+
+`tools/mock-comfyui`，Express 加 WebSocket，监听 3798，接口的样子照真的 ComfyUI：
+
+- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，一个 LoRA，常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`）默认都有，测试能通过接口去掉某几个，测缺节点。
+- `/prompt`：检查底模文件名和节点类型，不对就返回 `node_errors`；收下后排队，一个一个跑，每个 5 步、共 1.5 秒，WebSocket 按真的格式发 `executing`、`progress`、`execution_success`。
+- 正面提示词含「慢」→ 每个跑 6 秒，测叫停；含「报错」→ `execution_error`；含「显存」→ 错误里写 `CUDA out of memory`。
+- `/history`、`/view`：图是按尺寸现画的 PNG，上面写着种子和正面提示词的前 40 个字；`/upload/image` 收图；`/queue` 能删；`/interrupt` 停当前的。
+- `WD14Tagger|pysssss` 的输出固定是 `1girl, solo, smile`。
+- AutoDL 的几个接口（list、status、snapshot、power_on、power_off）：一个实例，开机 2 秒后变运行中，6006 的访问地址指回 mock 自己。
+- 收到的每个 `/prompt` 请求体都记下来，测试用 `GET /_last-prompts` 取，断言程序拼的 JSON。
 
 ## 10. 端到端用例
 
@@ -494,6 +867,22 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 8. 把提示词框手动改成含「报错」和「慢」的 → 翻译，底部提示「「提示词」翻成英文失败：」→ 再翻，窗口里是「正在翻成英文」、英文那行写着正在翻、按钮不能点 → 关掉窗口，翻好后底部提示 → 再打开点重新翻译，顶上提示正在重新翻译、标着旧译文，翻完提示消失。
 9. 首页：新建画布不起名字提示「先起个名字」→ 菜单里改名 → 右键删除，提示条里撤销，画布回来。用接口建两个发过消息的节点，给一个框打星并翻成英文 → 最近动过的节点第一个是它，带星、「3 个方向」→ 打过星的提示词里复制原文和英文译文，上传清单标题是「画布 › 节点 · 框名」→ 点「画布 › 节点」进画布直接打开这个节点，地址里没有 `#node=` → 回首页点另一个节点的卡片，打开的是那个节点。按名字找画布，找不到时能清空。有一套模型配置没填密钥时顶上提示，点了去设置里的模型配置。工作文件夹被删掉 → 整页提示打不开、新建画布点不了 → 重试，提示「还是打不开：找不到这个路径」→ 文件夹回来后重试，显示「还没有画布」。
 
+### 10.3 第三批
+
+1. 设置里总档位调到中，mock 那套模型配置的思考写法选 reasoning_effort → 发「写一个」→ 正文出来前显示「正在思考」→ 回复上面有折叠的「思考了 N 秒」，点开有「思考：」→ 回复最后一行「思考参数」含 `reasoning_effort` 和 `medium` → 翻译这个框，译文最后一行的「思考参数」是 `low`（翻译默认关，reasoning_effort 关的时候发 `low`）。
+2. 新建节点，系统提示词选 `il` → 面板上是尺寸和张数，没有时长和比例 → 发「写一个」→ 框里的标签是小块，long hair 下面是「长发」；blond hair 显示成 blonde hair，注明原来写的；golden hair 标不认识，点开候选里有 blonde hair，选它 → 回复显示 `2/2` → 复制拿到的里面没有 golden hair 和 blond hair。
+3. 标签编辑窗：打「金发」，候选第一个是 blonde hair → 选中 → 拖到最前 → 权重调到 1.2 → 存 → 复制拿到的以 `(blonde hair:1.2), ` 开头。再打开，打「坐在窗边看书」→ 让模型转成标签 → 多了 sitting、window、book、reading 四个小块。
+4. 选两个小块存成片段「测试角色」→ 另一个生图节点的编辑窗里搜「测试角色」插进来 → 设置的片段库里看得到，删掉后编辑窗里搜不到。
+5. 设置里填 mock-comfyui 的地址，测试连接显示版本和显卡 → 底模里 pony-test 自动标成 Pony → 生图节点张数选 2，点「生图」→ 框下面两张先排队、再显示进度、最后出图 → 两个文件在工作文件夹 `image-temp/当天/` 里 → 打开大图，参数里正面以 `masterpiece, best quality, ` 开头，两张的种子差 1；mock 收到的请求里 `CLIPSetLastLayer` 是 −2。
+6. 张数 3，框里改成含「慢」的 → 生图 → 第一张在跑时点叫停 → 跑着的和排队的都标「已叫停」；含「报错」的显示失败原因；底模选一个 mock 上没有的文件名 → 提示底模文件不在。
+7. 下载一张，选一个不在资产库里的新文件夹 → 问要不要导入 → 导入后资产库里有这张 → 新建视频节点，把它放进槽位。删掉这张的临时文件 → 节点里改显示下载的那份；删掉另一张没下载过的临时文件 → 显示「已清理」，「同样参数再来」照样能出。
+8. 给生图框打星 → 首页打过星的提示词里显示它出过的图，点「再出图」→ 回到画布，这个框下面多一组。
+9. 导入一个 API 格式的工作流 → 自动认出正面、负面、种子、尺寸 → 选它出图 → mock 收到的 JSON 里这几处换了，其他没动；导入普通格式的文件，提示用「导出（API）」；工作流里有 mock 上没有的节点 → 出图时提示缺哪个。
+10. 设置里填 AutoDL 的 Token（mock 的）、选实例 → 出图设置切到 AutoDL → 生图 → 显示「正在开机」→ 出完图 → 手动关机，状态变成已关机。
+11. 在一张出的图上放大 2 倍 → 新图宽高是原来的 2 倍，参数里记着从哪张来；让 mock 去掉 `FaceDetailer` 后点修脸 → 提示缺 Impact Pack。
+12. 槽位放一张图，生图时选姿势参考和这张图 → mock 收到的 JSON 里有上传的图、`DWPreprocessor` 和 `ControlNetApplyAdvanced`；选图生图 → `KSampler` 的 denoise 是 0.6。
+13. 标签编辑窗里「从图反推」选槽位 1 号 → 末尾多了 1girl、solo、smile 三个小块，下面有中文。
+
 ## 11. 手动验收（用户用真模型做）
 
 ### 11.1 第一批
@@ -513,18 +902,27 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 2. 拼一张 3×3 宫格放进 1 号槽位，提示词里用「左上」「第二排中间」这类说法，看 H3 生成结果是否按格子理解（这是要验证的风险点，结果记到 `docs/reports/`）。
 3. 各种操作后 Ctrl+Z 能回退，Ctrl+Shift+Z 能重做。
 
+### 11.3 第三批
+
+1. 用自己常用的几家模型配置打开思考，关低中高都试一遍；DeepSeek 或通义能看到思考原文；花费里算上了思考。
+2. 用中文聊出 IL 和 Pony 的标签提示词，大部分标签认识；在标签编辑窗里改几处、插一个片段。
+3. 局域网 ComfyUI：内置流程 IL、Pony 各出一组，Pony 不糊；下载几张进资产库，放进视频节点的槽位写视频提示词。
+4. 导入一个自己的工作流出一组。AutoDL：实例关着时点生图，自动开机出图；空闲到点自动关机，到 AutoDL 控制台确认关了；开着时退出程序，实例被关掉。
+5. 放大、修脸、三种参考图、反推各跑一次，结果对得上。
+6. 另一台机器打开同一个工作文件夹：生图节点、出过的图、片段库、词库、导入的工作流都在。
+
 ## 12. 给实现 agent 的约定
 
 - 只做本计划写的；觉得该加的先问用户，不要自作主张加守卫、警告、功能。
 - 界面文字全中文，代码标识符英文，注释少而准。
 - 每阶段结束写报告，等用户确认再继续；不要自动 git 提交。
-- 测试用 mock-llm，不要在测试里调真模型；真模型只在手动验收时用。
+- 测试用 mock-llm 和 mock-comfyui，不要在测试里调真模型、连真的 ComfyUI 和 AutoDL（AutoDL 开机就扣钱）；真的只在手动验收时用。
 - 拿不准的产品行为，先查 `docs/requirements-interview.md`，还是拿不准就问，不要猜。
 - 服务只监听 127.0.0.1；所有文件路径参数必须校验在允许的目录内。
 
 ## 13. 预留和以后
 
-- 接第三方接口生成视频：`Message.videos` 已留字段；每个提示词框以后加「生成」按钮，结果挂在框下；发起生成时用这条消息的 `slotSnapshot` 按编号上传画布副本。
+- 接第三方接口生成视频：`Message.videos` 已留字段；每个提示词框以后加「生成」按钮，结果挂在框下；发起生成时用这条消息的 `slotSnapshot` 按编号上传画布副本。做法可以照生图的出图任务（5.19）。
 - 视频和音频参考：以后在节点上加 `videoSlots`（3 个）和 `audioSlots`（3 个），编号各自独立，不影响图片编号。
 - 复制时按平台写法转换 `<Picture N>`：以后在 `shared/src/exportFormat.ts` 加转换函数，复制按钮按设置里选的平台调用。
 - 按画面内容搜图、节点提示词对比、节点搜索、清晰度设置：不做预留。

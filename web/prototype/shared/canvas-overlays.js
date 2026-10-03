@@ -554,7 +554,7 @@ var Translate = (function () {
   renderGraph();
   Panel.startBackground();
   var hash = location.hash.replace('#', '');
-  var start = /^node=/.test(hash) ? hash.slice(5) : hash === 'translate' ? 'n1' : 'n2';
+  var start = /^node=/.test(hash) ? hash.slice(5) : hash === 'translate' ? 'n1' : 'n9';
   if (innerWidth > 720 || /^node=/.test(hash)) {
     G.sel = start;
     document.body.classList.add('drawer-open');
@@ -562,6 +562,7 @@ var Translate = (function () {
     renderGraph();
   }
   fitAll(G.sel ? 0.9 : 0);
+  if (G.sel) setTimeout(function () { ensureVisible(nodeById(G.sel)); }, 420);
   if (hash === 'assets') Assets.open({ mode: 'slots' });
   if (hash === 'upload') { var n = nodeById('n1'), t = THREADS.n1[1], v = t.versions[t.cur]; Upload.open(n, v.boxes[0], THREADS.n1[0].versions[0].imgs, v); }
   if (hash === 'collage') Collage.open();

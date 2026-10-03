@@ -91,7 +91,10 @@ function nodeCard(n) {
   if (n.slots.length > 5) slots += '<div class="gn-slot gn-slot-more">+' + (n.slots.length - 5) + '</div>';
   if (!n.slots.length) slots = '<span class="gn-noimg">没有参考图</span>';
   var hiddenCount = n.collapsed ? descendants(n.id).length : 0;
-  var tags = '';
+  var tags = '', foot = n.duration + '秒 · ' + n.ratio;
+  /* 生图节点：出过图的显示最近出的图；时长比例那行换成尺寸和系列 */
+  var ip = isImageNode(n) ? ImgUI.cardParts(n) : null;
+  if (ip) { if (ip.thumbs) slots = ip.thumbs; tags += ip.tags; foot = ip.foot; }
   if (st.streaming) tags += '<span class="tag tag-accent"><span class="dot dot-live"></span>生成中</span>';
   if (st.failed) tags += '<span class="tag tag-danger">' + icon('warn') + '请求失败</span>';
   if (st.dirs) tags += '<span class="tag">' + st.dirs + ' 个方向</span>';
@@ -102,8 +105,8 @@ function nodeCard(n) {
       '<button class="btn btn-ghost btn-icon btn-sm gn-menu" data-act="menu" aria-label="节点操作">' + icon('more') + '</button>' +
     '</div>' +
     '<div class="gn-sum">' + esc(n.summary || '还没有提示词') + '</div>' +
-    '<div class="gn-slots">' + slots + '</div>' +
-    '<div class="gn-foot">' + tags + '<span class="grow"></span><span class="meta">' + n.duration + '秒 · ' + n.ratio + '</span></div>' +
+    '<div class="gn-slots' + (ip && ip.thumbs ? ' is-gen' : '') + '">' + slots + '</div>' +
+    '<div class="gn-foot">' + tags + '<span class="grow"></span><span class="meta">' + foot + '</span></div>' +
     (hiddenCount ? '<button class="gn-collapsed" data-act="expand" title="展开">' + icon('chev-right', 'icon-sm') + '收起了 ' + hiddenCount + ' 个节点</button>' : '');
 }
 
@@ -366,6 +369,7 @@ function forkNode(src, count, prefill) {
   var y = kids.length ? kids[kids.length - 1].y + 230 : src.y;
   var n = { id: newNodeId(), title: '新节点', parent: src.id, forkFrom: { node: src.id, count: count }, x: src.x + 344, y: y, collapsed: false,
             model: src.model, sys: src.sys, slots: src.slots.slice(), duration: src.duration, ratio: src.ratio,
+            size: src.size, count: src.count, image: src.image ? JSON.parse(JSON.stringify(src.image)) : undefined,
             summary: src.summary, _new: true, untitled: true };
   G.nodes.push(n); THREADS[n.id] = []; COPIED[n.id] = copyThread(src, count);
   if (src.collapsed) src.collapsed = false;

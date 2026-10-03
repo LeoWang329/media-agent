@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
-import { createApp } from '../src/app';
+import { createApp, imageJobsOf, type AppOptions } from '../src/app';
 
 export function listen(app: express.Express): Promise<Server> {
   return new Promise((resolve) => {
@@ -25,12 +25,14 @@ export const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() a
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 起一个用临时目录的服务，设好工作文件夹和指向 mock-llm 的模型配置
-export async function startTestApp() {
+export async function startTestApp(options: Pick<AppOptions, 'tagSources'> = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
   const work = path.join(tmp, 'work');
+  const configDir = path.join(tmp, 'config');
   const mockLlm = await listen(createMockLlmApp());
-  const server = await listen(createApp({ configDir: path.join(tmp, 'config') }));
-  const base = `${urlOf(server)}/api`;
+  let app = createApp({ configDir, ...options });
+  let server = await listen(app);
+  let base = `${urlOf(server)}/api`;
 
   async function call<T = any>(method: string, url: string, body?: unknown): Promise<{ status: number; body: T }> {
     const res = await fetch(`${base}${url}`, {
@@ -49,7 +51,7 @@ export async function startTestApp() {
   }
 
   // 发一个会返回 SSE 的请求，读完整个流再返回全部事件
-  async function stream(url: string, body: unknown): Promise<StreamEvent[]> {
+  async function stream<T = StreamEvent>(url: string, body: unknown): Promise<T[]> {
     const res = await fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok) throw new Error(`POST ${url} → ${res.status} ${await res.text()}`);
     return (await res.text())
@@ -71,15 +73,32 @@ export async function startTestApp() {
     modelConfigs: [{ id: 'mock', name: 'mock', baseUrl: `${urlOf(mockLlm)}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }],
   });
 
+  // 关掉服务和出图任务的连接
+  async function shutdown() {
+    imageJobsOf(app).close();
+    await close(server);
+  }
+
   return {
     work,
-    base,
+    configDir,
+    get base() {
+      return base;
+    },
     call,
     ok,
     stream,
     addImage,
+    imageJobs: () => imageJobsOf(app),
+    // 模拟程序重启：同一个本机配置目录、同一个工作文件夹，换一个新的服务
+    async restart() {
+      await shutdown();
+      app = createApp({ configDir, ...options });
+      server = await listen(app);
+      base = `${urlOf(server)}/api`;
+    },
     async cleanup() {
-      await close(server);
+      await shutdown();
       await close(mockLlm);
       await fs.rm(tmp, { recursive: true, force: true });
     },

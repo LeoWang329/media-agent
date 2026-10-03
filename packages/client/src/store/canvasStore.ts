@@ -14,7 +14,9 @@ import {
   type ImageRecord,
   type ModelConfigWithKey,
   type PromptTranslation,
+  type SharedSettings,
   type SlotSettings,
+  type ThinkingSettings,
   type TranslateLanguage,
 } from '@media-agent/shared';
 import { create } from 'zustand';
@@ -24,7 +26,10 @@ import { ensureVisible } from '../canvas/view';
 import { markSaved, trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
 
-type Stream = { assistantId: string | null; text: string };
+// 正在收的回复：正文、思考原文，和第一个正文字到的时间（算思考了多久）
+export type Stream = { assistantId: string | null; text: string; reasoning: string; firstTextAt: number | null };
+
+const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text: '', reasoning: '', firstTextAt: null });
 
 type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots'>>;
 
@@ -52,6 +57,7 @@ type CanvasState = {
   streams: Record<string, Stream>; // 这个页面上正在收回复的节点
   modelConfigs: ModelConfigWithKey[];
   promptNames: string[];
+  thinking: ThinkingSettings | null; // 设置里的思考档位，打开画布时读一次
   placing: Placing | null;
   flash: Flash | null;
   undoLabels: string[]; // 撤销栈里每一步叫什么，最后一个是下一次撤销的
@@ -297,19 +303,34 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     return result;
   };
 
-  // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次
-  const pending: Record<string, string> = {};
+  // 流式文字按帧合并后再更新界面，免得每收到一小段就重新渲染一次。
+  // 第一个正文字到的时间收到就记下：页面在后台时不出帧，等到合并时再记就晚了
+  const pending: Record<string, { text: string; reasoning: string; firstTextAt?: number }> = {};
   let frame = 0;
   const flush = () => {
     frame = 0;
     set((s) => {
       const streams = { ...s.streams };
-      for (const [nodeId, text] of Object.entries(pending)) {
-        if (streams[nodeId]) streams[nodeId] = { ...streams[nodeId], text: streams[nodeId].text + text };
+      for (const [nodeId, add] of Object.entries(pending)) {
+        const stream = streams[nodeId];
+        if (stream) {
+          streams[nodeId] = {
+            ...stream,
+            text: stream.text + add.text,
+            reasoning: stream.reasoning + add.reasoning,
+            firstTextAt: stream.firstTextAt ?? add.firstTextAt ?? null,
+          };
+        }
         delete pending[nodeId];
       }
       return { streams };
     });
+  };
+  const receive = (nodeId: string, part: 'text' | 'reasoning', text: string) => {
+    const add = (pending[nodeId] ??= { text: '', reasoning: '' });
+    add[part] += text;
+    if (part === 'text') add.firstTextAt ??= Date.now();
+    frame ||= requestAnimationFrame(flush);
   };
 
   const runStream = async (nodeId: string, url: string, body: unknown, onAccepted?: () => void): Promise<boolean> => {
@@ -321,7 +342,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     };
     await attempt(async () => {
       if (get().streams[nodeId]) return;
-      set((s) => ({ streams: { ...s.streams, [nodeId]: { assistantId: null, text: '' } } }));
+      set((s) => ({ streams: { ...s.streams, [nodeId]: emptyStream(null) } }));
       let outcome: 'done' | 'error' | null = null;
       try {
         await postStream(url, body, (event) => {
@@ -331,10 +352,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
             markSaved();
           } else if (event.type === 'assistant-start') {
             changeNode(nodeId, (node) => addMessage(node, event.message));
-            set((s) => ({ streams: { ...s.streams, [nodeId]: { assistantId: event.message.id, text: '' } } }));
+            set((s) => ({ streams: { ...s.streams, [nodeId]: emptyStream(event.message.id) } }));
           } else if (event.type === 'delta') {
-            pending[nodeId] = (pending[nodeId] ?? '') + event.text;
-            frame ||= requestAnimationFrame(flush);
+            receive(nodeId, 'text', event.text);
+          } else if (event.type === 'reasoning') {
+            receive(nodeId, 'reasoning', event.text);
           } else {
             outcome = event.type;
             changeNode(nodeId, (node) => ({ ...node, messages: { ...node.messages, [event.message.id]: event.message } }));
@@ -436,6 +458,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     streams: {},
     modelConfigs: [],
     promptNames: [],
+    thinking: null,
     placing: null,
     flash: null,
     undoLabels: [],
@@ -449,12 +472,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         redoStack = [];
         stackEpoch += 1;
         set({ canvasId, detail: null, selectedId: null, nodes: {}, placing: null, flash: null, undoLabels: [], redoLabels: [] });
-        const [detail, config, promptNames] = await Promise.all([
+        const [detail, config, promptNames, settings] = await Promise.all([
           api<CanvasDetail>(`/canvases/${canvasId}`),
           api<Config>('/config'),
           api<string[]>('/prompts'),
+          api<SharedSettings>('/settings'),
         ]);
-        if (get().canvasId === canvasId) set({ detail, modelConfigs: config.modelConfigs, promptNames });
+        if (get().canvasId === canvasId) set({ detail, modelConfigs: config.modelConfigs, promptNames, thinking: settings.thinking });
       }),
 
     refresh: async () => {

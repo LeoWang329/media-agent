@@ -1,7 +1,8 @@
-import type { ModelConfigWithKey, ModelPricing } from '@media-agent/shared';
+import { THINKING_STYLES, type ModelConfigWithKey, type ModelPricing, type ThinkingStyle } from '@media-agent/shared';
 import { forwardRef, useImperativeHandle, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import { Icon } from '../ui/Icon';
+import { STYLE_LABELS } from '../ui/thinking';
 import { toast } from '../ui/toast';
 
 const MOCK_URL = 'http://127.0.0.1:3799/v1';
@@ -210,6 +211,36 @@ export const ModelForm = forwardRef<ModelFormHandle, Props>(function ModelForm({
           </div>
           <p className="hint">另做一份小图发给 AI 看，越大看得越清楚，费用越高。不影响传给 H3 的图。</p>
         </div>
+        <div className="field">
+          <label htmlFor="mf-think">开思考的写法</label>
+          <select
+            className="select mono"
+            id="mf-think"
+            value={value.thinkingStyle}
+            onChange={(e) => change({ thinkingStyle: e.target.value as ThinkingStyle })}
+          >
+            {THINKING_STYLES.map((style) => (
+              <option key={style} value={style}>
+                {STYLE_LABELS[style]}
+              </option>
+            ))}
+          </select>
+          <p className="hint">各家开思考的参数不一样，看这家接口文档选。选「不支持」就不发思考相关的参数。</p>
+        </div>
+        {value.thinkingStyle === 'model-switch' && (
+          <div className="field" id="mf-thinkModelF">
+            <label htmlFor="mf-thinkModel">开思考用的模型名</label>
+            <input
+              className="input mono"
+              id="mf-thinkModel"
+              value={value.thinkingModel}
+              placeholder="比如 deepseek-reasoner"
+              autoComplete="off"
+              onChange={(e) => change({ thinkingModel: e.target.value })}
+            />
+            <p className="hint">思考关着用上面的模型名，开着换成这个。</p>
+          </div>
+        )}
       </div>
       <details className="mf-price" open={priceOpen}>
         <summary>

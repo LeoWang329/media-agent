@@ -6,6 +6,7 @@
   <title>新年广告片 · 提示词画布</title>
   <link rel="stylesheet" href="shared/app.css" />
   <link rel="stylesheet" href="shared/canvas.css" />
+  <link rel="stylesheet" href="shared/image.css" />
   <script src="shared/app.js"></script>
 </head>
 <body class="ws">
@@ -53,6 +54,9 @@
     <button class="btn btn-ghost btn-icon btn-sm" id="zoomFit" data-icon="fit" aria-label="显示全部节点" title="显示全部节点"></button>
   </div>
 
+  <!-- 左下，缩放旁边：出图用哪台 ComfyUI、AutoDL 开没开。一直看得到 -->
+  <div class="ws-float ws-comfy" data-od-id="comfy-status"><button class="cf-pill"></button></div>
+
   <!-- 右侧：节点对话面板 -->
   <aside class="drawer" id="drawer" aria-label="节点对话" data-od-id="node-drawer">
     <div class="drawer-resize" id="drawerResize" title="拖动调宽"></div>
@@ -71,6 +75,7 @@
           <select id="cfgModel" aria-label="模型配置"></select></label>
         <label class="cfg"><span data-icon="doc" data-icon-class="icon-sm"></span>
           <select id="cfgSys" aria-label="系统提示词"></select></label>
+        <button class="cfg cfg-think" id="cfgThink" data-od-id="thinking-level"></button>
         <span class="meta grow dr-cost" id="drCost"></span>
       </div>
     </header>
@@ -82,6 +87,7 @@
 
       <div class="slots-head">
         <span class="panel-title">参考图 <span class="mono" id="slotCount">0/9</span></span>
+        <span class="params" id="vidParams">
         <div class="param">
           <span class="meta">时长</span>
           <div class="stepper" data-od-id="duration-stepper">
@@ -94,6 +100,19 @@
             <option>16:9</option><option>9:16</option><option>4:3</option><option>3:4</option><option>1:1</option><option>21:9</option>
           </select>
         </div>
+        </span>
+        <!-- 生图节点：时长和比例换成尺寸和张数，旁边是出图设置 -->
+        <span class="params" id="imgParams" hidden data-od-id="image-params">
+          <div class="param">
+            <span class="meta">尺寸</span>
+            <select class="select select-sm mono" id="imgSize" aria-label="图的尺寸"></select>
+          </div>
+          <div class="param">
+            <span class="meta">张数</span>
+            <div class="stepper"><button id="cntDown" aria-label="少出一张">−</button><output id="imgCount">4 张</output><button id="cntUp" aria-label="多出一张">+</button></div>
+          </div>
+          <button class="btn btn-secondary btn-sm gen-cfg-btn" id="btnGenCfg" data-od-id="btn-generation-settings"></button>
+        </span>
         <span class="grow"></span>
         <button class="btn btn-ghost btn-sm" id="slotAssets" data-icon="image" data-od-id="btn-slot-from-assets"><span class="hide-sm">资产库</span></button>
         <button class="btn btn-ghost btn-sm" id="slotLocal" data-icon="folder" data-od-id="btn-slot-from-disk"><span class="hide-sm">电脑里的图</span></button>
@@ -258,9 +277,60 @@
   <!-- 从电脑直接选图 -->
   <input type="file" id="localFile" accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.gif" multiple hidden />
 
+  <!-- 只在原型里有：切到需求 4.12 列的各种等待和出错状态 -->
+  <label class="proto-switch" title="只在原型里有，正式程序里没有" data-od-id="canvas-prototype-states">
+    <span>原型</span>
+    <select class="select select-sm" id="proto" aria-label="原型：切换画布上生图和思考的状态">
+      <option value="normal">正常：打开生图节点「窗边读书·傍晚」</option>
+      <option value="video">视频节点照旧（打开「慢推近景」）</option>
+      <optgroup label="思考">
+        <option value="thinking">AI 在思考，正文还没出来</option>
+        <option value="thinkDone">想完了：展开思考原文</option>
+      </optgroup>
+      <optgroup label="标签">
+        <option value="unknown">不认识的标签：点开看候选</option>
+        <option value="toTags">让 AI 把中文转成标签（几秒）</option>
+        <option value="interrogate">从图反推标签（十几秒）</option>
+        <option value="libUpdating">词库在更新（约 4 分钟）</option>
+      </optgroup>
+      <optgroup label="出图">
+        <option value="running">排队、正在出</option>
+        <option value="stopped">一组叫停了，出完的留着</option>
+        <option value="cleared">临时文件被清掉的图</option>
+        <option value="lightbox">看大图和参数</option>
+      </optgroup>
+      <optgroup label="AutoDL">
+        <option value="booting">开机中（一两分钟）</option>
+        <option value="bootToken">开机失败：Token 不对</option>
+        <option value="bootBalance">开机失败：余额不够</option>
+        <option value="bootTimeout">开机失败：等太久</option>
+        <option value="autodlRunning">运行中，多久后自动关机</option>
+        <option value="autodlForgot">用着局域网那台，AutoDL 也还开着</option>
+      </optgroup>
+      <optgroup label="ComfyUI 出错">
+        <option value="down">连不上</option>
+        <option value="noCkpt">底模文件不在</option>
+        <option value="oom">显存不够</option>
+        <option value="missingNode">缺插件（修脸要 Impact Pack）</option>
+        <option value="missingModel">缺模型（姿势参考要 ControlNet）</option>
+      </optgroup>
+      <optgroup label="在设置页">
+        <option value="settings:settings.html?proto=libUpdating#taglib">词库更新的进度</option>
+        <option value="settings:settings.html?proto=wfBad#workflows">导入的工作流格式不对</option>
+        <option value="settings:settings.html?proto=wfMap#workflows">认不出往哪填</option>
+      </optgroup>
+    </select>
+  </label>
+
   <script src="shared/canvas-data.js"></script>
+  <script src="shared/image-data.js"></script>
+  <script src="shared/tag-groups.js"></script>
+  <script src="shared/image-core.js"></script>
   <script src="shared/canvas-graph.js"></script>
   <script src="shared/canvas-panel.js"></script>
+  <script src="shared/image-panel.js"></script>
+  <script src="shared/image-tools.js"></script>
   <script src="shared/canvas-overlays.js"></script>
+  <script src="shared/image-proto.js"></script>
 </body>
 </html>

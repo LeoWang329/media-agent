@@ -1,0 +1,14 @@
+{
+  "name": "@media-agent/mock-comfyui",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "sharp": "^0.35.4",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.2"
+  }
+}

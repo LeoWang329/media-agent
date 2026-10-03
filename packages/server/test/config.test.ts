@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_PRICING } from '@media-agent/shared';
+import { DEFAULT_MODEL_THINKING, DEFAULT_PRICING } from '@media-agent/shared';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
 import { createApp } from '../src/app';
 
@@ -57,7 +57,7 @@ afterEach(async () => {
 });
 
 function modelConfig(id: string, baseUrl: string, apiKey = 'sk-secret') {
-  return { id, name: id, baseUrl, apiKey, model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING };
+  return { id, name: id, baseUrl, apiKey, model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING, ...DEFAULT_MODEL_THINKING };
 }
 
 const readJsonFile = async (file: string) => JSON.parse(await fs.readFile(file, 'utf8'));
@@ -66,7 +66,7 @@ describe('本机配置', () => {
   it('没有配置文件时返回空配置', async () => {
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ workFolder: null, modelConfigs: [], assetFolders: [], lastCollageFolder: null });
+    expect(res.body).toEqual({ workFolder: null, modelConfigs: [], assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null });
   });
 
   it('设工作文件夹：建好目录、复制默认提示词，再设一次不覆盖已改过的提示词', async () => {
@@ -112,8 +112,8 @@ describe('本机配置', () => {
     expect(first.body.modelConfigs.map((m: { apiKey: string }) => m.apiKey)).toEqual(['******', '******']);
 
     expect(await readJsonFile(path.join(workFolder, 'model-configs.json'))).toEqual([
-      { id: 'm1', name: 'm1', baseUrl: 'http://x/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING },
-      { id: 'm2', name: 'm2', baseUrl: 'http://y/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING },
+      { id: 'm1', name: 'm1', baseUrl: 'http://x/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING, ...DEFAULT_MODEL_THINKING },
+      { id: 'm2', name: 'm2', baseUrl: 'http://y/v1', model: 'mock-model', imageLongSide: 1600, pricing: DEFAULT_PRICING, ...DEFAULT_MODEL_THINKING },
     ]);
     expect((await readJsonFile(path.join(tmp, 'config', 'config.json'))).apiKeys).toEqual({ m1: 'sk-secret', m2: 'sk-2' });
 

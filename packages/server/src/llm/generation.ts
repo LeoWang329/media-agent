@@ -1,4 +1,16 @@
-import { addMessage, ancestorsOf, composeMessages, parseReply, titleAfterReply, type ChatNode, type Message, type StreamEvent } from '@media-agent/shared';
+import {
+  addMessage,
+  ancestorsOf,
+  composeMessages,
+  parseReply,
+  thinkingLevelFor,
+  thinkingOn,
+  thinkingRequest,
+  titleAfterReply,
+  type ChatNode,
+  type Message,
+  type StreamEvent,
+} from '@media-agent/shared';
 import type { Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { readConfig } from '../config';
@@ -6,6 +18,7 @@ import { HttpError } from '../httpError';
 import { updateCanvas, updateNode } from '../store/canvases';
 import { llmImageUrls } from '../store/images';
 import { readFormatRequirement, snapshotPrompt } from '../store/prompts';
+import { readSettings } from '../store/settings';
 import { streamChatCompletion } from './chatStream';
 
 const PERSIST_INTERVAL = 1000;
@@ -82,6 +95,8 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
         },
       );
 
+    // 思考计时：从发出请求到收到第一个正文字
+    let clock: { on: boolean; started: number; firstText?: number } | undefined;
     try {
       const { modelConfigs } = await readConfig(configDir);
       const modelConfig = modelConfigs.find((m) => m.id === node.modelConfigId);
@@ -89,20 +104,32 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const prompt = await snapshotPrompt(work, node.systemPromptName);
       const path = ancestorsOf(node, assistant.parentId!);
       const messages = composeMessages(path, prompt.text, await readFormatRequirement(), await llmImageUrls(work, canvasId, path));
-      assistant = { ...assistant, modelName: modelConfig.model, systemPromptHash: prompt.hash };
+      const level = thinkingLevelFor((await readSettings(work)).thinking, 'chat');
+      assistant = { ...assistant, modelName: thinkingRequest(modelConfig, level).model, systemPromptHash: prompt.hash };
 
       let lastPersist = Date.now();
+      const persistSoon = () => {
+        if (Date.now() - lastPersist < PERSIST_INTERVAL) return;
+        lastPersist = Date.now();
+        persist(assistant).catch((err) => console.error('保存生成中的回复失败', err));
+      };
+      const timing: { on: boolean; started: number; firstText?: number } = { on: thinkingOn(modelConfig, level), started: Date.now() };
+      clock = timing;
       const { usage } = await streamChatCompletion({
         modelConfig,
         messages,
+        thinking: level,
         signal: controller.signal,
         onDelta: (text) => {
+          timing.firstText ??= Date.now();
           assistant = { ...assistant, text: assistant.text + text };
           send({ type: 'delta', text });
-          if (Date.now() - lastPersist >= PERSIST_INTERVAL) {
-            lastPersist = Date.now();
-            persist(assistant).catch((err) => console.error('保存生成中的回复失败', err));
-          }
+          persistSoon();
+        },
+        onReasoning: (text) => {
+          assistant = { ...assistant, reasoning: (assistant.reasoning ?? '') + text };
+          send({ type: 'reasoning', text });
+          persistSoon();
         },
       });
       if (usage) assistant = { ...assistant, usage };
@@ -111,6 +138,7 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       if (controller.signal.aborted) assistant = { ...assistant, stopped: true };
       else assistant = { ...assistant, text: '', error: (err as Error).message };
     }
+    if (clock && (clock.on || assistant.reasoning)) assistant = { ...assistant, thinkingMs: (clock.firstText ?? Date.now()) - clock.started };
 
     try {
       if (assistant.error) {

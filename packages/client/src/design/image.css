@@ -1,0 +1,24 @@
+/* 第三批原型 shared/image.css 里的样式，做到哪块搬哪块，原样照抄 */
+
+/* ─── 面板头部：思考档位 ─── */
+.cfg-think { gap: 5px; padding: 0 8px; font-size: 12px; cursor: pointer; }
+.cfg-think.is-on { color: var(--fg); }
+
+/* ─── 思考 ─── */
+.think { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12.5px; color: var(--muted); }
+.think.is-live { padding: 8px 10px; border: 1px dashed var(--border); border-radius: 10px; color: var(--fg); }
+.think.is-live .spinner { color: var(--accent-ink); }
+.think .meta { margin-left: 2px; }
+details.think { display: block; border: 1px solid var(--border); border-radius: 10px; background: var(--fg-softer); }
+details.think > summary { list-style: none; display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; }
+details.think > summary::-webkit-details-marker { display: none; }
+details.think > summary:hover { color: var(--fg); }
+details.think > summary .chev { margin-left: auto; transition: transform .15s; }
+details.think[open] > summary .chev { transform: rotate(180deg); }
+.think-body { padding: 2px 12px 12px; max-height: 320px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.75; color: color-mix(in oklch, var(--fg) 78%, var(--muted)); border-top: 1px dashed var(--border); padding-top: 10px; }
+
+/* ─── 设置页的几块 ─── */
+.sx-where { flex: none; }
+.sx-list { display: flex; flex-direction: column; gap: 8px; }
+.sx-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 13.5px; flex-wrap: wrap; }
+.sx-row .meta { font-size: 12px; }

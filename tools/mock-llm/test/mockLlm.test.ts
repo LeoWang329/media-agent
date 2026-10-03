@@ -108,4 +108,26 @@ describe('mock-llm', () => {
     const models = (await (await fetch(`${baseUrl}/models`)).json()) as { data: { id: string }[] };
     expect(models.data[0].id).toBe('mock-model');
   });
+
+  it('思考：开着思考的参数先发 reasoning_content 再出正文，正文最后一行写出收到的参数；关着的参数只写这一行', async () => {
+    const deltas = async (body: object) => {
+      const raw = await (await complete({ messages: [userMessage('写一个')], stream: true, ...body })).text();
+      return raw
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)).choices[0]?.delta ?? {});
+    };
+
+    const on = await deltas({ reasoning_effort: 'high' });
+    const firstContent = on.findIndex((d) => d.content);
+    expect(on.slice(0, firstContent).map((d) => d.reasoning_content).join('')).toBe('思考：先弄清用户要什么，再按要求的格式写出来。');
+    expect(on.map((d) => d.content ?? '').join('')).toMatch(/\n思考参数：\{"reasoning_effort":"high"\}$/);
+
+    const off = await deltas({ thinking: { type: 'disabled' } });
+    expect(off.some((d) => d.reasoning_content)).toBe(false);
+    expect(off.map((d) => d.content ?? '').join('')).toMatch(/\n思考参数：\{"thinking":\{"type":"disabled"\}\}$/);
+
+    const reasoner = await deltas({ model: 'deepseek-reasoner' });
+    expect(reasoner.some((d) => d.reasoning_content)).toBe(true);
+  });
 });

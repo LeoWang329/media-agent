@@ -1,9 +1,11 @@
-import { activePath, type ChatNode } from '@media-agent/shared';
+import { activePath, type ChatNode, type ModelConfig, type ThinkingSettings } from '@media-agent/shared';
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import { useNavigate } from 'react-router';
 import { useCanvasStore } from '../store/canvasStore';
 import { Icon } from '../ui/Icon';
 import { showMenu } from '../ui/menu';
 import { RenameInput } from '../ui/RenameInput';
+import { chatThinkingLevel, LEVEL_LABELS } from '../ui/thinking';
 import { toast } from '../ui/toast';
 import { Dock } from './Dock';
 import { closeDrawer, drawerMenu, finishRename, selectNode, startRename, useRenaming } from './nodeActions';
@@ -104,6 +106,7 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
   const parent = useCanvasStore((s) => s.detail?.nodes.find((n) => n.id === node.parentNodeId));
   const modelConfigs = useCanvasStore((s) => s.modelConfigs);
   const promptNames = useCanvasStore((s) => s.promptNames);
+  const thinking = useCanvasStore((s) => s.thinking);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const untitled = isUntitled(node);
   const cost = nodeCost(node, modelConfigs);
@@ -223,10 +226,37 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
             ))}
           </select>
         </label>
+        {thinking && <ThinkingButton config={modelConfigs.find((m) => m.id === node.modelConfigId)} settings={thinking} />}
         <span className="meta grow dr-cost" id="drCost">
           {cost ? `这个节点花了 ${cost}` : ''}
         </span>
       </div>
     </header>
+  );
+}
+
+// 写提示词时思考不思考、哪一档；点一下去设置里改
+function ThinkingButton({ config, settings }: { config: ModelConfig | undefined; settings: ThinkingSettings }) {
+  const navigate = useNavigate();
+  const level = chatThinkingLevel(config, settings);
+  const on = level !== null && level !== 'off';
+  const label = on ? `思考 ${LEVEL_LABELS[level]}` : level ? '不思考' : '不支持思考';
+  const title = on
+    ? `写提示词时先思考，档位「${LEVEL_LABELS[level]}」${settings.chat === 'follow' ? '（跟设置里的总开关）' : ''}。点一下去设置里改`
+    : level
+      ? '设置里写提示词的思考是「关」。点一下去设置里改'
+      : '这套模型配置的「开思考的写法」是不支持。点一下去设置里改';
+  return (
+    <button
+      type="button"
+      className={`cfg cfg-think${on ? ' is-on' : ''}`}
+      id="cfgThink"
+      title={title}
+      data-od-id="thinking-level"
+      onClick={() => navigate({ pathname: '/settings', hash: 'thinking' })}
+    >
+      <Icon name="brain" className="icon-sm" />
+      <span>{label}</span>
+    </button>
   );
 }

@@ -16,6 +16,11 @@ function modelFormHTML(c) {
         '<p class="hint is-error" data-err="key" hidden></p><p class="hint">只存在这台电脑上，不进工作文件夹，另一台电脑要各填一次。存好后输入框会清空，不再显示。</p></div>' +
       '<div class="field"><label for="mf-long">发给模型的图片长边</label><div class="input-group"><input class="input mono" id="mf-long" type="number" min="512" max="4096" step="100" value="' + (c.longSide || 1600) + '"><span class="mf-unit">像素</span></div>' +
         '<p class="hint">另做一份小图发给 AI 看，越大看得越清楚，费用越高。不影响传给 H3 的图。</p></div>' +
+      '<div class="field"><label for="mf-think">开思考的写法</label><select class="select mono" id="mf-think">' +
+        ['不支持', 'reasoning_effort', 'enable_thinking', 'thinking.type', '换模型名'].map(function (s) { return '<option' + ((c.think || '不支持') === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select>' +
+        '<p class="hint">各家开思考的参数不一样，看这家接口文档选。选「不支持」就不发思考相关的参数。</p></div>' +
+      '<div class="field" id="mf-thinkModelF"' + (c.think === '换模型名' ? '' : ' hidden') + '><label for="mf-thinkModel">开思考用的模型名</label><input class="input mono" id="mf-thinkModel" value="' + esc(c.thinkModel || '') + '" placeholder="比如 deepseek-reasoner" autocomplete="off">' +
+        '<p class="hint">思考关着用上面的模型名，开着换成这个。</p></div>' +
     '</div>' +
     '<details class="mf-price"' + (c.price ? ' open' : '') + '><summary><span data-icon="chev-down" data-icon-class="icon-sm chev"></span>价格（可选）<span class="meta">' + (c.price ? p.cur + p.inp + ' / ' + p.cur + p.out + ' / ' + p.cur + p.cache : '没填就不显示花了多少钱') + '</span></summary>' +
       '<div class="mf-price-body">' +
@@ -43,6 +48,7 @@ function bindModelForm(root, c, onChange) {
     c.model = q('#mf-model').value.trim();
     c.url = q('#mf-url').value.trim();
     c.longSide = +q('#mf-long').value || 1600;
+    if (q('#mf-think')) { c.think = q('#mf-think').value; c.thinkModel = q('#mf-thinkModel').value.trim(); q('#mf-thinkModelF').hidden = c.think !== '换模型名'; }
     var inp = q('#mf-pin').value, out = q('#mf-pout').value, cache = q('#mf-pcache').value;
     var cur = q('#mf-cur [aria-pressed="true"]').textContent;
     c.price = inp || out || cache ? { cur: cur, inp: +inp || 0, out: +out || 0, cache: +cache || 0 } : null;
@@ -66,10 +72,11 @@ function bindModelForm(root, c, onChange) {
     return true;
   }
 
-  root.addEventListener('change', function (e) { if (e.target.id === 'mf-key' && storeKey()) changed(); });
+  root.addEventListener('change', function (e) { if (e.target.id === 'mf-key' && storeKey()) changed(); if (e.target.id === 'mf-think') changed(); });
   root.addEventListener('keydown', function (e) { if (e.target.id === 'mf-key' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
   root.addEventListener('input', function (e) {
     if (e.target.id === 'mf-key') { err('key', ''); return; }
+    if (e.target.id === 'mf-think') { changed(); return; }
     if (e.target.classList.contains('is-error')) err(e.target.id.replace('mf-', ''), '');
     changed();
   });

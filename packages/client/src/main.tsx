@@ -8,6 +8,7 @@ import './design/canvas.css';
 import './design/setup.css';
 import './design/home.css';
 import './design/settings.css';
+import './design/image.css';
 import './design/glue.css';
 import './design/features.css';
 

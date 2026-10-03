@@ -188,6 +188,7 @@ export async function forkNode(work: string, canvasId: string, sourceId: string,
     rootIds: chain.rootIds,
     activeChildOf: chain.activeChildOf,
     draft: chain.draft,
+    ...(source.image && { image: source.image }),
     createdAt: time,
     updatedAt: time,
   };

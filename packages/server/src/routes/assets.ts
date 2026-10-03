@@ -14,10 +14,11 @@ import { readCanvas } from '../store/canvases';
 import { importImage } from '../store/images';
 import { bool, fileName, finiteNumber, text, uuid } from './validate';
 
+// 用户刚在系统窗口里选过的文件夹：拼图和下载的图可以存进去，窗口本身就是他点开的
+const pickedFolders = new Set<string>();
+
 export function assetRoutes(configDir: string): express.Router {
   const router = express.Router();
-  // 用户刚在系统窗口里选过的文件夹：拼图可以存进去，窗口本身就是他点开的
-  const pickedFolders = new Set<string>();
 
   router.get('/assets/folders', async (_req, res) => {
     res.json((await readConfig(configDir)).assetFolders);
@@ -43,7 +44,7 @@ export function assetRoutes(configDir: string): express.Router {
   router.post('/assets/collage', async (req, res) => {
     const input = collageInput(req.body);
     const files = await Promise.all(input.files.map((file) => (file === null ? null : allowedPath(configDir, file))));
-    const folder = await collageFolder(configDir, pickedFolders, req.body?.folder);
+    const folder = await chosenFolder(configDir, req.body?.folder);
     const name = req.body?.name === undefined ? undefined : collageName(req.body.name);
     const target = req.body?.canvasId === undefined ? null : { canvasId: uuid(req.body.canvasId), nodeId: uuid(req.body?.nodeId) };
     const work = target ? await requireWorkFolder(configDir) : null;
@@ -80,12 +81,12 @@ export function assetRoutes(configDir: string): express.Router {
   return router;
 }
 
-// 存到哪：刚在系统窗口里选的、上次存过的随便存；别的只能是库里或工作文件夹里的
-async function collageFolder(configDir: string, picked: Set<string>, value: unknown): Promise<string> {
+// 拼图、下载的图存到哪：刚在系统窗口里选的、上次存过的随便存；别的只能是库里或工作文件夹里的
+export async function chosenFolder(configDir: string, value: unknown): Promise<string> {
   if (typeof value !== 'string' || !path.isAbsolute(value.trim())) throw new HttpError(400, '存到哪个文件夹要填完整路径');
   const folder = path.resolve(value.trim());
-  const { lastCollageFolder } = await readConfig(configDir);
-  if (!picked.has(folder) && folder !== lastCollageFolder) await allowedPath(configDir, folder);
+  const { lastCollageFolder, lastDownloadFolder } = await readConfig(configDir);
+  if (!pickedFolders.has(folder) && folder !== lastCollageFolder && folder !== lastDownloadFolder) await allowedPath(configDir, folder);
   const stat = await fs.stat(folder).catch(() => null);
   if (!stat?.isDirectory()) throw new HttpError(400, `找不到这个文件夹：${folder}`);
   return folder;

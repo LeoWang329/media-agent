@@ -1,8 +1,20 @@
-import { addMessage, descendantIds, editedPromptMessage, editedUserMessage, parentKey, slotDiff, type ChatNode, type Message } from '@media-agent/shared';
+import {
+  addMessage,
+  defaultImageSettings,
+  descendantIds,
+  editedPromptMessage,
+  editedUserMessage,
+  parentKey,
+  slotDiff,
+  type ChatNode,
+  type ImageSettings,
+  type Message,
+} from '@media-agent/shared';
 import express, { type Request } from 'express';
 import { randomUUID } from 'node:crypto';
 import { readConfig, requireWorkFolder } from '../config';
 import { thumbnail } from '../assets/thumbs';
+import { imageFamily } from '../comfy/jobs';
 import { HttpError } from '../httpError';
 import { isGenerating, runGeneration, stopGeneration, stopGenerations } from '../llm/generation';
 import { imageLongSide } from '../llm/imageLongSide';
@@ -27,6 +39,7 @@ import {
 import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
 import { DEFAULT_PROMPT, listPrompts } from '../store/prompts';
+import { readSettings } from '../store/settings';
 import * as v from './validate';
 
 export function canvasRoutes(configDir: string): express.Router {
@@ -95,7 +108,13 @@ export function canvasRoutes(configDir: string): express.Router {
     const { canvasId, nodeId } = ids(req);
     const w = await work();
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const node = await updateNode(w, canvasId, nodeId, (current) => applyNodePatch(current, body));
+    // 改出图设置：节点还没改过的，先按它系列的默认值补全
+    let imageBase: ImageSettings | undefined;
+    if (body.image !== undefined) {
+      const promptName = typeof body.systemPromptName === 'string' ? body.systemPromptName : (await readNode(w, canvasId, nodeId)).systemPromptName;
+      imageBase = defaultImageSettings((await readSettings(w)).defaults[await imageFamily(w, promptName)]);
+    }
+    const node = await updateNode(w, canvasId, nodeId, (current) => applyNodePatch(current, body, imageBase));
     if (body.title !== undefined) await updateCanvas(w, canvasId, () => {});
     res.json(node);
   });
@@ -261,7 +280,7 @@ export function canvasRoutes(configDir: string): express.Router {
   return router;
 }
 
-function applyNodePatch(node: ChatNode, body: Record<string, unknown>): ChatNode {
+function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase: ImageSettings | undefined): ChatNode {
   const next = { ...node };
   if (body.title !== undefined) {
     next.title = v.nonEmptyText(body.title, '节点标题').trim();
@@ -273,6 +292,7 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>): ChatNode
   if (body.duration !== undefined) next.duration = v.duration(body.duration);
   if (body.aspectRatio !== undefined) next.aspectRatio = v.aspectRatio(body.aspectRatio);
   if (body.draft !== undefined) next.draft = v.text(body.draft, '输入框内容');
+  if (body.image !== undefined) next.image = v.imageSettings(body.image, node.image ?? imageBase!);
   if (body.activeChildOf !== undefined) {
     const entries = Object.entries((body.activeChildOf ?? {}) as Record<string, unknown>);
     next.activeChildOf = { ...node.activeChildOf };

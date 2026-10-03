@@ -14,9 +14,10 @@ npm install
 
 ## 运行
 
-- `npm run dev`：开发用。同时起服务（127.0.0.1:3711）、前端（http://localhost:5173）和 mock-llm（127.0.0.1:3799），浏览器打开 http://localhost:5173。
+- `npm run dev`：开发用。同时起服务（127.0.0.1:3711）、前端（http://localhost:5173）、mock-llm（127.0.0.1:3799）和 mock-comfyui（127.0.0.1:3798），浏览器打开 http://localhost:5173。
 - `npm start`：正式用。先打包前端，再由服务托管，并自动打开 http://127.0.0.1:3711。
 - `npm run mock-llm`：只起假的大模型服务。设置页里接口地址填 `http://127.0.0.1:3799/v1`，模型名随便填。
+- `npm run mock-comfyui`：只起假的 ComfyUI。设置里局域网 ComfyUI 的地址填 `http://127.0.0.1:3798`，底模选 `il-test.safetensors` 或 `pony-test.safetensors`。
 
 本机配置（工作文件夹路径、各模型配置的密钥）存在 `%APPDATA%\media-agent\config.json`，其他系统是 `~/.media-agent/config.json`。模型配置本身（不含密钥）存在工作文件夹的 `model-configs.json`，两台机器共用。
 
@@ -26,7 +27,7 @@ npm install
 - `npm run test:e2e`：Playwright。会自己打包前端，在 3712 端口起一个用系统临时目录的服务，不碰本机真实配置。跑之前自动生成 `tests/fixtures/images/` 里的测试图片（不进 git）。
 - `npm run typecheck`：类型检查。
 
-测试只用 mock-llm，不调真模型。
+测试只用 mock-llm 和 mock-comfyui，不调真模型，不连真的 ComfyUI 和 AutoDL。
 
 ## 约定
 

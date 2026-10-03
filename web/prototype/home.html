@@ -7,12 +7,14 @@
   <link rel="stylesheet" href="shared/app.css" />
   <link rel="stylesheet" href="shared/canvas.css" />
   <link rel="stylesheet" href="shared/home.css" />
+  <link rel="stylesheet" href="shared/image.css" />
   <script src="shared/app.js"></script>
 </head>
 <body class="hm">
   <header class="appbar" data-od-id="home-appbar">
     <a class="brand" href="home.html"><span class="brand-mark" data-icon="logo"></span>提示词画布</a>
     <span class="spacer"></span>
+    <button class="cf-pill" data-od-id="comfy-status"></button>
     <a class="path-pill hide-sm" id="workdirPill" href="settings.html#workdir" title="工作文件夹，点一下去设置里换" data-od-id="workdir-pill"><span data-icon="folder" data-icon-class="icon-sm"></span><span>D:\同步盘\提示词画布</span></a>
     <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
     <a class="btn btn-ghost" href="settings.html" data-icon="gear" data-od-id="link-settings"><span class="hide-sm">设置</span></a>
@@ -68,6 +70,10 @@
       <option value="noStars">还没打过星</option>
       <option value="keysOk">密钥都填了（不出现要处理的事）</option>
       <option value="many">画布有几十个</option>
+      <optgroup label="生图">
+        <option value="autodlRunning">AutoDL 开着（在扣钱，顶上一直显示）</option>
+        <option value="autodlForgot">出图用局域网那台，AutoDL 也还开着</option>
+      </optgroup>
       <option value="searchMiss">按名字找，没找到</option>
       <option value="deleted">刚删了一个画布（可以撤销）</option>
     </select>
@@ -110,6 +116,8 @@
   </dialog>
 
   <script src="shared/canvas-data.js"></script>
+  <script src="shared/image-data.js"></script>
+  <script src="shared/image-core.js"></script>
   <script src="shared/home.js"></script>
 </body>
 </html>

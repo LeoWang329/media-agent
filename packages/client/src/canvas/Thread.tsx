@@ -10,13 +10,14 @@ import {
   type ChatNode,
   type Message,
 } from '@media-agent/shared';
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { imageThumbUrl } from '../api';
-import { switchChangesSettings, useCanvasStore } from '../store/canvasStore';
+import { switchChangesSettings, useCanvasStore, type Stream } from '../store/canvasStore';
 import { confirmBox } from '../ui/confirm';
 import { fmtNum } from '../ui/copy';
 import { clock, clockSeconds, dayTime } from '../ui/format';
 import { Icon, type IconName } from '../ui/Icon';
+import { chatThinkingLevel } from '../ui/thinking';
 import { toast } from '../ui/toast';
 import { copiedCount, splitError } from './nodeInfo';
 import { useOverlays } from './overlays';
@@ -92,7 +93,7 @@ export function Thread({ node }: { node: ChatNode }) {
         ro={ro}
         busy={busy}
         live={message.id === liveId}
-        text={message.id === stream?.assistantId ? stream.text : message.text}
+        stream={message.id === stream?.assistantId ? stream : undefined}
         images={images}
       />
     );
@@ -306,11 +307,21 @@ type AssistantProps = {
   ro: boolean;
   busy: boolean;
   live: boolean;
-  text: string;
+  stream: Stream | undefined; // 这个页面正在收的就是这条回复
   images: Images;
 };
 
-function AssistantMessage({ node, message, ro, busy, live, text, images }: AssistantProps) {
+function AssistantMessage({ node, message, ro, busy, live, stream, images }: AssistantProps) {
+  const text = stream ? stream.text : message.text;
+  const reasoning = (stream ? stream.reasoning : message.reasoning) ?? '';
+  // 这次发出去开着思考：设置里写提示词的档位不是关，模型配置也支持
+  const thinkingOn = useCanvasStore((s) => {
+    const level = s.thinking && chatThinkingLevel(s.modelConfigs.find((m) => m.id === message.modelConfigId), s.thinking);
+    return Boolean(level && level !== 'off');
+  });
+  const thinking = thinkingOn || Boolean(reasoning);
+  // 想了多久：写完的回复里有；正在写的从回复建好算到第一个正文字
+  const thinkingMs = message.thinkingMs ?? (live && thinking && stream?.firstTextAt ? stream.firstTextAt - Date.parse(message.createdAt) : undefined);
   const regenerate = () => {
     if (busy) toast(BUSY_HINT, { tone: 'warn' });
     else void useCanvasStore.getState().regenerate(node.id, message.id);
@@ -374,12 +385,23 @@ function AssistantMessage({ node, message, ro, busy, live, text, images }: Assis
     );
   }
 
+  // 正文出来之前在思考：只显示正在思考和秒数
+  if (live && !text && thinking) {
+    return (
+      <div className="msg msg-ai" data-od-id="msg-ai" data-testid="message-assistant" data-message-id={message.id}>
+        {head}
+        <ThinkingLive since={message.createdAt} />
+      </div>
+    );
+  }
+
   const segments = parseReply(text).segments;
   const lastIndex = segments.length - 1;
 
   return (
     <div className="msg msg-ai" data-od-id="msg-ai" data-testid="message-assistant" data-message-id={message.id}>
       {head}
+      {thinkingMs !== undefined && <ThinkingDone ms={thinkingMs} reasoning={reasoning} />}
       {segments.map((segment, i) => {
         if (segment.type === 'text') return <Markdown key={i} text={segment.text} imgs={message.slotSnapshot} images={images} caret={live && i === lastIndex} />;
         if (!segment.closed && !live && !message.stopped) {
@@ -414,6 +436,49 @@ function AssistantMessage({ node, message, ro, busy, live, text, images }: Assis
       )}
       <ReplyMeta message={message} live={live} text={text} />
     </div>
+  );
+}
+
+// 正文出来之前：正在思考，秒数从回复建好时算，每秒走一次
+function ThinkingLive({ since }: { since: string }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="think is-live" data-od-id="thinking-live">
+      <span className="spinner" />
+      <span>
+        正在思考 <span className="mono">{Math.max(0, Math.round((now - Date.parse(since)) / 1000))} 秒</span>
+      </span>
+      <span className="meta">想完才开始写正文</span>
+    </div>
+  );
+}
+
+// 想完了：收到过思考原文的折叠着，点开看原文；没收到的只说想了多久
+function ThinkingDone({ ms, reasoning }: { ms: number; reasoning: string }) {
+  const seconds = <span className="mono">{Math.round(ms / 1000)} 秒</span>;
+  if (!reasoning) {
+    return (
+      <div className="think" data-od-id="thinking-done">
+        <Icon name="brain" className="icon-sm" />
+        <span>思考了 {seconds}</span>
+        <span className="meta">这家模型不发回思考的内容，只知道想了多久</span>
+      </div>
+    );
+  }
+  return (
+    <details className="think" data-od-id="thinking-done">
+      <summary>
+        <Icon name="brain" className="icon-sm" />
+        <span>思考了 {seconds}</span>
+        <span className="meta">{fmtNum(Array.from(reasoning).length)} 字 · 不会带进下一轮对话</span>
+        <Icon name="chev-down" className="icon-sm chev" />
+      </summary>
+      <div className="think-body">{reasoning}</div>
+    </details>
   );
 }
 
