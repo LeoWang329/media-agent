@@ -204,9 +204,9 @@ type ImageSettings = {
   negativeExtra: string;                // 接在系列默认负面词后面
 };
 
-type ImageJob = {                       // 点一次「生图」（或放大、修脸）出的一组
+type ImageJob = {                       // 点一次「生图」（或放大、修脸、局部重绘）出的一组
   id: string; promptIndex: number; createdAt: string;
-  kind: 'txt2img' | 'img2img' | 'pose' | 'style' | 'upscale' | 'facefix';
+  kind: 'txt2img' | 'img2img' | 'pose' | 'style' | 'upscale' | 'facefix' | 'inpaint';
   source?: { kind: 'generated'; jobId: string; index: number } | { kind: 'slot'; imageId: string };  // 从哪张图来
   target: 'lan' | 'autodl';
   params: {                             // 发出去的全部参数，「同样参数再来」照这个发
@@ -216,7 +216,8 @@ type ImageJob = {                       // 点一次「生图」（或放大、�
     width: number; height: number;
     checkpoint?: string; loras?: { name: string; strength: number }[];       // 导入的工作流没有这几项
     steps?: number; cfg?: number; sampler?: string; scheduler?: string; clipSkip?: number;
-    denoise?: number; strength?: number; scale?: number; model?: string;     // 放大、修脸、参考图用的
+    denoise?: number; strength?: number; scale?: number; model?: string;     // 放大、修脸、局部重绘、参考图用的
+    mask?: string;                      // 局部重绘涂好的那张 PNG，相对工作文件夹的路径
   };
   images: {                             // 每张图是 ComfyUI 上的一个任务
     seed: number; promptId?: string;
@@ -491,7 +492,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 程序自动找往哪填：顺着 `KSampler`（或 `KSamplerAdvanced`）的 `positive`、`negative` 连线找到两个 `CLIPTextEncode` 的 `text`；`KSampler` 的 `seed`（`KSamplerAdvanced` 是 `noise_seed`）；`EmptyLatentImage` 的 `width`、`height`。找不到或者有好几个候选的，导入窗口里列出节点（节点号、类型、`_meta.title`）让用户选。正面一定要有，其他几项可以不填。
   - 存到工作文件夹 `workflows/<id>.json`。设置里能改名、重新指定往哪填、删除。
   - 出图时只改这几个值，其他照原样；张数和种子照内置流程的做法。系列固定开头和默认负面词照样加，填的是整个 `text`，工作流里原来写的会被换掉。
-  - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、修脸、参考图只用内置流程。
+  - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、修脸、局部重绘、参考图只用内置流程。
 - 发任务前对照 `/object_info`：工作流里有这台 ComfyUI 上没有的节点类型，直接说缺哪几个，不发。内置流程用到插件节点时（5.21）也一样。
 
 ### 5.19 出图任务（第三批）
@@ -519,11 +520,16 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 节点里删一张图：从 `ImageJob` 里去掉这一项，临时文件直接删，不进 `.trash`；下载过的那份不动。一组里一张不剩了整组去掉。还没出完的不能删，先叫停。
 - 出的图属于出图的那个节点和那条回复：岔出去的节点、手动改提示词生成的新版本，都不带原来出的图。
 
-### 5.21 放大、修脸、参考图、反推（第三批）
+### 5.21 放大、修脸、局部重绘、参考图、反推（第三批）
 
 - 都是再发一个任务，结果和普通出图一样挂在框下，`kind` 记是哪种，`source` 记从哪张图来。只用内置流程。
 - 放大：在一张出的图上点。只要自带节点和一个放大模型：`LoadImage`（先用 `/upload/image` 把图传上去）→ `UpscaleModelLoader` + `ImageUpscaleWithModel` → `ImageScale` 缩到原图的 1.5 倍或 2 倍 → `VAEEncode` → `KSampler`（同样的提示词和种子，`denoise` 默认 0.35）→ `VAEDecode` → `PreviewImage`。倍数和 denoise 发之前能改。
 - 修脸：在一张出的图上点。要装 Impact Pack 和 Impact Subpack 两个插件，加一个人脸检测模型（比如 `face_yolov8m.pt`）：`LoadImage` → `UltralyticsDetectorProvider` + `FaceDetailer`（底模、提示词、种子同原图，`denoise` 默认 0.4）→ `PreviewImage`。
+- 局部重绘：在一张出的图上点，大图窗口进涂抹模式。用画笔涂要重画的地方，笔刷能调大小，能擦、能清空；再填这块要画成什么（默认是原图框里的标签，正面、负面照普通出图加固定开头和负面词）和重绘强度（`denoise` 默认 1；调到 0.5 到 0.8 保留原来的轮廓、只改细节）。
+  - 发的时候程序把原图涂过的地方改成透明（只改透明度，颜色照留），存成 PNG 放进临时文件夹，用 `/upload/image` 传上去，`LoadImage` 把透明的地方当遮罩。
+  - 流程照 AutoDL 实例上修好的 E05：`LoadImage` → `InpaintCropImproved`（只裁出遮罩附近一块：周边多带 1.5 倍，遮罩外扩 8 像素，缩放到 1024×1024）→ `InpaintModelConditioning`（普通底模也能用）→ `KSampler`（底模、LoRA、步数这些同原图，原图是导入的工作流出的就用节点现在的出图设置；种子随机）→ `VAEDecode` → `InpaintStitchImproved`（缩回去拼回原图，边缘羽化 32 像素，遮罩附近以外保持原图像素）→ `PreviewImage`。
+  - 要装 ComfyUI-Inpaint-CropAndStitch 插件。节点名和参数名，开工前对照 E05 的 JSON 核对。
+  - 「同样参数再来」「只换种子再来」重新上传存下的那张 PNG，不用再涂。
 - 参考图生图：点「生图」时选方式和参考图，参考图从节点的槽位里选一张：
   - 图生图：`LoadImage` → `VAEEncode` → `KSampler`（`denoise` 默认 0.6）。只用自带节点。
   - 姿势参考：要 comfyui_controlnet_aux 插件（用 `DWPreprocessor` 提取姿势）和 openpose 的 ControlNet 模型，接 `ControlNetLoader` + `ControlNetApplyAdvanced`（强度默认 0.8）。IL 用 Illustrious-XL ControlNet Openpose；NoobAI 一路的底模用 NoobAI-XL ControlNet-OPENPOSE；Pony 没有专门的，用通用 SDXL 的 openpose，比如 xinsir 出的，效果差一些。
@@ -567,7 +573,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 2. 消息列表。用户消息靠右：上方灰字 `systemNote`，气泡内文字，下方带编号的小缩略图。assistant 消息靠左：框外文字按 Markdown 渲染；每个提示词框是一个组件，标签在框顶，内容用等宽以外的可读字体、保留换行；框底一排按钮：复制、翻译（见 5.11）、星标、编辑、上传清单、沿此方向 fork。消息悬停出操作：用户消息「编辑」「从这里 fork」；assistant 消息「重新生成」「从这里 fork」；有兄弟版本时显示 `‹ 1/2 ›`。失败的消息显示错误和「重试」。
 3. 槽位区：一行 9 格，填了的显示缩略图和编号，悬停显示删除；支持 5.1 里的拖拽。右边是时长（4–15 下拉）和比例下拉。点有图的格子出菜单，第一项「放大看」：弹窗显示画布里存的那张图，先整张放进窗口，点图切换原始大小，点图外面的空白或 Esc 关掉。
 4. 输入框：Enter 发送，Shift+Enter 换行；发送中显示「停止」。第二批换成 Tiptap 编辑器，输入 @ 弹出选图窗口，选中的图在框里显示成带缩略图的小标签。
-5. 生图节点（第三批，规则见 5.12 到 5.21）：槽位区右边是尺寸、张数和出图设置；提示词框里的标签显示成带中文的小块，框下面挂着出的图，每次生图一组，排队、进度、失败、叫停都显示在这里；点一张看大图和全部参数，能下载、打星、删除、在资源管理器里显示、同样参数再来、只换种子再来、放大、修脸。回复上面是思考（5.12）。画布上一直看得到现在用哪台 ComfyUI 和它的状态，用 AutoDL 时还有开机中、运行中、多久后自动关机。
+5. 生图节点（第三批，规则见 5.12 到 5.21）：槽位区右边是尺寸、张数和出图设置；提示词框里的标签显示成带中文的小块，框下面挂着出的图，每次生图一组，排队、进度、失败、叫停都显示在这里；点一张看大图和全部参数，能下载、打星、删除、在资源管理器里显示、同样参数再来、只换种子再来、放大、修脸、局部重绘（在大图上涂要重画的地方）。回复上面是思考（5.12）。画布上一直看得到现在用哪台 ComfyUI 和它的状态，用 AutoDL 时还有开机中、运行中、多久后自动关机。
 
 ### 6.3 资产库（左栏）
 
@@ -660,6 +666,7 @@ ComfyUI    GET      /comfy/status?target=lan|autodl  连不连得上、版本、
            DELETE   /workflows/:id
 出图       POST     /canvases/:id/nodes/:nid/messages/:mid/images   {promptIndex, kind, source?, reference?, again?} → ImageJob
                     reference 是参考图 {imageId, strength}；again 是「同样参数再来」「只换种子再来」{jobId, index, sameSeed}
+                    inpaint 是局部重绘 {mask, tags, denoise}，mask 是和原图一样大的黑白 PNG（白的是要重画的地方），base64
            POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/stop
            DELETE   /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index          删一张
            POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/star     {on}
@@ -758,13 +765,13 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 完成标准：10.3 第 9、10 条；用户做 11.3 第 4 条。
 
-### P12 放大、修脸、参考图、反推
+### P12 放大、修脸、局部重绘、参考图、反推
 
-开工前：用户在局域网那台和 AutoDL 实例上装好 5.21 要的插件和模型（程序的缺节点提示能帮着查漏）。
+开工前：用户在局域网那台和 AutoDL 实例上装好 5.21 要的插件和模型（程序的缺节点提示能帮着查漏）。涂遮罩的界面原型里还没有，等设计补上再开工。
 
 做：5.21 全部；设置里按系列选默认模型、反推模型。
 
-完成标准：10.3 第 11、12、13 条；用户做 11.3 第 5 条。
+完成标准：10.3 第 11 到 14 条；用户做 11.3 第 5 条。
 
 ## 9. 测试
 
@@ -828,13 +835,13 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 `tools/mock-comfyui`，Express 加 WebSocket，监听 3798，接口的样子照真的 ComfyUI：
 
-- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，一个 LoRA，常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`）默认都有，测试能通过接口去掉某几个，测缺节点。
+- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，一个 LoRA，常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`、`InpaintCropImproved`、`InpaintStitchImproved`）默认都有，测试能通过接口去掉某几个，测缺节点。
 - `/prompt`：检查底模文件名和节点类型，不对就返回 `node_errors`；收下后排队，一个一个跑，每个 5 步、共 1.5 秒，WebSocket 按真的格式发 `executing`、`progress`、`execution_success`。
 - 正面提示词含「慢」→ 每个跑 6 秒，测叫停；含「报错」→ `execution_error`；含「显存」→ 错误里写 `CUDA out of memory`。
 - `/history`、`/view`：图是按尺寸现画的 PNG，上面写着种子和正面提示词的前 40 个字；`/upload/image` 收图；`/queue` 能删；`/interrupt` 停当前的。
 - `WD14Tagger|pysssss` 的输出固定是 `1girl, solo, smile`。
 - AutoDL 的几个接口（list、status、snapshot、power_on、power_off）：一个实例，开机 2 秒后变运行中，6006 的访问地址指回 mock 自己。
-- 收到的每个 `/prompt` 请求体都记下来，测试用 `GET /_last-prompts` 取，断言程序拼的 JSON。
+- 收到的每个 `/prompt` 请求体和 `/upload/image` 的文件都记下来，测试用 `GET /_last-prompts`、`GET /_uploads` 取，断言程序拼的 JSON 和传上去的图。
 
 ## 10. 端到端用例
 
@@ -882,6 +889,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 11. 在一张出的图上放大 2 倍 → 新图宽高是原来的 2 倍，参数里记着从哪张来；让 mock 去掉 `FaceDetailer` 后点修脸 → 提示缺 Impact Pack。
 12. 槽位放一张图，生图时选姿势参考和这张图 → mock 收到的 JSON 里有上传的图、`DWPreprocessor` 和 `ControlNetApplyAdvanced`；选图生图 → `KSampler` 的 denoise 是 0.6。
 13. 标签编辑窗里「从图反推」选槽位 1 号 → 末尾多了 1girl、solo、smile 三个小块，下面有中文。
+14. 在一张出的图上点局部重绘 → 在左上角涂一块，重绘强度改成 0.8 → 开始重绘 → 框下面多一组，参数里记着从哪张来 → mock 收到的 PNG 涂过的地方透明、别处不透明，JSON 里有 `InpaintCropImproved`、`InpaintModelConditioning`、`InpaintStitchImproved`，`KSampler` 的 denoise 是 0.8 → 点「只换种子再来」，不用再涂，mock 又收到同一张 PNG。让 mock 去掉 `InpaintCropImproved` 后再点 → 提示缺 ComfyUI-Inpaint-CropAndStitch。
 
 ## 11. 手动验收（用户用真模型做）
 
@@ -908,7 +916,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 2. 用中文聊出 IL 和 Pony 的标签提示词，大部分标签认识；在标签编辑窗里改几处、插一个片段。
 3. 局域网 ComfyUI：内置流程 IL、Pony 各出一组，Pony 不糊；下载几张进资产库，放进视频节点的槽位写视频提示词。
 4. 导入一个自己的工作流出一组。AutoDL：实例关着时点生图，自动开机出图；空闲到点自动关机，到 AutoDL 控制台确认关了；开着时退出程序，实例被关掉。
-5. 放大、修脸、三种参考图、反推各跑一次，结果对得上。
+5. 放大、修脸、局部重绘、三种参考图、反推各跑一次，结果对得上。
 6. 另一台机器打开同一个工作文件夹：生图节点、出过的图、片段库、词库、导入的工作流都在。
 
 ## 12. 给实现 agent 的约定
