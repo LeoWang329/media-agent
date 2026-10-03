@@ -9,6 +9,7 @@ import { openExternal } from './native/openExternal';
 import { assetRoutes } from './routes/assets';
 import { canvasRoutes } from './routes/canvases';
 import { comfyRoutes } from './routes/comfy';
+import { fragmentRoutes } from './routes/fragments';
 import { imageRoutes } from './routes/images';
 import { promptRoutes } from './routes/prompts';
 import { tagRoutes } from './routes/tags';
@@ -72,6 +73,7 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   api.use(canvasRoutes(configDir));
   api.use(promptRoutes(configDir));
   api.use(tagRoutes(configDir, tagSources));
+  api.use(fragmentRoutes(configDir));
   api.use(comfyRoutes(configDir));
   api.use(imageRoutes(configDir, imageJobs));
 

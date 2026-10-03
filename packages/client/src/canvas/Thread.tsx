@@ -21,7 +21,9 @@ import { chatThinkingLevel } from '../ui/thinking';
 import { toast } from '../ui/toast';
 import { copiedCount, splitError } from './nodeInfo';
 import { useOverlays } from './overlays';
+import { promptUse, usePromptInfo } from './imageNode';
 import { PromptBox } from './PromptBox';
+import { TagBox } from './TagBox';
 import { Markdown, tokens } from './tokens';
 
 type Images = Record<string, CanvasImage> | undefined;
@@ -29,7 +31,7 @@ type Images = Record<string, CanvasImage> | undefined;
 // 同一位置的几个版本。失败后重试成功的，失败那条不算一个版本（照原型，重试是把它换掉）；
 // 失败以后在它下面接着聊过的照样算，不然那段对话切不回去
 const hasFollowUp = (node: ChatNode, messageId: string) => Object.values(node.messages).some((m) => m.parentId === messageId);
-const shownVersions = (node: ChatNode, message: Message) =>
+export const shownVersions = (node: ChatNode, message: Message) =>
   versionsOf(node, message).filter((v) => v.id === message.id || !(v.role === 'assistant' && v.error && !hasFollowUp(node, v.id)));
 
 const BUSY_HINT = '正在生成，先叫停或等它写完';
@@ -138,6 +140,7 @@ export function Thread({ node }: { node: ChatNode }) {
 
 // 同一位置有多个版本时显示 ‹ 1/2 ›；切过去后那时候的槽位、时长、比例跟着回来
 function VersionSwitch({ node, message, busy }: { node: ChatNode; message: Message; busy: boolean }) {
+  const use = promptUse(usePromptInfo(node.systemPromptName));
   const versions = shownVersions(node, message);
   if (versions.length < 2) return null;
   const index = versions.findIndex((v) => v.id === message.id);
@@ -147,7 +150,7 @@ function VersionSwitch({ node, message, busy }: { node: ChatNode; message: Messa
     const target = versions[to];
     const settings = switchChangesSettings(node, target.id);
     if (settings && hasUnsentSettings(node)) {
-      const note = slotDiff(activePath(node).at(-1)!, node).systemNote ?? '';
+      const note = slotDiff(activePath(node).at(-1)!, node, use).systemNote ?? '';
       const ok = await confirmBox({
         title: '有改动还没发出去',
         body: (
@@ -312,6 +315,8 @@ type AssistantProps = {
 };
 
 function AssistantMessage({ node, message, ro, busy, live, stream, images }: AssistantProps) {
+  // 框里是视频提示词还是一串标签，看写这条回复时用的系统提示词；中途换了提示词，已有的回复不变
+  const writtenWith = usePromptInfo(message.systemPromptName ?? '');
   const text = stream ? stream.text : message.text;
   const reasoning = (stream ? stream.reasoning : message.reasoning) ?? '';
   // 这次发出去开着思考：设置里写提示词的档位不是关，模型配置也支持
@@ -410,6 +415,23 @@ function AssistantMessage({ node, message, ro, busy, live, stream, images }: Ass
             <div key={i} className="intro">
               {`<prompt${segment.label ? ` label="${segment.label}"` : ''}>\n${segment.text}`}
             </div>
+          );
+        }
+        if (writtenWith?.use === 'image') {
+          return (
+            <TagBox
+              key={i}
+              node={node}
+              message={message}
+              index={segment.index}
+              label={segment.label}
+              text={segment.text}
+              family={writtenWith.family}
+              ro={ro}
+              writing={live && !segment.closed}
+              incomplete={!live && !segment.closed}
+              busy={busy}
+            />
           );
         }
         return (

@@ -61,10 +61,16 @@ function wrapped(raw: string): boolean {
   return depth === 0;
 }
 
+// 显示用的写法：词库里的标准名下划线换成空格（颜文字除外）；框里原样写的去掉括号前的转义
+export const displayTag = (tag: string) => (EMOTICON_TAGS.includes(tag) ? tag : tag.replace(/_/g, ' '));
+export const unescapeTag = (name: string) => name.replace(/\\([()])/g, '$1');
+
+// 一项写回框里：name 照原样（括号转义还在），权重不是 1 写成 (name:1.2)
+export const weightedTag = (name: string, weight: number) => (weight === 1 ? name : `(${name}:${round(weight)})`);
+
 // 词库里的标准名写进提示词：下划线换成空格（颜文字除外），括号转义，权重不是 1 写成 (tag:1.2)
 export function formatTag(tag: string, weight = 1): string {
-  const text = (EMOTICON_TAGS.includes(tag) ? tag : tag.replace(/_/g, ' ')).replace(/[()]/g, (paren) => `\\${paren}`);
-  return weight === 1 ? text : `(${text}:${round(weight)})`;
+  return weightedTag(displayTag(tag).replace(/[()]/g, (paren) => `\\${paren}`), weight);
 }
 
 // 拼成一串：有标准名的按标准名写，不认识的原样照写

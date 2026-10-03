@@ -19,5 +19,23 @@
 .as-main { min-height: 0; }
 @media (max-width: 720px) { .as-body { grid-template-rows: auto minmax(0, 1fr); } }
 
+/* 标签编辑窗：Tiptap 外面多一层，编辑区撑满左边一格；只有一段 p */
+.te-scroll { min-height: 0; display: flex; }
+.te-scroll > .te-input { flex: 1; }
+.te-input p { margin: 0; }
+.te-input p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder); float: left; height: 0; pointer-events: none;
+  color: color-mix(in oklch, var(--muted) 80%, transparent);
+}
+
+/* 片段库里就地改名的输入框，原型写在行内 */
+.sx-frag-name { width: 200px; }
+
+/* 设置页的提示条：字用正文颜色，只有图标是红的（画布上那条整条是红字） */
+.st-main .up-alert { line-height: 1.6; margin-bottom: 0; }
+.st-main .up-alert.is-danger { color: inherit; }
+.st-main .up-alert.is-danger .icon { color: var(--danger); }
+.st-main .up-alert .icon { flex: none; margin-top: 3px; }
+
 /* 槽位上「尺寸不符」：原型没画，沿用「处理过」的角标，字换成红色 */
 .slot .proc.is-misfit { color: oklch(78% 0.15 25); }

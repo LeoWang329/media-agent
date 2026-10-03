@@ -25,8 +25,8 @@ export async function uploadImage<T>(canvasId: string, nodeId: string, file: Fil
   return data as T;
 }
 
-// 发送、重新生成、编辑都返回 SSE，一边收一边回调
-export async function postStream(path: string, body: unknown, onEvent: (event: StreamEvent) => void): Promise<void> {
+// 发送、重新生成、编辑、更新词库都返回 SSE，一边收一边回调
+export async function postStream<E = StreamEvent>(path: string, body: unknown, onEvent: (event: E) => void): Promise<void> {
   const res = await fetch(`/api${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) {
     const data = await res.json().catch(() => null);

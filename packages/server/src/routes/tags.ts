@@ -2,10 +2,12 @@ import { FAMILIES, familyWords, type Family, type TagUpdateEvent } from '@media-
 import express from 'express';
 import { requireWorkFolder } from '../config';
 import { HttpError } from '../httpError';
+import { convertToTags } from '../llm/toTags';
 import { readSettings } from '../store/settings';
 import { loadLibrary } from '../tags/library';
 import { checkTag, searchTags } from '../tags/search';
-import { tagUpdateRunning, updateTagLibrary, type TagSources } from '../tags/update';
+import { stopTagUpdate, TagUpdateStopped, tagUpdateRunning, updateTagLibrary, type TagSources } from '../tags/update';
+import * as v from './validate';
 
 export function tagRoutes(configDir: string, sources: TagSources): express.Router {
   const router = express.Router();
@@ -23,9 +25,17 @@ export function tagRoutes(configDir: string, sources: TagSources): express.Route
     const family: unknown = req.body?.family;
     if (family !== undefined && !FAMILIES.includes(family as Family)) throw new HttpError(400, '系列只能是 IL 或 Pony');
     const w = await work();
-    const known = new Set(family ? familyWords((await readSettings(w)).defaults[family as Family]) : []);
+    const known = family ? familyWords((await readSettings(w)).defaults[family as Family]) : undefined;
     const library = await loadLibrary(w);
     res.json(tags.map((tag: string) => checkTag(library, tag, known)));
+  });
+
+  // 标签编辑窗里「让 AI 转成标签」，等模型写完才返回
+  router.post('/tags/convert', async (req, res) => {
+    const canvasId = v.uuid(req.body?.canvasId);
+    const nodeId = v.uuid(req.body?.nodeId);
+    const text = v.nonEmptyText(req.body?.text, '要转的中文').trim();
+    res.json(await convertToTags({ configDir, work: await work(), canvasId, nodeId }, text));
   });
 
   router.get('/tags/info', async (_req, res) => {
@@ -44,9 +54,14 @@ export function tagRoutes(configDir: string, sources: TagSources): express.Route
     try {
       send({ type: 'done', info: await updateTagLibrary(w, sources, send) });
     } catch (err) {
-      send({ type: 'error', message: (err as Error).message });
+      send(err instanceof TagUpdateStopped ? { type: 'stopped' } : { type: 'error', message: (err as Error).message });
     }
     res.end();
+  });
+
+  router.post('/tags/update/stop', (_req, res) => {
+    stopTagUpdate();
+    res.status(204).end();
   });
 
   return router;

@@ -2,6 +2,7 @@ import type { TagInfo, TagUpdateEvent } from '@media-agent/shared';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { HttpError } from '../httpError';
 import { csvRow } from './csv';
 import { forgetLibrary, loadLibrary, tagsDir } from './library';
@@ -18,14 +19,22 @@ export const DEFAULT_TAG_SOURCES: TagSources = {
 const ZH_FILES = ['tags/artist.csv', 'tags/character.csv', 'tags/copyright.csv', 'tags/general.csv', 'tags/meta.csv', 'LICENSE'];
 const HEADERS = { 'User-Agent': 'media-agent' };
 
-let updating = false;
+// 正在更新时的开关，设置里点「停止更新」用它
+let running: AbortController | null = null;
 
-export const tagUpdateRunning = () => updating;
+export const tagUpdateRunning = () => running !== null;
+
+export class TagUpdateStopped extends Error {}
+
+// 停在正在下的这一页，已经下的扔掉，旧的不动
+export const stopTagUpdate = () => running?.abort();
 
 // 照仓库快照的做法重新下，全部下完才整体换掉工作文件夹里的 tags/；中途失败旧的不动，见 docs/dev-plan.md 5.13
 export async function updateTagLibrary(work: string, sources: TagSources, onProgress: (event: TagUpdateEvent) => void): Promise<TagInfo> {
-  if (updating) throw new HttpError(409, '词库正在更新，等这一次下完');
-  updating = true;
+  if (running) throw new HttpError(409, '词库正在更新，等这一次下完');
+  const controller = new AbortController();
+  running = controller;
+  const { signal } = controller;
   const dir = tagsDir(work);
   const fresh = `${dir}.new-${randomUUID()}`;
   try {
@@ -34,6 +43,7 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
     const tags = await step('下标签', () =>
       pages<{ id: number; name: string; post_count: number; category: number; is_deprecated: boolean }>(
         sources,
+        signal,
         'tags.json',
         { 'search[post_count]': '>50', only: 'id,name,post_count,category,is_deprecated' },
         (page, rows) => onProgress({ type: 'progress', step: 'tags', page, rows }),
@@ -46,6 +56,7 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
     const aliases = await step('下别名', () =>
       pages<{ id: number; antecedent_name: string; consequent_name: string }>(
         sources,
+        signal,
         'tag_aliases.json',
         { 'search[status]': 'active', only: 'id,antecedent_name,consequent_name' },
         (page, rows) => onProgress({ type: 'progress', step: 'aliases', page, rows }),
@@ -57,7 +68,7 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
 
     await step('下中文对照', async () => {
       for (const [index, file] of ZH_FILES.entries()) {
-        const res = await fetch(`${sources.zh}/${file}`, { headers: HEADERS, signal: AbortSignal.timeout(120_000) });
+        const res = await fetch(`${sources.zh}/${file}`, { headers: HEADERS, signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) });
         if (!res.ok) throw new Error(`${file}：HTTP ${res.status}`);
         await fs.writeFile(path.join(fresh, 'zh', path.basename(file)), Buffer.from(await res.arrayBuffer()));
         onProgress({ type: 'progress', step: 'zh', file: index + 1, files: ZH_FILES.length });
@@ -88,9 +99,9 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
     return (await loadLibrary(work)).info;
   } catch (err) {
     await fs.rm(fresh, { recursive: true, force: true });
-    throw err;
+    throw signal.aborted ? new TagUpdateStopped() : err;
   } finally {
-    updating = false;
+    running = null;
   }
 }
 
@@ -106,6 +117,7 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
 // 按 id 翻页：page=a<上一页最大的 id>，每页 1000 条，翻到返回空为止；一页一页按顺序请求
 async function pages<T extends { id: number }>(
   sources: TagSources,
+  signal: AbortSignal,
   resource: string,
   search: Record<string, string>,
   onPage: (page: number, rows: number) => void,
@@ -114,13 +126,13 @@ async function pages<T extends { id: number }>(
   let after = 0;
   for (let page = 1; ; page += 1) {
     const query = new URLSearchParams({ ...search, limit: '1000', page: `a${after}` });
-    const res = await fetch(`${sources.danbooru}/${resource}?${query}`, { headers: HEADERS, signal: AbortSignal.timeout(60_000) });
+    const res = await fetch(`${sources.danbooru}/${resource}?${query}`, { headers: HEADERS, signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]) });
     if (!res.ok) throw new Error(`第 ${page} 页：HTTP ${res.status}`);
     const batch = (await res.json()) as T[];
     if (!batch.length) return rows;
     rows.push(...batch);
     after = Math.max(...batch.map((row) => row.id));
     onPage(page, rows.length);
-    if (sources.pageDelayMs) await new Promise((resolve) => setTimeout(resolve, sources.pageDelayMs));
+    if (sources.pageDelayMs) await sleep(sources.pageDelayMs, undefined, { signal });
   }
 }

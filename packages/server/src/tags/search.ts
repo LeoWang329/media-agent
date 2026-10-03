@@ -68,12 +68,14 @@ function searchChinese(library: TagLibrary, query: string, limit: number): TagHi
 }
 
 // 校验一个标签：在词库里、是别名，或者不认识（给最接近的 5 个）。
-// known 是这个系列固定开头和评级词里的词，算认识，但不给 tag，拼提示词时原样照写（Pony 的 score_9 要留着下划线）
-export function checkTag(library: TagLibrary, input: string, known: Set<string> = new Set()): TagCheck {
+// known 是这个系列固定开头和评级词里的词（见 familyWords），算认识，但不给 tag，拼提示词时原样照写（Pony 的 score_9 要留着下划线）；
+// 显示时归进元标签，中文那行写质量词或评级词
+export function checkTag(library: TagLibrary, input: string, known: Map<string, string> = new Map()): TagCheck {
   const key = tagKey(input);
   const entry = library.byTag.get(key);
   if (entry && !entry.deprecated) return { input, status: 'ok', tag: entry.tag, zh: entry.zh, category: entry.category, count: entry.count };
-  if (known.has(key)) return { input, status: 'ok' };
+  const word = known.get(key);
+  if (word) return { input, status: 'ok', zh: word, category: 5 };
   const target = library.aliases.get(key);
   if (target) {
     const found = library.byTag.get(target)!;

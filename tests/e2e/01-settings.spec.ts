@@ -15,7 +15,7 @@ test('第一次打开进首次设置：选工作文件夹、填模型配置并�
   await page.getByLabel('文件夹').fill(E2E_WORK_FOLDER);
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(page.getByRole('heading', { name: '填一套模型配置' })).toBeVisible();
-  for (const name of ['ref2va', 'i2v', 't2v']) expect(fs.existsSync(path.join(E2E_WORK_FOLDER, 'prompts', `${name}.md`))).toBe(true);
+  for (const name of ['ref2va', 'i2v', 't2v', 'il', 'pony']) expect(fs.existsSync(path.join(E2E_WORK_FOLDER, 'prompts', `${name}.md`))).toBe(true);
 
   await page.getByLabel('名字').fill('mock');
   await page.getByLabel('模型名').fill('mock-model');
@@ -35,7 +35,7 @@ test('第一次打开进首次设置：选工作文件夹、填模型配置并�
 
   await page.getByRole('button', { name: '保存并继续' }).click();
   await expect(page.getByRole('heading', { name: '设置好了' })).toBeVisible();
-  await expect(page.getByText('放进了 3 套')).toBeVisible();
+  await expect(page.getByText('放进了 5 套')).toBeVisible();
   const saved = readJson('model-configs.json');
   expect(saved).toHaveLength(1);
   expect(saved[0]).toMatchObject({ name: 'mock', model: 'mock-model', pricing: { currency: '¥', input: 3, output: 15, cached: 0.3 } });
@@ -91,5 +91,5 @@ test('设置页：改模型配置和系统提示词不用点保存，自动写�
 
   await page.getByRole('link', { name: '工作文件夹' }).click();
   await expect(page.getByText('能读写')).toBeVisible();
-  await expect(page.getByText('3 套系统提示词')).toBeVisible();
+  await expect(page.getByText('5 套系统提示词')).toBeVisible();
 });

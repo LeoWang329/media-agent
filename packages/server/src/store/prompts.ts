@@ -1,19 +1,23 @@
+import { parsePromptMeta, type FormatRequirements, type PromptInfo, type PromptMeta } from '@media-agent/shared';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HttpError } from '../httpError';
-import { trashName, writeFileAtomic } from './jsonFile';
+import { readJson, trashName, writeFileAtomic, writeJsonAtomic } from './jsonFile';
 
-// 程序固定用的两段说明只维护 docs/prompts/ 里这两份：接在系统提示词后面的格式要求、翻译提示词框时的说明
-const FORMAT_REQUIREMENT_DOC = fileURLToPath(new URL('../../../../docs/prompts/format-requirement.md', import.meta.url));
-const TRANSLATE_DOC = fileURLToPath(new URL('../../../../docs/prompts/translate.md', import.meta.url));
+// 程序固定用的说明只维护 docs/prompts/ 里这几份：接在系统提示词后面的格式要求（视频的、生图的）、翻译提示词框和中文转标签时的说明
+const doc = (name: string) => fileURLToPath(new URL(`../../../../docs/prompts/${name}.md`, import.meta.url));
+const FORMAT_REQUIREMENT_DOCS: Record<PromptMeta['use'], string> = { video: doc('format-requirement'), image: doc('format-requirement-image') };
+const TRANSLATE_DOC = doc('translate');
+const TO_TAGS_DOC = doc('to-tags');
 
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
-// 自带的三套提示词，列表里按这个顺序排在前面；第一套是新建节点的默认
-export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v'];
+// 自带的提示词，列表里按这个顺序排在前面：视频的三套（参考模式、图当首帧、纯文字），生图的两套（IL、Pony）。
+// 第一套是新建节点的默认。原文只维护 docs/prompts/ 里同名的那几份
+export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'il', 'pony'];
 export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
 
 const promptsDir = (work: string) => path.join(work, 'prompts');
@@ -23,7 +27,28 @@ export function promptFile(work: string, name: string): string {
   return path.join(promptsDir(work), `${name}.md`);
 }
 
+// 复制过哪些自带的提示词记在 prompts/.builtin.json：用户删掉的不再复制回来，以后新加的自带提示词复制一次。
+// 没有这个文件的工作文件夹是第三批之前建的，那时复制过视频的三套
+const copiedRecord = (work: string) => path.join(promptsDir(work), '.builtin.json');
+const FIRST_BUILTINS = ['ref2va', 'i2v', 't2v'];
+
+// all：选工作文件夹的时候缺哪套补哪套。已经有同名的不覆盖，用户改过的那份留着
+export async function copyBuiltinPrompts(work: string, all = false): Promise<void> {
+  const copied = all ? [] : ((await readJson<string[]>(copiedRecord(work))) ?? FIRST_BUILTINS);
+  const missing = BUILTIN_PROMPTS.filter((name) => !copied.includes(name));
+  if (!missing.length) return;
+  for (const name of missing) {
+    try {
+      await fs.copyFile(doc(name), promptFile(work, name), fs.constants.COPYFILE_EXCL);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+  }
+  await writeJsonAtomic(copiedRecord(work), BUILTIN_PROMPTS);
+}
+
 export async function listPrompts(work: string): Promise<string[]> {
+  await copyBuiltinPrompts(work);
   const entries = await fs.readdir(promptsDir(work), { withFileTypes: true });
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
@@ -42,6 +67,35 @@ export async function readPrompt(work: string, name: string): Promise<string> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new HttpError(404, `找不到系统提示词「${name}」`);
     throw err;
   }
+}
+
+// 列表里每套标出是视频用的还是生图用的、哪个系列
+export async function listPromptInfos(work: string): Promise<PromptInfo[]> {
+  return Promise.all(
+    (await listPrompts(work)).map(async (name) => {
+      const { use, family } = parsePromptMeta(await readPrompt(work, name));
+      return { name, use, family };
+    }),
+  );
+}
+
+// 节点用的系统提示词的说明段；提示词已经不在了是 null，当视频提示词
+export async function readPromptMeta(work: string, name: string): Promise<PromptMeta | null> {
+  try {
+    return parsePromptMeta(await readPrompt(work, name));
+  } catch (err) {
+    if (err instanceof HttpError && (err.status === 404 || err.status === 400)) return null;
+    throw err;
+  }
+}
+
+// 一次读很多节点的卡片时用：同一套提示词只读一次
+export function promptMetaReader(work: string): (name: string) => Promise<PromptMeta | null> {
+  const cache = new Map<string, Promise<PromptMeta | null>>();
+  return (name) => {
+    if (!cache.has(name)) cache.set(name, readPromptMeta(work, name));
+    return cache.get(name)!;
+  };
 }
 
 export async function savePrompt(work: string, name: string, text: string): Promise<void> {
@@ -95,5 +149,10 @@ async function textBelowRule(file: string): Promise<string> {
   return lines.slice(lines.findIndex((line) => line.trim() === '---') + 1).join('\n').trim();
 }
 
-export const readFormatRequirement = () => textBelowRule(FORMAT_REQUIREMENT_DOC);
+export const readFormatRequirement = (use: PromptMeta['use']) => textBelowRule(FORMAT_REQUIREMENT_DOCS[use]);
+export const readFormatRequirements = async (): Promise<FormatRequirements> => ({
+  video: await readFormatRequirement('video'),
+  image: await readFormatRequirement('image'),
+});
 export const readTranslateInstructions = () => textBelowRule(TRANSLATE_DOC);
+export const readToTagsInstructions = () => textBelowRule(TO_TAGS_DOC);

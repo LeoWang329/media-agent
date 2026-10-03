@@ -17,6 +17,9 @@ export type TranslateTarget = { nodeId: string; messageId: string; promptIndex: 
 // 放大看的槽位图
 export type ZoomTarget = { imageId: string; title: string };
 
+// 标签编辑窗：生图节点哪条回复的第几个提示词框
+export type TagsTarget = { nodeId: string; messageId: string; promptIndex: number; label?: string };
+
 type Overlays = {
   assets: { mode: AssetsMode; slot?: number } | null;
   upload: UploadTarget | null;
@@ -24,11 +27,12 @@ type Overlays = {
   sys: SysTarget | null;
   translate: TranslateTarget | null;
   zoom: ZoomTarget | null;
+  tags: TagsTarget | null;
   // 引用图片的小窗贴着哪儿弹；images：手动改提示词时只能挑这条回复带的图
   refpick: { left: number; top: number; images?: string[] } | null;
 };
 
-export const CLOSED_OVERLAYS = { assets: null, upload: null, collage: false, sys: null, translate: null, zoom: null, refpick: null } satisfies Overlays;
+export const CLOSED_OVERLAYS = { assets: null, upload: null, collage: false, sys: null, translate: null, zoom: null, tags: null, refpick: null } satisfies Overlays;
 
 export const useOverlays = create<Overlays>(() => CLOSED_OVERLAYS);
 

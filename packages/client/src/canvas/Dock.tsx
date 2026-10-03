@@ -1,4 +1,4 @@
-import { activePath, aspectRatioText, hasUnsentSettings, imageSizeFits, slotDiff, type AspectRatio, type ChatNode } from '@media-agent/shared';
+import { activePath, aspectRatioText, hasUnsentSettings, imageSizeFits, slotDiff, type AspectRatio, type ChatNode, type PromptMeta } from '@media-agent/shared';
 import { EditorContent, type Editor } from '@tiptap/react';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { imageThumbUrl, SLOT_DRAG_TYPE } from '../api';
@@ -9,6 +9,7 @@ import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
+import { imageSize, promptUse, SIZE_GROUPS, sizeText, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
 
@@ -20,57 +21,18 @@ let composer: { nodeId: string; editor: Editor } | null = null;
 // 程序处理过也救不回来的极端长条图：H3 会拒收
 const misfitNote = (image: { width: number; height: number }) => `尺寸不符：现在是 ${image.width}×${image.height}，H3 要求每边在 256 到 5760 像素之间`;
 
-// 面板底部：没发出的改动、参考图槽位、时长比例、输入框
+// 面板底部：没发出的改动、参考图槽位、时长比例（生图节点是尺寸和张数）、输入框
 export function Dock({ node }: { node: ChatNode }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const use = promptUse(usePromptInfo(node.systemPromptName));
   return (
-    <footer className="dr-dock" data-od-id="composer-dock">
-      <Pending node={node} />
+    <footer className={`dr-dock${use === 'image' ? ' is-image' : ''}`} data-od-id="composer-dock">
+      <Pending node={node} use={use} />
       <div className="slots-head">
         <span className="panel-title">
           参考图 <span className="mono" id="slotCount">{node.slots.length}/9</span>
         </span>
-        <div className="param">
-          <span className="meta">时长</span>
-          <div className="stepper" data-od-id="duration-stepper">
-            <button
-              type="button"
-              id="durDown"
-              aria-label="减少一秒"
-              disabled={node.duration <= 4}
-              onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.max(4, node.duration - 1) })}
-            >
-              −
-            </button>
-            <output id="durVal">{node.duration} 秒</output>
-            <button
-              type="button"
-              id="durUp"
-              aria-label="增加一秒"
-              disabled={node.duration >= 15}
-              onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.min(15, node.duration + 1) })}
-            >
-              +
-            </button>
-          </div>
-        </div>
-        <div className="param">
-          <span className="meta">比例</span>
-          <select
-            className="select select-sm mono"
-            id="ratioSel"
-            aria-label="画面比例"
-            data-od-id="ratio-select"
-            value={node.aspectRatio}
-            onChange={(e) => void useCanvasStore.getState().patchNode(node.id, { aspectRatio: e.target.value as AspectRatio })}
-          >
-            {RATIOS.map((ratio) => (
-              <option key={ratio} value={ratio}>
-                {aspectRatioText(ratio)}
-              </option>
-            ))}
-          </select>
-        </div>
+        {use === 'image' ? <ImageParams node={node} /> : <VideoParams node={node} />}
         <span className="grow" />
         <button type="button" className="btn btn-ghost btn-sm" id="slotAssets" data-od-id="btn-slot-from-assets" onClick={() => openAssets('slots')}>
           <Icon name="image" />
@@ -104,12 +66,109 @@ export function Dock({ node }: { node: ChatNode }) {
   );
 }
 
-// 槽位、时长、比例和上次发出时不一样：说清楚下次发消息会自动附上什么
-function Pending({ node }: { node: ChatNode }) {
+// 视频节点：时长和比例
+function VideoParams({ node }: { node: ChatNode }) {
+  return (
+    <>
+      <div className="param">
+        <span className="meta">时长</span>
+        <div className="stepper" data-od-id="duration-stepper">
+          <button
+            type="button"
+            id="durDown"
+            aria-label="减少一秒"
+            disabled={node.duration <= 4}
+            onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.max(4, node.duration - 1) })}
+          >
+            −
+          </button>
+          <output id="durVal">{node.duration} 秒</output>
+          <button
+            type="button"
+            id="durUp"
+            aria-label="增加一秒"
+            disabled={node.duration >= 15}
+            onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.min(15, node.duration + 1) })}
+          >
+            +
+          </button>
+        </div>
+      </div>
+      <div className="param">
+        <span className="meta">比例</span>
+        <select
+          className="select select-sm mono"
+          id="ratioSel"
+          aria-label="画面比例"
+          data-od-id="ratio-select"
+          value={node.aspectRatio}
+          onChange={(e) => void useCanvasStore.getState().patchNode(node.id, { aspectRatio: e.target.value as AspectRatio })}
+        >
+          {RATIOS.map((ratio) => (
+            <option key={ratio} value={ratio}>
+              {aspectRatioText(ratio)}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+}
+
+// 生图节点：尺寸和张数，改了存进节点的出图设置
+function ImageParams({ node }: { node: ChatNode }) {
+  const image = imageSize(node);
+  const patchNode = useCanvasStore((s) => s.patchNode);
+  const setCount = (count: number) => void patchNode(node.id, { image: { count } });
+  return (
+    <>
+      <div className="param">
+        <span className="meta">尺寸</span>
+        <select
+          className="select select-sm mono"
+          id="imgSize"
+          aria-label="图的尺寸"
+          data-od-id="image-size"
+          value={sizeText(image)}
+          onChange={(e) => {
+            const size = e.target.value;
+            const [width, height] = size.split('×').map(Number);
+            void patchNode(node.id, { image: { width, height } }).then((ok) => ok && toast(`下次生图按 ${size} 出`));
+          }}
+        >
+          {SIZE_GROUPS.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.sizes.map((size) => (
+                <option key={sizeText(size)} value={sizeText(size)}>
+                  {sizeText(size)}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <div className="param">
+        <span className="meta">张数</span>
+        <div className="stepper" data-od-id="image-count">
+          <button type="button" id="cntDown" aria-label="少出一张" disabled={image.count <= 1} onClick={() => setCount(Math.max(1, image.count - 1))}>
+            −
+          </button>
+          <output id="imgCount">{image.count} 张</output>
+          <button type="button" id="cntUp" aria-label="多出一张" disabled={image.count >= 8} onClick={() => setCount(Math.min(8, image.count + 1))}>
+            +
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// 槽位、时长、比例和上次发出时不一样：说清楚下次发消息会自动附上什么。生图节点不说时长和比例
+function Pending({ node, use }: { node: ChatNode; use: PromptMeta['use'] }) {
   const images = useCanvasStore((s) => s.detail?.images);
   if (!hasUnsentSettings(node)) return null;
   const previous = activePath(node).at(-1)!;
-  const note = slotDiff(previous, node).systemNote;
+  const note = slotDiff(previous, node, use).systemNote;
   if (!note) return null;
   const renumbered = note.includes('重新编号');
 

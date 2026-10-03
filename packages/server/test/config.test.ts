@@ -79,7 +79,7 @@ describe('本机配置', () => {
 
     const defaultPrompt = path.join(workFolder, 'prompts', 'ref2va.md');
     expect(await fs.readFile(defaultPrompt, 'utf8')).toBe(await fs.readFile(REF_PROMPT, 'utf8'));
-    for (const name of ['i2v', 't2v']) expect((await fs.stat(path.join(workFolder, 'prompts', `${name}.md`))).isFile()).toBe(true);
+    for (const name of ['i2v', 't2v', 'il', 'pony']) expect((await fs.stat(path.join(workFolder, 'prompts', `${name}.md`))).isFile()).toBe(true);
     for (const dir of ['prompts/.history', 'canvases', '.trash']) {
       expect((await fs.stat(path.join(workFolder, dir))).isDirectory()).toBe(true);
     }
@@ -99,7 +99,7 @@ describe('本机配置', () => {
     await request(app).put('/api/config').send({ modelConfigs: [modelConfig('m1', 'http://x/v1')] }).expect(200);
 
     const res = await request(app).get('/api/work-folder');
-    expect(res.body).toEqual({ path: workFolder, writable: true, canvases: 1, prompts: 3, modelConfigs: 1 });
+    expect(res.body).toEqual({ path: workFolder, writable: true, canvases: 1, prompts: 5, modelConfigs: 1 });
     expect((await fs.readdir(workFolder)).some((name) => name.startsWith('.write-test'))).toBe(false);
   });
 

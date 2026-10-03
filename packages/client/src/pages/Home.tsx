@@ -1,10 +1,12 @@
-import type { CanvasImage, Config, HomeCanvas, HomeData, HomeNode, StarredPrompt } from '@media-agent/shared';
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { splitTags, type CanvasImage, type Config, type Family, type HomeCanvas, type HomeData, type HomeNode, type StarredPrompt } from '@media-agent/shared';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, imageThumbUrl } from '../api';
 import { splitError } from '../canvas/nodeInfo';
 import { tokens } from '../canvas/tokens';
 import { UploadList } from '../canvas/UploadDialog';
+import { TagChip } from '../tags/TagChip';
+import { composeBox, useTagChecks } from '../tags/tagStore';
 import { confirmBox } from '../ui/confirm';
 import { copyText, fmtNum } from '../ui/copy';
 import { Dialog } from '../ui/Dialog';
@@ -235,15 +237,24 @@ export function Home() {
                 {!ready ? (
                   Array.from({ length: 3 }, (_, i) => <StarSkeleton key={i} />)
                 ) : ready.starred.length ? (
-                  ready.starred.map((prompt) => (
-                    <StarItem
-                      key={`${prompt.messageId}-${prompt.promptIndex}`}
-                      prompt={prompt}
-                      canvasTitle={titleOf(prompt.canvasId)}
-                      images={ready.images[prompt.canvasId]}
-                      onUpload={() => setUpload(prompt)}
-                    />
-                  ))
+                  ready.starred.map((prompt) =>
+                    prompt.image ? (
+                      <StarImageItem
+                        key={`${prompt.messageId}-${prompt.promptIndex}`}
+                        prompt={prompt}
+                        family={prompt.image.family}
+                        canvasTitle={titleOf(prompt.canvasId)}
+                      />
+                    ) : (
+                      <StarItem
+                        key={`${prompt.messageId}-${prompt.promptIndex}`}
+                        prompt={prompt}
+                        canvasTitle={titleOf(prompt.canvasId)}
+                        images={ready.images[prompt.canvasId]}
+                        onUpload={() => setUpload(prompt)}
+                      />
+                    ),
+                  )
                 ) : (
                   <div className="hm-empty is-plain" data-od-id="starred-empty">
                     <h3>还没打过星</h3>
@@ -396,6 +407,12 @@ function NodeCard({ node, canvasTitle, images }: { node: HomeNode; canvasTitle: 
       <Mosaic canvasId={node.canvasId} ids={node.slots} images={images} />
       <div className="hm-node-body">
         <div className="hm-node-top">
+          {node.image && (
+            <span className="tag tag-outline hm-kind">
+              <Icon name="sparkles" />
+              生图{node.image.family ? ` · ${node.image.family}` : ''}
+            </span>
+          )}
           <h3 className="hm-node-title" title={node.title}>{node.title}</h3>
           {node.starred && (
             <span className="hm-star" title="有打过星的提示词" aria-label="打过星">
@@ -418,7 +435,7 @@ function NodeCard({ node, canvasTitle, images }: { node: HomeNode; canvasTitle: 
           <span className="hm-cv-name" title={`在「${canvasTitle}」里`}>{canvasTitle}</span>
           <span>{relativeWhen(node.updatedAt)}</span>
           <span>{node.directionCount ? `${node.directionCount} 个方向` : '没有方向'}</span>
-          <span className="mono">{node.duration}秒 · {node.aspectRatio}</span>
+          <span className="mono">{node.image ? `${node.image.width}×${node.image.height}` : `${node.duration}秒 · ${node.aspectRatio}`}</span>
         </div>
       </div>
     </Link>
@@ -445,13 +462,7 @@ function StarItem({ prompt, canvasTitle, images, onUpload }: { prompt: StarredPr
         )}
         <span className="meta mono">{prompt.duration}秒 · {prompt.aspectRatio}</span>
       </div>
-      <Link className="hm-star-where" to={nodeLink(prompt.canvasId, prompt.nodeId)} title="跳到这个节点">
-        <span className="hm-cv-name">{canvasTitle}</span>
-        <span className="hm-sep">›</span>
-        <span className="hm-where-node">{prompt.nodeTitle}</span>
-        <span className="hm-where-time">{whenDid(prompt.createdAt, '写的')}</span>
-        <Icon name="arrow-right" className="icon-sm" />
-      </Link>
+      <StarWhere prompt={prompt} canvasTitle={canvasTitle} />
       <div className="hm-star-acts">
         <button type="button" className="btn btn-secondary btn-sm" title="复制提示词原文" onClick={() => copyText(prompt.text, `已复制提示词（${fmtNum(prompt.text.length)} 字）`)}>
           <Icon name="copy" />复制
@@ -471,6 +482,64 @@ function StarItem({ prompt, canvasTitle, images, onUpload }: { prompt: StarredPr
         <span className="grow" />
         <button type="button" className="btn btn-ghost btn-sm" title="要传哪几张图、按什么顺序" onClick={onUpload}>
           <Icon name="list" />上传清单
+        </button>
+      </div>
+    </article>
+  );
+}
+
+// 去节点的链接：画布 › 节点 · 什么时候写的
+function StarWhere({ prompt, canvasTitle }: { prompt: StarredPrompt; canvasTitle: string }) {
+  return (
+    <Link className="hm-star-where" to={nodeLink(prompt.canvasId, prompt.nodeId)} title="跳到这个节点">
+      <span className="hm-cv-name">{canvasTitle}</span>
+      <span className="hm-sep">›</span>
+      <span className="hm-where-node">{prompt.nodeTitle}</span>
+      <span className="hm-where-time">{whenDid(prompt.createdAt, '写的')}</span>
+      <Icon name="arrow-right" className="icon-sm" />
+    </Link>
+  );
+}
+
+const SHOWN_TAGS = 10;
+
+// 打过星的生图框：显示前 10 个标签；复制的是拼好的一串，和画布上的复制一样
+function StarImageItem({ prompt, family, canvasTitle }: { prompt: StarredPrompt; family: Family | null; canvasTitle: string }) {
+  const label = prompt.label || '提示词';
+  const items = useMemo(() => splitTags(prompt.text), [prompt.text]);
+  const shown = items.slice(0, SHOWN_TAGS);
+  const checks = useTagChecks(
+    shown.map((item) => item.name),
+    family,
+  );
+  const copy = async () => {
+    const composed = await composeBox(prompt.text, family);
+    copyText(composed.text, `已复制提示词（${composed.count} 个标签）`);
+  };
+  return (
+    <article className="hm-star-item is-image" data-star={`${prompt.messageId}-${prompt.promptIndex}`} data-od-id={`starred-image-${prompt.messageId}-${prompt.promptIndex}`}>
+      <div className="hm-star-top">
+        <span className="tag tag-outline hm-kind">
+          <Icon name="sparkles" />
+          生图{family ? ` · ${family}` : ''}
+        </span>
+        <h3 className="hm-star-label" title={label}>{label}</h3>
+      </div>
+      <div className="tg-flow hm-tags">
+        {shown.map((item, i) => (
+          <TagChip key={i} item={item} check={checks[i]} unknownText="不认识" />
+        ))}
+        {items.length > SHOWN_TAGS && (
+          <span className="hm-more meta">
+            还有 <span className="mono">{items.length - SHOWN_TAGS}</span> 个
+          </span>
+        )}
+      </div>
+      <div className="meta">还没出过图</div>
+      <StarWhere prompt={prompt} canvasTitle={canvasTitle} />
+      <div className="hm-star-acts">
+        <button type="button" className="btn btn-secondary btn-sm" title="复制整串标签，可以贴进 ComfyUI" onClick={() => void copy()}>
+          <Icon name="copy" />复制
         </button>
       </div>
     </article>

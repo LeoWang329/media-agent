@@ -37,6 +37,13 @@ describe('slotDiff', () => {
     });
   });
 
+  it('生图节点：说明不写时长和比例，图的部分照旧', () => {
+    expect(slotDiff(null, settings(['a']), 'image')).toEqual({ systemNote: '参考图共 1 张，编号如下。', attachments: [{ picture: 1, imageId: 'a' }] });
+    expect(slotDiff(null, settings([]), 'image')).toEqual({ systemNote: '本次没有参考图。', attachments: [] });
+    expect(slotDiff(snapshot(['a']), settings(['a'], 12, 'auto'), 'image')).toEqual({ attachments: [] });
+    expect(slotDiff(snapshot(['a']), settings(['a', 'b'], 12), 'image')).toEqual({ systemNote: '新增参考图：<Picture 2>。', attachments: [{ picture: 2, imageId: 'b' }] });
+  });
+
   it('在末尾追加：只带新的', () => {
     expect(slotDiff(snapshot(['a', 'b', 'c']), settings(['a', 'b', 'c', 'd', 'e']))).toEqual({
       systemNote: '新增参考图：<Picture 4>、<Picture 5>。',

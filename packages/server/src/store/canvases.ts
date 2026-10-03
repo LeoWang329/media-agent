@@ -1,5 +1,6 @@
 import {
   activePath,
+  cardImageInfo,
   cardSummary,
   descendantIds,
   forkChain,
@@ -18,6 +19,7 @@ import { HttpError } from '../httpError';
 import { readImages } from './images';
 import { readJson, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
+import { promptMetaReader } from './prompts';
 
 // fork 出的节点放在原节点右侧、已有子节点的下方（卡片宽 264，横向留 80 的空）
 const FORK_OFFSET_X = 344;
@@ -77,13 +79,16 @@ export async function canvasDetail(work: string, canvasId: string, isGenerating:
     return node ? [{ layout, node }] : [];
   });
   const starred = new Set(starredBoxes(placed.map(({ node }) => node)).map((s) => s.node.id));
-  const summaries = placed.map(({ layout, node }) => ({
+  const metaOf = promptMetaReader(work);
+  const metas = await Promise.all(placed.map(({ node }) => metaOf(node.systemPromptName)));
+  const summaries = placed.map(({ layout, node }, i) => ({
     ...layout,
     title: node.title,
     parentNodeId: node.parentNodeId,
     slots: node.slots,
     duration: node.duration,
     aspectRatio: node.aspectRatio,
+    image: cardImageInfo(node, metas[i]),
     ...cardSummary(node),
     starred: starred.has(node.id),
     failed: Boolean(activePath(node).at(-1)?.error),

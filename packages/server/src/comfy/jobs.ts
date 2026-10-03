@@ -72,7 +72,7 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
   const defaults = settings.defaults[family];
   const image = node.image ?? defaultImageSettings(defaults);
   const library = await loadLibrary(work);
-  const known = new Set(familyWords(defaults));
+  const known = familyWords(defaults);
   const items = splitTags(text);
   const tags = composeChecked(items, items.map((item) => checkTag(library, item.name, known)));
   return {

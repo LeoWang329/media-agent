@@ -280,6 +280,12 @@ const GraphNode = memo(
           )}
         </div>
         <div className="gn-foot">
+          {n.image && (
+            <span className="tag tag-outline gn-kind">
+              <Icon name="sparkles" />
+              生图{n.image.family ? ` · ${n.image.family}` : ''}
+            </span>
+          )}
           {generating && (
             <span className="tag tag-accent">
               <span className="dot dot-live" />
@@ -295,7 +301,7 @@ const GraphNode = memo(
           {n.directionCount > 0 && <span className="tag">{n.directionCount} 个方向</span>}
           <span className="grow" />
           <span className="meta">
-            {n.duration}秒 · {aspectRatioText(n.aspectRatio)}
+            {n.image ? `${n.image.width}×${n.image.height}${n.image.family ? ` · ${n.image.family}` : ''}` : `${n.duration}秒 · ${aspectRatioText(n.aspectRatio)}`}
           </span>
         </div>
         {hiddenCount > 0 && (

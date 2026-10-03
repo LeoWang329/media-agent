@@ -105,7 +105,7 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
   const renaming = useRenaming((s) => s.nodeId === node.id && s.where === 'drawer');
   const parent = useCanvasStore((s) => s.detail?.nodes.find((n) => n.id === node.parentNodeId));
   const modelConfigs = useCanvasStore((s) => s.modelConfigs);
-  const promptNames = useCanvasStore((s) => s.promptNames);
+  const prompts = useCanvasStore((s) => s.prompts);
   const thinking = useCanvasStore((s) => s.thinking);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const untitled = isUntitled(node);
@@ -215,15 +215,32 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
             value={node.systemPromptName}
             onChange={(e) => {
               const name = e.target.value;
-              void patchNode(node.id, { systemPromptName: name }).then((ok) => ok && toast(`从下一条消息起用系统提示词「${name}」`));
+              const was = prompts.find((p) => p.name === node.systemPromptName)?.use ?? 'video';
+              const now = prompts.find((p) => p.name === name)?.use ?? 'video';
+              void patchNode(node.id, { systemPromptName: name }).then((ok) => {
+                if (!ok) return;
+                if (was === now) toast(`从下一条消息起用系统提示词「${name}」`);
+                else if (now === 'image') toast('换成了生图用的提示词，这个节点变成生图节点：面板上的时长和比例换成了尺寸和张数。已有的对话不动', { ms: 5000 });
+                else toast('换回了视频提示词，面板上换回时长和比例。已有的对话不动', { ms: 5000 });
+              });
             }}
           >
-            {!promptNames.includes(node.systemPromptName) && <option value={node.systemPromptName}>（找不到 {node.systemPromptName}）</option>}
-            {promptNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
+            {!prompts.some((p) => p.name === node.systemPromptName) && <option value={node.systemPromptName}>（找不到 {node.systemPromptName}）</option>}
+            {(['video', 'image'] as const).map((use) => {
+              const group = prompts.filter((p) => p.use === use);
+              return (
+                group.length > 0 && (
+                  <optgroup key={use} label={use === 'video' ? '写视频提示词' : '写生图标签'}>
+                    {group.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                        {p.family ? ` · ${p.family}` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                )
+              );
+            })}
           </select>
         </label>
         {thinking && <ThinkingButton config={modelConfigs.find((m) => m.id === node.modelConfigId)} settings={thinking} />}

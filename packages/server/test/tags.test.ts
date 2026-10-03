@@ -44,7 +44,8 @@ hatsune_miku,4,初音|ミク,初音未来,900000,
 `,
   'info.json': '{ "updatedAt": "2026-09-01" }',
 };
-const LIBRARY_INFO: TagInfo = { updatedAt: '2026-09-01', tags: 10, withZh: 9 };
+// 有中文的 9 个用过 2440 万次，没废弃的一共 2455 万次；别名 not_here 指向的标签不在词库里，不算
+const LIBRARY_INFO: TagInfo = { updatedAt: '2026-09-01', tags: 10, withZh: 9, zhByUse: 24_400_000 / 24_550_000, aliases: 3 };
 
 // 假的 Danbooru 接口和中文对照仓库；page 是 a<上一页最大的 id>
 const TAG_PAGES: Record<string, object[]> = {
@@ -141,18 +142,18 @@ describe('校验', () => {
     expect(results[0].suggestions?.map((hit) => hit.tag)).toEqual(['thick_eyebrows']);
   });
 
-  it('带了系列时，这个系列固定开头和评级词里的词也算认识', async () => {
+  it('带了系列时，这个系列固定开头和评级词里的词也算认识，标上是质量词还是评级词', async () => {
     expect((await check(['score_9', 'rating_safe'])).map((result) => result.status)).toEqual(['unknown', 'unknown']);
     expect(await check(['score_9', 'rating_safe'], 'Pony')).toEqual([
-      { input: 'score_9', status: 'ok' },
-      { input: 'rating_safe', status: 'ok' },
+      { input: 'score_9', status: 'ok', zh: '质量词', category: 5 },
+      { input: 'rating_safe', status: 'ok', zh: '评级词', category: 5 },
     ]);
     expect((await check(['best quality', 'score_9'], 'IL')).map((result) => result.status)).toEqual(['ok', 'unknown']);
     expect((await t.call('POST', '/tags/check', { tags: 'smile' })).status).toBe(400);
     expect((await t.call('POST', '/tags/check', { tags: ['smile'], family: 'SDXL' })).status).toBe(400);
   });
 
-  it('词库是哪天的、多少个标签（不算已废弃的）、多少个有中文', async () => {
+  it('词库是哪天的、多少个标签（不算已废弃的）、多少个有中文、按使用次数算多少有中文、多少条别名', async () => {
     expect(await t.ok('GET', '/tags/info')).toEqual(LIBRARY_INFO);
   });
 });
@@ -164,6 +165,8 @@ describe('词库放在哪', () => {
     expect(info.updatedAt).toBe('2026-10-03');
     expect(info.tags).toBeGreaterThan(100000);
     expect(info.withZh).toBeGreaterThan(10000);
+    expect(info.zhByUse).toBeGreaterThan(0.9);
+    expect(info.aliases).toBeGreaterThan(10000);
     expect((await fs.readdir(path.join(t.work, 'tags', 'zh'))).sort()).toEqual(['LICENSE', 'artist.csv', 'character.csv', 'copyright.csv', 'general.csv', 'meta.csv']);
   });
 });
@@ -185,7 +188,7 @@ describe('更新词库', () => {
       { type: 'progress', step: 'aliases', page: 1, rows: 1 },
     ]);
     expect(events.slice(3, 9).map((event) => event.type === 'progress' && event.step === 'zh' && event.file)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(events[9]).toEqual({ type: 'done', info: { updatedAt: today(), tags: 2, withZh: 1 } });
+    expect(events[9]).toEqual({ type: 'done', info: { updatedAt: today(), tags: 2, withZh: 1, zhByUse: 60 / 7_000_060, aliases: 1 } });
 
     const tagRequests = requests.filter((request) => request.path === '/tags.json');
     expect(tagRequests[0]).toEqual({
@@ -218,6 +221,22 @@ describe('更新词库', () => {
     expect(await fs.readFile(path.join(t.work, 'tags', 'tags.csv'), 'utf8')).toBe(before);
     expect(await leftovers()).toEqual([]);
     expect(await t.ok('GET', '/tags/info')).toEqual(LIBRARY_INFO);
+  });
+
+  it('点了停止：停在正在下的这一页，旧的不动，下了一半的扔掉', async () => {
+    let release!: () => void;
+    hold = new Promise((resolve) => (release = resolve));
+    const before = await fs.readFile(path.join(t.work, 'tags', 'tags.csv'), 'utf8');
+    const events = t.stream<TagUpdateEvent>('/tags/update', {});
+    while (!requests.length) await sleep(10);
+    expect((await t.call('POST', '/tags/update/stop')).status).toBe(204);
+    expect(await events).toEqual([{ type: 'stopped' }]);
+    release();
+    expect(await fs.readFile(path.join(t.work, 'tags', 'tags.csv'), 'utf8')).toBe(before);
+    expect(await leftovers()).toEqual([]);
+    expect(await t.ok('GET', '/tags/info')).toEqual(LIBRARY_INFO);
+    // 停了以后能再点更新
+    expect((await t.stream<TagUpdateEvent>('/tags/update', {})).at(-1)?.type).toBe('done');
   });
 
   it('正在更新时再点，返回 409', async () => {

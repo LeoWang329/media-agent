@@ -35,6 +35,12 @@ export type SharedSettings = {
 // 系统提示词开头说明段里写的用途和底模系列；body 是去掉说明段的部分，见 docs/dev-plan.md 5.14
 export type PromptMeta = { use: 'video' | 'image'; family: Family | null; body: string };
 
+// GET /api/prompts 列表里的一项
+export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family | null };
+
+// 两份固定格式要求：视频节点的、生图节点的
+export type FormatRequirements = { video: string; image: string };
+
 // 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18
 export type FamilyDefaults = {
   prefix: string;
@@ -67,13 +73,29 @@ export type TagCheck = {
 };
 
 // 词库是哪天的、多少个标签、多少个有中文
-export type TagInfo = { updatedAt: string | null; tags: number; withZh: number };
+// 词库概况：标签和有中文的不算已废弃的；zhByUse 是按使用次数算有中文的比例（0 到 1）；aliases 是用得上的官方别名条数
+export type TagInfo = { updatedAt: string | null; tags: number; withZh: number; zhByUse: number; aliases: number };
+
+// 让模型把一句中文转成标签：text 是模型回的那串，checks 和 splitTags(text) 一一对应
+export type TagConvertResult = { text: string; checks: TagCheck[] };
+
+// 片段：一小串常用标签，存在工作文件夹 fragments.json，见 docs/dev-plan.md 5.16
+export type FragmentCategory = 'character' | 'style' | 'quality' | 'other';
+export type Fragment = {
+  id: string;
+  name: string;
+  category: FragmentCategory;
+  text: string; // 写法和提示词框里一样
+  createdAt: string;
+  updatedAt: string;
+};
 
 // 更新词库时推给前端的事件
 export type TagUpdateEvent =
   | { type: 'progress'; step: 'tags' | 'aliases'; page: number; rows: number }
   | { type: 'progress'; step: 'zh'; file: number; files: number }
   | { type: 'done'; info: TagInfo }
+  | { type: 'stopped' }
   | { type: 'error'; message: string };
 
 export type ModelConfigWithKey = ModelConfig & { apiKey: string };
@@ -285,6 +307,9 @@ export type HomeCanvas = {
   stars: number;
 };
 
+// 卡片上生图节点那一行：尺寸和系列。视频节点是 null
+export type CardImageInfo = { family: Family | null; width: number; height: number } | null;
+
 // 首页「最近动过的节点」里的一个；error 是当前路径最后一条回复失败的原因
 export type HomeNode = {
   id: string;
@@ -295,6 +320,7 @@ export type HomeNode = {
   slots: string[];
   duration: number;
   aspectRatio: AspectRatio;
+  image: CardImageInfo;
   starred: boolean;
   generating: boolean;
   error: string | null;
@@ -315,6 +341,8 @@ export type StarredPrompt = {
   duration: number;
   aspectRatio: AspectRatio;
   translations: { language: TranslateLanguage; text: string }[];
+  // 生图的框：写这条回复时用的生图提示词是哪个系列；视频的框是 null
+  image: { family: Family | null } | null;
   createdAt: string;
 };
 
@@ -332,6 +360,7 @@ export type NodeSummary = CanvasNodeLayout & {
   slots: string[];
   duration: number;
   aspectRatio: AspectRatio;
+  image: CardImageInfo;
   summary: string;
   directionCount: number;
   starred: boolean;

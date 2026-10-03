@@ -1,5 +1,5 @@
 import { splitTags, tagKey } from './tags';
-import type { Family, FamilyDefaults, ImageSettings } from './types';
+import type { CardImageInfo, ChatNode, Family, FamilyDefaults, ImageSettings, PromptMeta } from './types';
 
 export const FAMILIES: Family[] = ['IL', 'Pony'];
 
@@ -15,6 +15,9 @@ export const IMAGE_SIZES: { width: number; height: number }[] = [
   ...PORTRAIT.map(([width, height]) => ({ width, height })),
   ...PORTRAIT.map(([height, width]) => ({ width, height })),
 ];
+
+// 节点还没改过尺寸时用竖的 832×1216
+export const DEFAULT_IMAGE_SIZE = { width: 832, height: 1216 };
 
 // 两个系列的初始默认值，按常见用法填，见 docs/dev-plan.md 5.18；设置里能改
 export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {
@@ -48,17 +51,18 @@ export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {
   },
 };
 
-// 这个系列固定开头和评级词里的词：不在 Danbooru 词库里，校验时也算认识
-export function familyWords(defaults: FamilyDefaults): string[] {
-  const text = [defaults.prefix, ...Object.values(defaults.rating)].join(', ');
-  return splitTags(text).map((item) => tagKey(item.name));
+// 这个系列固定开头和评级词里的词：不在 Danbooru 词库里，校验时也算认识。值是标签小块上中文那行写的
+export function familyWords(defaults: FamilyDefaults): Map<string, string> {
+  const words = new Map<string, string>();
+  for (const item of splitTags(Object.values(defaults.rating).join(', '))) words.set(tagKey(item.name), '评级词');
+  for (const item of splitTags(defaults.prefix)) words.set(tagKey(item.name), '质量词');
+  return words;
 }
 
 // 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张，底模等用户选
 export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
   return {
-    width: 832,
-    height: 1216,
+    ...DEFAULT_IMAGE_SIZE,
     count: 4,
     workflowId: null,
     checkpoint: '',
@@ -77,4 +81,10 @@ export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
 export function checkpointFamily(name: string, marked: Record<string, Family>): { family: Family; guessed: boolean } {
   if (Object.hasOwn(marked, name)) return { family: marked[name], guessed: false };
   return { family: /pony/i.test(name) ? 'Pony' : 'IL', guessed: true };
+}
+
+// 卡片上生图节点那一行：系列和尺寸。meta 是节点现在选的系统提示词的说明段，找不到提示词时为 null，当视频节点
+export function cardImageInfo(node: Pick<ChatNode, 'image'>, meta: Pick<PromptMeta, 'use' | 'family'> | null): CardImageInfo {
+  if (meta?.use !== 'image') return null;
+  return { family: meta.family, width: node.image?.width ?? DEFAULT_IMAGE_SIZE.width, height: node.image?.height ?? DEFAULT_IMAGE_SIZE.height };
 }

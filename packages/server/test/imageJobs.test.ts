@@ -47,7 +47,7 @@ beforeEach(async () => {
     await fs.writeFile(path.join(t.work, 'tags', file), text);
   }
   await t.ok('PUT', '/settings', { comfy: { lanUrl: comfyUrl } });
-  await t.ok('POST', '/prompts', { name: 'il', text: '---\n用途: 生图\n底模: IL\n---\n只写标签' });
+  await t.ok('PUT', '/prompts/il', { text:'---\n用途: 生图\n底模: IL\n---\n只写标签' });
   canvasId = (await t.ok('POST', '/canvases', { title: '出图' })).id;
   nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0 })).id;
   await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
@@ -255,9 +255,9 @@ describe('出图任务', () => {
     await fs.mkdir(folder);
     const items = [{ canvasId, nodeId, messageId, jobId: job.id, index: 0 }];
 
-    expect(await t.ok('POST', '/images/download', { items, folder })).toEqual({ paths: [path.join(folder, '测试标题-100.png')], inLibrary: false });
-    expect((await t.ok('POST', '/images/download', { items, folder })).paths).toEqual([path.join(folder, '测试标题-100-2.png')]);
-    expect((await readJob(messageId, job.id))!.images[0].savedPath).toBe(path.join(folder, '测试标题-100-2.png'));
+    expect(await t.ok('POST', '/images/download', { items, folder })).toEqual({ paths: [path.join(folder, '测试图片-100.png')], inLibrary: false });
+    expect((await t.ok('POST', '/images/download', { items, folder })).paths).toEqual([path.join(folder, '测试图片-100-2.png')]);
+    expect((await readJob(messageId, job.id))!.images[0].savedPath).toBe(path.join(folder, '测试图片-100-2.png'));
     expect((await t.ok<Config>('GET', '/config')).lastDownloadFolder).toBe(folder);
 
     await t.ok('POST', '/assets/folders', { path: folder });
@@ -271,7 +271,7 @@ describe('出图任务', () => {
     await fs.rm(path.join(t.work, done.images[0].file!));
     const fileUrl = `${t.base}${imagesUrl(messageId)}/${job.id}/0/file`;
     expect((await fetch(fileUrl)).status).toBe(200);
-    await fs.rm(path.join(folder, '测试标题-100-3.png'));
+    await fs.rm(path.join(folder, '测试图片-100-3.png'));
     const gone = await fetch(fileUrl);
     expect(gone.status).toBe(404);
     expect(await gone.json()).toEqual({ error: '这张图已经清理掉了' });

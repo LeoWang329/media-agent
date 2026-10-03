@@ -28,6 +28,11 @@ export function planReply(messages: ChatMessage[]): MockPlan {
     return { reply, userText, fail: userText.includes('报错'), slow: userText.includes('慢') };
   }
 
+  // 中文转标签（标签编辑窗里「让 AI 转成标签」）：只回一串标签
+  if (system.includes('转成 Danbooru 标签')) return { reply: 'sitting, window, book, reading', userText, fail: false, slow: false };
+  // 生图节点：系统消息带着生图的固定格式要求，框里是一串标签。blond hair 是官方别名，golden hair 词库里没有
+  const image = system.includes('框里只放英文标签');
+
   const pictureLabels: string[] = [];
   let imageCount = 0;
   parts.forEach((part, i) => {
@@ -39,15 +44,16 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   });
 
   const lines = [
-    '<title>测试标题</title>',
+    image ? '<title>测试图片</title>' : '<title>测试标题</title>',
     imageCount ? `收到 ${imageCount} 张图：${pictureLabels.join('、')}` : '收到 0 张图',
     `说明：${texts[0] ?? ''}`,
     `历史消息 ${messages.filter((m) => m.role !== 'system').length} 条`,
   ];
   if (!userText.includes('只回答')) {
+    const box = image ? tagBox : promptBox;
     const boxes = userText.includes('三个方向')
-      ? ['一', '二', '三'].map((n) => promptBox(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
-      : [promptBox('测试概述')];
+      ? ['一', '二', '三'].map((n) => box(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
+      : [box('测试概述')];
     for (const box of boxes) lines.push('', box);
   }
 
@@ -77,4 +83,8 @@ function promptBox(summary: string, label?: string): string {
     'N/A',
     '</prompt>',
   ].join('\n');
+}
+
+function tagBox(_summary: string, label?: string): string {
+  return [label ? `<prompt label="${label}">` : '<prompt>', '1girl, solo, long hair, blond hair, golden hair, smile, hatsune miku', '</prompt>'].join('\n');
 }

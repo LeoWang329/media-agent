@@ -1,5 +1,6 @@
 import {
   activePath,
+  cardImageInfo,
   cardSummary,
   isOwnMessage,
   starredBoxes,
@@ -8,11 +9,13 @@ import {
   type ChatNode,
   type HomeData,
   type ImageRecord,
+  type PromptMeta,
   type StarredPrompt,
 } from '@media-agent/shared';
 import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases } from './canvases';
 import { readImages } from './images';
+import { promptMetaReader } from './prompts';
 
 const RECENT_NODES = 8;
 const UNREADABLE = ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'];
@@ -29,7 +32,8 @@ export async function homeData(work: string, isGenerating: (nodeId: string) => b
     throw new HttpError(503, err.code === 'EACCES' || err.code === 'EPERM' ? '没有权限读这个文件夹' : '找不到这个路径');
   });
 
-  const starred = starredPrompts(loaded);
+  const metaOf = promptMetaReader(work);
+  const starred = await starredPrompts(loaded, metaOf);
   // 「打过星」按上面列出来的算，和画布卡片一样：岔出去的节点复制来的星不算它的
   const starredNodes = new Set(starred.map((prompt) => prompt.nodeId));
 
@@ -46,24 +50,26 @@ export async function homeData(work: string, isGenerating: (nodeId: string) => b
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   // 最近动过的节点：自己发过消息的才算，岔出来还没发过的不算
-  const recentNodes = loaded
+  const recent = loaded
     .flatMap(({ canvas, nodes }) => nodes.map((node) => ({ canvasId: canvas.id, node })))
     .filter(({ node }) => Object.values(node.messages).some((message) => isOwnMessage(node, message)))
     .sort((a, b) => b.node.updatedAt.localeCompare(a.node.updatedAt))
-    .slice(0, RECENT_NODES)
-    .map(({ canvasId, node }) => ({
-      id: node.id,
-      canvasId,
-      title: node.title,
-      ...cardSummary(node),
-      slots: node.slots,
-      duration: node.duration,
-      aspectRatio: node.aspectRatio,
-      starred: starredNodes.has(node.id),
-      generating: isGenerating(node.id),
-      error: activePath(node).at(-1)?.error ?? null,
-      updatedAt: node.updatedAt,
-    }));
+    .slice(0, RECENT_NODES);
+  const metas = await Promise.all(recent.map(({ node }) => metaOf(node.systemPromptName)));
+  const recentNodes = recent.map(({ canvasId, node }, i) => ({
+    id: node.id,
+    canvasId,
+    title: node.title,
+    ...cardSummary(node),
+    slots: node.slots,
+    duration: node.duration,
+    aspectRatio: node.aspectRatio,
+    image: cardImageInfo(node, metas[i]),
+    starred: starredNodes.has(node.id),
+    generating: isGenerating(node.id),
+    error: activePath(node).at(-1)?.error ?? null,
+    updatedAt: node.updatedAt,
+  }));
 
   // 只带节点和提示词用到的图
   const images: HomeData['images'] = {};
@@ -78,28 +84,30 @@ export async function homeData(work: string, isGenerating: (nodeId: string) => b
 }
 
 // 打过星的提示词，所有版本都算，新写的在前
-function starredPrompts(loaded: Loaded[]): StarredPrompt[] {
-  return loaded
-    .flatMap(({ canvas, nodes }) =>
-      starredBoxes(nodes).map(({ node, message, promptIndex, box }) => ({
-        canvasId: canvas.id,
-        nodeId: node.id,
-        nodeTitle: node.title,
-        messageId: message.id,
-        promptIndex,
-        ...(box.label !== undefined && { label: box.label }),
-        text: box.text,
-        summary: box.summary,
-        images: message.slotSnapshot,
-        duration: message.duration,
-        aspectRatio: message.aspectRatio,
-        translations: (message.translations ?? [])
-          .filter((t) => t.promptIndex === promptIndex)
-          .sort((a, b) => TRANSLATE_LANGUAGES.indexOf(a.language) - TRANSLATE_LANGUAGES.indexOf(b.language))
-          .map((t) => ({ language: t.language, text: t.text })),
-        createdAt: message.createdAt,
-      })),
-    )
+// 生图的框（看写这条回复时用的系统提示词）带上系列
+async function starredPrompts(loaded: Loaded[], metaOf: (name: string) => Promise<PromptMeta | null>): Promise<StarredPrompt[]> {
+  const boxes = loaded.flatMap(({ canvas, nodes }) => starredBoxes(nodes).map((starred) => ({ canvas, ...starred })));
+  const metas = await Promise.all(boxes.map(({ message }) => metaOf(message.systemPromptName ?? '')));
+  return boxes
+    .map(({ canvas, node, message, promptIndex, box }, i) => ({
+      canvasId: canvas.id,
+      nodeId: node.id,
+      nodeTitle: node.title,
+      messageId: message.id,
+      promptIndex,
+      ...(box.label !== undefined && { label: box.label }),
+      text: box.text,
+      summary: box.summary,
+      images: message.slotSnapshot,
+      duration: message.duration,
+      aspectRatio: message.aspectRatio,
+      translations: (message.translations ?? [])
+        .filter((t) => t.promptIndex === promptIndex)
+        .sort((a, b) => TRANSLATE_LANGUAGES.indexOf(a.language) - TRANSLATE_LANGUAGES.indexOf(b.language))
+        .map((t) => ({ language: t.language, text: t.text })),
+      image: metas[i]?.use === 'image' ? { family: metas[i]!.family } : null,
+      createdAt: message.createdAt,
+    }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 

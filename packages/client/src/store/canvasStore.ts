@@ -1,6 +1,8 @@
 import {
   activePath,
   addMessage,
+  defaultImageSettings,
+  FAMILY_DEFAULTS,
   hiddenNodeIds,
   isSupportedImageName,
   pathSnapshot,
@@ -11,8 +13,12 @@ import {
   type CanvasNodeLayout,
   type ChatNode,
   type Config,
+  type Family,
+  type FamilyDefaults,
   type ImageRecord,
+  type ImageSettings,
   type ModelConfigWithKey,
+  type PromptInfo,
   type PromptTranslation,
   type SharedSettings,
   type SlotSettings,
@@ -31,7 +37,10 @@ export type Stream = { assistantId: string | null; text: string; reasoning: stri
 
 const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text: '', reasoning: '', firstTextAt: null });
 
-type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots'>>;
+// image 只带要改的几项，服务端按节点原来的（没改过的按系列的默认值）补全
+type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots'>> & {
+  image?: Partial<ImageSettings>;
+};
 
 export const MAX_SLOTS = 9;
 
@@ -56,8 +65,9 @@ type CanvasState = {
   nodes: Record<string, ChatNode>;
   streams: Record<string, Stream>; // 这个页面上正在收回复的节点
   modelConfigs: ModelConfigWithKey[];
-  promptNames: string[];
+  prompts: PromptInfo[];
   thinking: ThinkingSettings | null; // 设置里的思考档位，打开画布时读一次
+  defaults: Record<Family, FamilyDefaults>; // 设置里两个系列的默认值，打开画布时读一次
   placing: Placing | null;
   flash: Flash | null;
   undoLabels: string[]; // 撤销栈里每一步叫什么，最后一个是下一次撤销的
@@ -107,7 +117,7 @@ const MERGE_MS = 1200;
 // patchNode 里这几个字段的改动进撤销栈
 const UNDOABLE_FIELDS = ['title', 'duration', 'aspectRatio'] as const;
 // 这几个字段改了，画布卡片上显示的东西跟着变，要重新读一遍画布
-const CARD_FIELDS = ['title', 'slots', 'duration', 'aspectRatio'] as const;
+const CARD_FIELDS = ['title', 'slots', 'duration', 'aspectRatio', 'systemPromptName', 'image'] as const;
 
 const sameSettings = (a: SlotSettings, b: SlotSettings) =>
   a.duration === b.duration && a.aspectRatio === b.aspectRatio && a.slots.length === b.slots.length && a.slots.every((id, i) => id === b.slots[i]);
@@ -137,6 +147,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       titleIsManual: server.titleIsManual,
     }));
   const imageName = (imageId: string) => get().detail?.images[imageId]?.originalName ?? '这张图';
+  // 节点现在的出图设置：改过的用节点自己的，没改过的按系列的默认值，和服务端一样
+  const imageSettingsOf = (node: ChatNode): ImageSettings =>
+    node.image ?? defaultImageSettings(get().defaults[get().prompts.find((p) => p.name === node.systemPromptName)?.family ?? 'IL']);
 
   // 卡片上的标题、概述、槽位缩略图由服务端算，改完重新读一遍画布；读不到只提示，不算这次操作失败
   const refreshCanvas = () => get().refresh().catch(failed);
@@ -221,7 +234,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
   const applyPatch = (nodeId: string, patch: NodePatch): Promise<void> => {
     const keys = Object.keys(patch);
     keys.forEach((key) => countQueued(`${nodeId}:${key}`, 1));
-    changeNode(nodeId, (node) => ({ ...node, ...patch }));
+    const { image, ...fields } = patch;
+    changeNode(nodeId, (node) => ({ ...node, ...fields, ...(image && { image: { ...imageSettingsOf(node), ...image } }) }));
     const run = patchQueue.then(async () => {
       let server: ChatNode;
       try {
@@ -457,8 +471,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     nodes: {},
     streams: {},
     modelConfigs: [],
-    promptNames: [],
+    prompts: [],
     thinking: null,
+    defaults: FAMILY_DEFAULTS,
     placing: null,
     flash: null,
     undoLabels: [],
@@ -472,13 +487,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         redoStack = [];
         stackEpoch += 1;
         set({ canvasId, detail: null, selectedId: null, nodes: {}, placing: null, flash: null, undoLabels: [], redoLabels: [] });
-        const [detail, config, promptNames, settings] = await Promise.all([
+        const [detail, config, prompts, settings] = await Promise.all([
           api<CanvasDetail>(`/canvases/${canvasId}`),
           api<Config>('/config'),
-          api<string[]>('/prompts'),
+          api<PromptInfo[]>('/prompts'),
           api<SharedSettings>('/settings'),
         ]);
-        if (get().canvasId === canvasId) set({ detail, modelConfigs: config.modelConfigs, promptNames, thinking: settings.thinking });
+        if (get().canvasId === canvasId) set({ detail, modelConfigs: config.modelConfigs, prompts, thinking: settings.thinking, defaults: settings.defaults });
       }),
 
     refresh: async () => {

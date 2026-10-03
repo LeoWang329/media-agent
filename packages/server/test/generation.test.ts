@@ -275,6 +275,7 @@ ${box.text}` },
           { language: '日文', text: `译文（日文）
 ${box.text}` },
         ],
+        image: null,
         createdAt: reply.createdAt,
       },
     ]);

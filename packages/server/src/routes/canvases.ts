@@ -38,7 +38,7 @@ import {
 } from '../store/canvases';
 import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
-import { DEFAULT_PROMPT, listPrompts } from '../store/prompts';
+import { DEFAULT_PROMPT, listPrompts, readPromptMeta } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import * as v from './validate';
 
@@ -144,11 +144,13 @@ export function canvasRoutes(configDir: string): express.Router {
     const { canvasId, nodeId } = ids(req);
     const text = v.nonEmptyText(req.body?.text, '消息');
     const parentId: string | null = req.body?.parentId ?? null;
-    await runGeneration({ configDir, work: await work(), canvasId, nodeId }, res, (node) => {
+    const w = await work();
+    const use = (await readPromptMeta(w, (await readNode(w, canvasId, nodeId)).systemPromptName))?.use;
+    await runGeneration({ configDir, work: w, canvasId, nodeId }, res, (node) => {
       const parent = parentId === null ? null : node.messages[parentId];
       if (parent === undefined) throw new HttpError(404, '找不到要接着回复的那条消息');
-      // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明
-      const { systemNote, attachments } = slotDiff(parent, node);
+      // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明；生图节点不说时长和比例
+      const { systemNote, attachments } = slotDiff(parent, node, use);
       const userMessage: Message = {
         id: randomUUID(),
         parentId,

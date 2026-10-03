@@ -1,4 +1,4 @@
-import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_MODEL_THINKING, DEFAULT_PRICING, type Config, type ModelConfigWithKey } from '@media-agent/shared';
+import { DEFAULT_IMAGE_LONG_SIDE, DEFAULT_MODEL_THINKING, DEFAULT_PRICING, type Config, type ModelConfigWithKey, type PromptInfo } from '@media-agent/shared';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
@@ -250,7 +250,10 @@ function DoneStep({ config, model, onBack }: { config: Config; model: ModelConfi
   const [prompts, setPrompts] = useState<string[]>([]);
 
   useEffect(() => {
-    api<string[]>('/prompts').then(setPrompts, () => setPrompts([]));
+    api<PromptInfo[]>('/prompts').then(
+      (list) => setPrompts(list.map((p) => p.name)),
+      () => setPrompts([]),
+    );
   }, []);
 
   return (

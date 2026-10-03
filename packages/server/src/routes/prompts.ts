@@ -1,7 +1,7 @@
 import express from 'express';
 import { requireWorkFolder } from '../config';
 import { openExternal } from '../native/openExternal';
-import { createPrompt, listPrompts, promptFile, readFormatRequirement, readPrompt, readPromptVersion, savePrompt, trashPrompt } from '../store/prompts';
+import { createPrompt, listPromptInfos, promptFile, readFormatRequirements, readPrompt, readPromptVersion, savePrompt, trashPrompt } from '../store/prompts';
 import * as v from './validate';
 
 export function promptRoutes(configDir: string): express.Router {
@@ -9,7 +9,7 @@ export function promptRoutes(configDir: string): express.Router {
   const work = () => requireWorkFolder(configDir);
 
   router.get('/prompts', async (_req, res) => {
-    res.json(await listPrompts(await work()));
+    res.json(await listPromptInfos(await work()));
   });
 
   router.post('/prompts', async (req, res) => {
@@ -46,7 +46,7 @@ export function promptRoutes(configDir: string): express.Router {
   });
 
   router.get('/format-requirement', async (_req, res) => {
-    res.json({ text: await readFormatRequirement() });
+    res.json(await readFormatRequirements());
   });
 
   return router;

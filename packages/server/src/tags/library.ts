@@ -95,11 +95,13 @@ async function readLibrary(dir: string): Promise<TagLibrary> {
 
   const updatedAt = ((await fs.readFile(path.join(dir, 'info.json'), 'utf8').then(JSON.parse).catch(() => null)) as { updatedAt?: string } | null)?.updatedAt;
   const live = entries.filter((entry) => !entry.deprecated);
+  const withZh = live.filter((entry) => hasCjk(entry.zh));
+  const uses = (list: TagEntry[]) => list.reduce((sum, entry) => sum + entry.count, 0);
   return {
     entries,
     byTag,
     aliases,
     near: [...near].map(([key, tag]) => ({ key, tag })),
-    info: { updatedAt: updatedAt ?? null, tags: live.length, withZh: live.filter((entry) => hasCjk(entry.zh)).length },
+    info: { updatedAt: updatedAt ?? null, tags: live.length, withZh: withZh.length, zhByUse: uses(live) ? uses(withZh) / uses(live) : 0, aliases: aliases.size },
   };
 }

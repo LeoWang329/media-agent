@@ -400,7 +400,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 别名：`https://danbooru.donmai.us/tag_aliases.json?search[status]=active&limit=1000&page=a<上一页最大的 id>&only=id,antecedent_name,consequent_name`，同样翻页。
   - 中文对照：`https://raw.githubusercontent.com/amenorira/danbooru-tags-data-zh/main/` 下的 `tags/` 五个文件和 `LICENSE`。
   - 请求头带 `User-Agent: media-agent`，一页一页按顺序请求，中间隔 0.5 秒。全部下完才整体换掉 `tags/`；中途失败，旧的不动，说是哪一步失败的。
-- 设置里显示词库是哪天的、多少个标签、多少个有中文。
+- 设置里显示词库是哪天的、多少个标签、多少个有中文（另写按使用次数算有中文的占多少）、多少条别名、数据从哪来。更新时能点「停止更新」，停在正在下的那一页，下了一半的扔掉，旧的不动。
 
 ### 5.14 生图节点（第三批）
 
@@ -597,7 +597,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - ComfyUI：局域网地址和测试连接；AutoDL 的 Token、实例、开机关机、空闲多久自动关机（5.17）。
   - 底模和默认值：读到的底模各属哪个系列，两个系列各自的默认值和默认模型，反推用哪个模型（5.17、5.18、5.21）。
   - 工作流：导入、改名、重新指定往哪填、删除（5.18）。
-  - 词库：哪天的、多少个标签、多少个有中文，「更新词库」和进度（5.13）。
+  - 词库：哪天的、多少个标签、多少个有中文、多少条别名，「更新词库」、进度和停止（5.13）。
   - 片段库（5.16）。
   - 出的图：临时文件夹的路径，能在资源管理器里打开（5.20）。
 
@@ -607,12 +607,12 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 ```
 配置       GET/PUT  /config                         （modelConfigs 每项是工作文件夹里的配置加上本机的 apiKey；GET 时 apiKey 打码；PUT 里 key 为 "******" 表示不改）
-提示词     GET      /prompts                         列表
+提示词     GET      /prompts                         列表（第三批起每项带用途和系列 {name, use, family}）
            GET/PUT  /prompts/:name                   读/写
            POST     /prompts                         新建 {name, text}
            DELETE   /prompts/:name
            GET      /prompts/:name/history/:hash     历史版本
-           GET      /format-requirement              固定格式要求原文
+           GET      /format-requirement              固定格式要求原文（第三批起两份 {video, image}）
 首页       GET      /home                            {canvases, recentNodes, starred, images}，见 6.1；工作文件夹读不了返回 503 和原因
 画布       POST     /canvases                        新建 {title}
            GET      /canvases/:id                    canvas.json + 每个节点的摘要（标题、slots、概述、星、折叠）
@@ -651,8 +651,9 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 设置       GET/PUT  /settings                        工作文件夹 settings.json
 词库       GET      /tags/search?q=                  见 5.13
            POST     /tags/check                      {tags, family} → 每个标签的校验结果
-           GET      /tags/info                       哪天的、多少个标签、多少个有中文
-           POST     /tags/update                     → SSE，下到哪一步
+           GET      /tags/info                       哪天的、多少个标签、多少个有中文、按使用次数算有中文的比例、多少条别名
+           POST     /tags/update                     → SSE，下到哪一步；停了推 {type:'stopped'}
+           POST     /tags/update/stop                停止更新，旧的不动
            POST     /tags/convert                    {canvasId, nodeId, text} → 标签（让模型转，5.15）
 片段       GET/POST /fragments
            PATCH/DELETE /fragments/:id

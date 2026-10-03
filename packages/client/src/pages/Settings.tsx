@@ -2,14 +2,17 @@ import {
   DEFAULT_IMAGE_LONG_SIDE,
   DEFAULT_MODEL_THINKING,
   DEFAULT_PRICING,
+  parsePromptMeta,
   THINKING_LEVELS,
   type Config,
+  type FormatRequirements,
   type ModelConfigWithKey,
+  type PromptInfo,
   type SharedSettings,
   type ThinkingSettings,
   type ThinkingUse,
 } from '@media-agent/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
 import { isPriced, ModelForm } from '../components/ModelForm';
@@ -21,8 +24,9 @@ import { SaveState, trackWrite } from '../ui/saveState';
 import { ThemeToggle } from '../ui/theme';
 import { LEVEL_LABELS, STYLE_LABELS, styleNote } from '../ui/thinking';
 import { toast } from '../ui/toast';
+import { FragmentsTab, TagLibraryTab } from './SettingsImage';
 
-type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking';
+type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'taglib' | 'fragments';
 
 const TABS: [Tab, string, IconName][] = [
   ['workdir', '工作文件夹', 'folder'],
@@ -32,12 +36,18 @@ const TABS: [Tab, string, IconName][] = [
   ['thinking', '思考', 'brain'],
 ];
 
+// 生图用的几节，导航里排在「生图」下面
+const IMAGE_TABS: [Tab, string, IconName][] = [
+  ['taglib', '词库', 'tag'],
+  ['fragments', '片段库', 'copy'],
+];
+
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
 export function Settings() {
   const { hash } = useLocation();
   const hashTab = hash.replace('#', '') as Tab;
-  const tab: Tab = TABS.some(([id]) => id === hashTab) ? hashTab : 'models';
+  const tab: Tab = [...TABS, ...IMAGE_TABS].some(([id]) => id === hashTab) ? hashTab : 'models';
   const [config, setConfig] = useState<Config | null>(null);
 
   useEffect(() => {
@@ -69,6 +79,12 @@ export function Settings() {
               <Icon name={icon} />{label}
             </Link>
           ))}
+          <div className="st-sep">生图</div>
+          {IMAGE_TABS.map(([id, label, icon]) => (
+            <Link key={id} to={{ hash: id }} data-tab={id} aria-current={tab === id ? 'page' : 'false'}>
+              <Icon name={icon} />{label}
+            </Link>
+          ))}
         </nav>
         <main className="st-main" id="main" data-od-id="settings-main">
           {config && tab === 'workdir' && <WorkdirTab config={config} onConfig={setConfig} />}
@@ -80,6 +96,8 @@ export function Settings() {
           {config && tab === 'prompts' && <PromptsTab key={config.workFolder} workFolder={config.workFolder} />}
           {tab === 'format' && <FormatTab />}
           {config && tab === 'thinking' && <ThinkingTab key={config.workFolder} config={config} />}
+          {config && tab === 'taglib' && <TagLibraryTab key={config.workFolder} workFolder={config.workFolder} />}
+          {config && tab === 'fragments' && <FragmentsTab key={config.workFolder} workFolder={config.workFolder} />}
         </main>
       </div>
     </>
@@ -330,11 +348,14 @@ const BUILTIN: Record<string, string> = {
   ref2va: '有参考图，图提供人物、场景、风格或分镜',
   i2v: '一张图当第一帧往后演',
   t2v: '纯文字，不用图',
+  il: '写 Illustrious 系列底模用的 Danbooru 标签',
+  pony: '写 Pony 系列底模用的 Danbooru 标签',
 };
 const DEFAULT_PROMPT = 'ref2va';
 
-// 自己建的没有说明，拿正文第一行
-const describe = (p: Prompt) => BUILTIN[p.name] ?? (p.text.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean) || '自己建的');
+// 自己建的没有说明，拿开头说明段后面正文的第一行
+const describe = (p: Prompt) =>
+  BUILTIN[p.name] ?? (parsePromptMeta(p.text).body.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).find(Boolean) || '自己建的');
 
 function PromptsTab({ workFolder }: { workFolder: string | null }) {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
@@ -346,8 +367,8 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
   );
 
   const load = useCallback(async (select?: string) => {
-    const names = await api<string[]>('/prompts');
-    const list = await Promise.all(names.map((name) => api<Prompt>(promptUrl(name))));
+    const infos = await api<PromptInfo[]>('/prompts');
+    const list = await Promise.all(infos.map(({ name }) => api<Prompt>(promptUrl(name))));
     setPrompts(list);
     if (select !== undefined) setSelectedName(select);
   }, []);
@@ -374,6 +395,13 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
   if (!workFolder) return <p className="muted">系统提示词存在工作文件夹里，先在「工作文件夹」里选一个。</p>;
 
   const sep = workFolder.includes('\\') ? '\\' : '/';
+  // 用途和系列看开头的说明段，边改边跟着变
+  const metaOf = (p: Prompt) => parsePromptMeta(p.text);
+  const selectedMeta = selected ? metaOf(selected) : null;
+  const groups: [string, Prompt[]][] = [
+    ['写视频提示词', prompts.filter((p) => metaOf(p).use === 'video')],
+    ['写生图标签 · 节点选了这些就变成生图节点', prompts.filter((p) => metaOf(p).use === 'image')],
+  ];
 
   const edit = (text: string) => {
     const next = { ...selected!, text };
@@ -428,24 +456,40 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
       </div>
       <div className="split">
         <div className="list" id="pList" data-od-id="system-prompt-list">
-          {prompts.map((p) => (
-            <button
-              key={p.name}
-              type="button"
-              className="li"
-              data-prompt={p.name}
-              aria-current={p.name === selected?.name ? 'true' : 'false'}
-              onClick={() => void flush().then(() => setSelectedName(p.name))}
-            >
-              <span className="t mono">{p.name}</span>
-              <span className="s">{describe(p)}</span>
-              <span className="tags">
-                {p.name in BUILTIN ? <span className="tag">自带</span> : <span className="tag">自己建的</span>}
-                {p.name === DEFAULT_PROMPT && <span className="tag tag-accent">新节点默认</span>}
-                <span className="tag mono">{fmtNum(p.text.length)} 字</span>
-              </span>
-            </button>
-          ))}
+          {groups.map(([title, list]) =>
+            list.length ? (
+              <Fragment key={title}>
+                <div className="li-sep">{title}</div>
+                {list.map((p) => {
+                  const meta = metaOf(p);
+                  return (
+                    <button
+                      key={p.name}
+                      type="button"
+                      className="li"
+                      data-prompt={p.name}
+                      aria-current={p.name === selected?.name ? 'true' : 'false'}
+                      onClick={() => void flush().then(() => setSelectedName(p.name))}
+                    >
+                      <span className="t mono">{p.name}</span>
+                      <span className="s">{describe(p)}</span>
+                      <span className="tags">
+                        {meta.use === 'image' && (
+                          <span className="tag tag-outline">
+                            <Icon name="sparkles" />
+                            生图{meta.family ? ` · ${meta.family}` : ''}
+                          </span>
+                        )}
+                        {p.name in BUILTIN ? <span className="tag">自带</span> : <span className="tag">自己建的</span>}
+                        {p.name === DEFAULT_PROMPT && <span className="tag tag-accent">新节点默认</span>}
+                        <span className="tag mono">{fmtNum(p.text.length)} 字</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </Fragment>
+            ) : null,
+          )}
         </div>
         {selected && (
           <section className="card editor" data-od-id="system-prompt-editor">
@@ -468,7 +512,8 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
             />
             <p className="hint" style={{ marginTop: 8 }}>
               改动自动写进 <span className="mono">{`${workFolder}${sep}prompts${sep}${selected.name}.md`}</span>。程序会在这段后面自动接上
-              <Link className="linkish" to={{ hash: 'format' }}>固定格式要求</Link>。
+              <Link className="linkish" to={{ hash: 'format' }}>固定格式要求</Link>
+              {selectedMeta?.use === 'image' && `（生图那一份）。开头的「用途: 生图」${selectedMeta.family ? `「底模: ${selectedMeta.family}」` : ''}是程序认它的依据，别删`}。
             </p>
           </section>
         )}
@@ -538,10 +583,10 @@ function NewPromptDialog({ from, existing, onClose, onCreated }: NewPromptProps)
 }
 
 function FormatTab() {
-  const [text, setText] = useState('');
+  const [texts, setTexts] = useState<FormatRequirements>({ video: '', image: '' });
 
   useEffect(() => {
-    api<{ text: string }>('/format-requirement').then((res) => setText(res.text), failed);
+    api<FormatRequirements>('/format-requirement').then(setTexts, failed);
   }, []);
 
   return (
@@ -553,7 +598,10 @@ function FormatTab() {
         </div>
         <span className="tag"><Icon name="lock" />只能看</span>
       </div>
-      <pre className="ro" data-od-id="format-requirement">{text}</pre>
+      <h3 className="ro-title">写视频提示词的那几套用这份</h3>
+      <pre className="ro" data-od-id="format-requirement">{texts.video}</pre>
+      <h3 className="ro-title">写生图标签的那几套（开头写了「用途: 生图」的）用这份</h3>
+      <pre className="ro" data-od-id="format-requirement-image">{texts.image}</pre>
     </>
   );
 }
