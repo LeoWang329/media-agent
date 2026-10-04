@@ -69,6 +69,31 @@ export function editedUserMessage(original: Message, text: string, id: string, c
   };
 }
 
+// 自己写的框：不调模型，接在 parentId 后面的一条回复，里面只有这一个框。槽位、时长、比例照节点现在的；
+// 记下节点现在用的系统提示词，之后编辑这个框时按它的系列查标签
+export function handwrittenMessage(
+  node: Pick<ChatNode, 'slots' | 'duration' | 'aspectRatio' | 'systemPromptName'>,
+  parentId: string | null,
+  promptText: string,
+  id: string,
+  createdAt: string,
+): Message {
+  const text = ['<prompt>', ...promptText.split(/\r?\n/), '</prompt>'].join('\n');
+  return {
+    id,
+    parentId,
+    role: 'assistant',
+    createdAt,
+    text,
+    slotSnapshot: [...node.slots],
+    duration: node.duration,
+    aspectRatio: node.aspectRatio,
+    systemPromptName: node.systemPromptName,
+    parsed: { prompts: parseReply(text).prompts },
+    handwritten: true,
+  };
+}
+
 // 手动改提示词：同一个父消息下新建一条 assistant 版本，正文是把那个框换掉之后的全文，不调模型。
 // usage、思考原文和思考时间不带过来，这一版没调模型；出的图是照原来的框出的，也不带；改的那个框的译文对不上了，也不带；
 // 框里的星、别的框的译文、当时用的模型和提示词版本照旧

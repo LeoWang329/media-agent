@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activePath, addMessage, composeMessages, directionDraft, editedUserMessage, forkChain, switchVersion, versionsOf } from '../src';
+import { activePath, addMessage, composeMessages, directionDraft, editedUserMessage, forkChain, handwrittenMessage, switchVersion, versionsOf } from '../src';
 import type { ChatNode, Message } from '../src';
 
 let clock = 0;
@@ -97,6 +97,20 @@ describe('composeMessages', () => {
       { role: 'user', content: [{ type: 'text', text: '写一个' }] },
       { role: 'assistant', content: '第一版' },
       { role: 'user', content: [{ type: 'text', text: '改一下' }] },
+    ]);
+  });
+
+  it('自己写的框：一条回复里只有这个框，标着自己写的；发给模型时当成用户说的话', () => {
+    const node = { slots: ['img1'], duration: 8, aspectRatio: '16:9' as const, systemPromptName: 'il' };
+    const written = handwrittenMessage(node, 'a1', '1girl, solo,\nred hair', 'h1', '2026-10-04T00:00:00.000Z');
+    expect(written).toMatchObject({ role: 'assistant', parentId: 'a1', slotSnapshot: ['img1'], systemPromptName: 'il', handwritten: true });
+    expect(written.parsed?.prompts).toEqual([{ index: 0, text: '1girl, solo,\nred hair', summary: expect.any(String) }]);
+
+    const path = [message('u1', null, 'user', { text: '写一个' }), message('a1', 'u1', 'assistant', { text: '第一版' }), written, message('u2', 'h1', 'user', { text: '优化一下' })];
+    expect(composeMessages(path, '系统提示词', '格式要求', (id) => id).slice(2)).toEqual([
+      { role: 'assistant', content: '第一版' },
+      { role: 'user', content: '我自己写了一个框：\n<prompt>\n1girl, solo,\nred hair\n</prompt>' },
+      { role: 'user', content: [{ type: 'text', text: '优化一下' }] },
     ]);
   });
 });

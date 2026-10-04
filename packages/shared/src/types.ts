@@ -24,10 +24,16 @@ export type ModelConfig = {
 // 生图底模的系列
 export type Family = 'IL' | 'Pony';
 
-// 工作文件夹 settings.json，两台机器共用：思考档位、局域网 ComfyUI 地址、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
+// 出图用哪台 ComfyUI：局域网那台，或者 AutoDL 上租的实例
+export type ComfyTarget = 'lan' | 'autodl';
+
+// AutoDL 选了哪个实例（没选是 null）、空闲多久自动关机（分钟）
+export type AutodlSettings = { instanceUuid: string | null; idleMinutes: number };
+
+// 工作文件夹 settings.json，两台机器共用：思考档位、局域网 ComfyUI 地址和 AutoDL 实例、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
 export type SharedSettings = {
   thinking: ThinkingSettings;
-  comfy: { lanUrl: string | null };
+  comfy: { lanUrl: string | null; autodl: AutodlSettings };
   checkpoints: Record<string, Family | null>;
   defaults: Record<Family, FamilyDefaults>;
 };
@@ -100,13 +106,16 @@ export type TagUpdateEvent =
 
 export type ModelConfigWithKey = ModelConfig & { apiKey: string };
 
-// GET/PUT /api/config 的数据：模型配置来自工作文件夹，key 来自本机
+// GET/PUT /api/config 的数据：模型配置来自工作文件夹，key 来自本机。
+// 出图用哪台 ComfyUI 和 AutoDL 的开发者 Token 也只记在本机，Token 在 GET 时打码
 export type Config = {
   workFolder: string | null;
   modelConfigs: ModelConfigWithKey[];
   assetFolders: string[];
   lastCollageFolder: string | null;
   lastDownloadFolder: string | null;
+  comfyTarget: ComfyTarget;
+  autodlToken: string | null;
 };
 
 // 生图节点的出图设置，存在 node.image，见 docs/dev-plan.md 5.14
@@ -127,7 +136,26 @@ export type ImageSettings = {
   negativeExtra: string; // 接在系列默认负面词后面
 };
 
-// 发给 ComfyUI 的全部参数，「同样参数再来」照这个发；positive、negative 是最终发出去的，含固定开头和默认负面词
+// ComfyUI 的 API 格式：节点号 → 节点类型和输入；连线写成 [节点号, 第几个输出]。导出来的还带着 _meta.title，是节点在界面上的标题
+export type ComfyGraph = Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: { title?: string } }>;
+
+// 导入的工作流往哪填：哪个节点的哪一项，见 docs/dev-plan.md 5.18。正面一定要有，别的可以不填
+export type FillTarget = { node: string; input: string };
+export type WorkflowFill = { positive: FillTarget; negative: FillTarget | null; seed: FillTarget | null; width: FillTarget | null; height: FillTarget | null };
+
+// 导入的工作流，存在工作文件夹 workflows/<id>.json；file 是导入时的文件名，hash 按 graph 算
+export type ImportedWorkflow = {
+  id: string;
+  name: string;
+  file: string;
+  hash: string;
+  importedAt: string;
+  graph: ComfyGraph;
+  fill: WorkflowFill;
+};
+
+// 发给 ComfyUI 的全部参数，「同样参数再来」照这个发；positive、negative 是最终发出去的，含固定开头和默认负面词。
+// 用导入的工作流时没有底模到 clip skip 这几项，照工作流里原来的
 export type ImageJobParams = {
   family: Family;
   positive: string;
@@ -168,22 +196,52 @@ export type ImageJob = {
   createdAt: string;
   kind: 'txt2img';
   source?: { kind: 'generated'; jobId: string; seed: number };
-  target: 'lan';
+  target: ComfyTarget;
   params: ImageJobParams;
   images: JobImage[];
 };
 
-// GET /api/image-jobs/events 推的事件：一组里有一张状态变了就发整组；进度和排在第几不存盘
+// GET /api/image-jobs/events 推的事件：一组里有一张状态变了就发整组；进度和排在第几不存盘；AutoDL 实例的状态变了发整个状态
 export type ImageJobEvent =
   | { type: 'job'; canvasId: string; nodeId: string; messageId: string; job: ImageJob }
   | { type: 'progress'; jobId: string; index: number; step: number; total: number }
-  | { type: 'queue'; jobId: string; index: number; position: number };
+  | { type: 'queue'; jobId: string; index: number; position: number }
+  | ({ type: 'autodl' } & AutodlState);
+
+// AutoDL 账号下的一个实例：设置里选，顶上的状态里显示。price 是每小时多少元，读不到是 null；startedAt 是开着时从什么时候开的，stoppedAt 是关着时从什么时候关的
+export type AutodlInstance = {
+  uuid: string;
+  name: string;
+  region: string;
+  gpu: string;
+  price: number | null;
+  status: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+};
+
+// AutoDL 实例现在怎样，见 docs/dev-plan.md 5.17。
+// unset 是还没填 Token 或没选实例；unknown 是查不到，原因在 error；failed 是程序开机没开成，原因在 error，下次开机前一直留着。
+// raw 是 AutoDL 返回的状态原文；since 是这次开机从什么时候开始等；upSince 是从什么时候开着的；
+// idleLeftMs 是还有多久自动关机，程序这边有图在出（busy）或者没开着是 null；byApp 是这次开机是程序开的
+export type AutodlState = {
+  state: 'unset' | 'unknown' | 'off' | 'booting' | 'running' | 'stopping' | 'failed';
+  raw: string | null;
+  since: number | null;
+  upSince: number | null;
+  idleLeftMs: number | null;
+  idleMinutes: number;
+  busy: boolean;
+  byApp: boolean;
+  error: string | null;
+  instance: AutodlInstance | null;
+};
 
 // 出完的一张图在哪：哪条回复、哪一组、第几张。卡片和首页拿它拼缩略图的地址
 export type GeneratedRef = { messageId: string; jobId: string; index: number; seed: number; starred: boolean };
 
-// 卡片上生图节点出图的情况：最近出的几张；正在出的几组一共出完几张、一共几张；最近一组是不是全失败了
-export type CardGenerated = { images: GeneratedRef[]; live: { done: number; total: number } | null; failed: boolean };
+// 卡片上生图节点出图的情况：最近出的几张；正在出的几组一共出完几张、一共几张，boot 是有发给 AutoDL 的还没发出去（在等开机）；最近一组是不是全失败了
+export type CardGenerated = { images: GeneratedRef[]; live: { done: number; total: number; boot: boolean } | null; failed: boolean };
 
 // 一张出的图的文件现在在哪：临时文件夹里的、下载的那份，不在了是 null
 export type ImageWhere = { temp: string | null; saved: string | null };
@@ -200,7 +258,8 @@ export type ComfyStatus =
   | { ok: true; url: string; version: string; gpu: string; vramTotal: number; vramFree: number }
   | { ok: false; url: string | null; error: string };
 
-// 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的
+// 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的。
+// nodeTypes 是这台装了的全部节点类型，用来查导入的工作流缺不缺插件
 export type ComfyOptions = {
   checkpoints: { name: string; family: Family | null; guessed: boolean }[];
   loras: string[];
@@ -211,6 +270,7 @@ export type ComfyOptions = {
   ipadapters: string[];
   clipVisions: string[];
   taggers: string[];
+  nodeTypes: string[];
 };
 
 export type AspectRatio = 'auto' | '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
@@ -283,6 +343,7 @@ export type Message = {
   stars?: number[];
   translations?: PromptTranslation[];
   editedFromMessageId?: string;
+  handwritten?: boolean; // 自己写的框（生图节点的「写标签」），没调模型
   videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];
   usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string; // 生成失败时的错误，text 为空

@@ -151,6 +151,7 @@ type Message = {
     usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   }[];
   editedFromMessageId?: string;         // 手动改提示词生成的版本，指向被改的那条
+  handwritten?: boolean;                // 生图节点「写标签」自己写的框，没调模型（5.14）
   videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];  // 预留，第一版恒为空
   usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string;                       // 生成失败时的错误，text 为空
@@ -187,7 +188,7 @@ type FamilyDefaults = {                 // 一个系列的默认值，见 5.18
 
 type SharedSettings = {                 // 工作文件夹 settings.json
   thinking: { level: ThinkingLevel; chat: ThinkingLevel | 'follow'; translate: ThinkingLevel | 'follow'; tagging: ThinkingLevel | 'follow' };
-  comfy: { lanUrl: string | null; autodl: { instanceUuid: string; idleMinutes: number } | null };
+  comfy: { lanUrl: string | null; autodl: { instanceUuid: string | null; idleMinutes: number } };  // 没选实例是 null
   checkpoints: Record<string, Family | null>;  // 底模文件名 → 系列，null 是两个都不是
   defaults: Record<Family, FamilyDefaults>;
   taggerModel: string | null;           // 反推用的模型
@@ -241,6 +242,7 @@ type Fragment = {                       // 片段，工作文件夹 fragments.js
 
 type ImportedWorkflow = {               // 工作文件夹 workflows/<id>.json
   id: string; name: string; hash: string; importedAt: string;
+  file: string;                         // 导入时的文件名，设置里显示
   graph: Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: { title?: string } }>;  // ComfyUI 的 API 格式
   fill: { positive: FillTarget; negative: FillTarget | null; seed: FillTarget | null; width: FillTarget | null; height: FillTarget | null };
 };
@@ -272,6 +274,7 @@ id 一律用 `crypto.randomUUID()`。
 - 编辑用户消息：在同一个父消息下新建一条 user 消息，文字是改过的，`slotSnapshot`、`duration`、`aspectRatio`、`attachments`、`systemNote` 原样复制自被编辑的那条；然后照常生成回复。也就是说，编辑早先的消息只改文字，图片沿用那条消息当时的。
 - 重新生成：在同一个父消息下新建一条 assistant 消息。
 - 手动改提示词：在同一个父消息下新建一条 assistant 消息，`text` 是原全文里把那个提示词框的内容替换掉之后的结果，`editedFromMessageId` 指向原来那条，重新解析。不调模型。
+- 自己写的框（5.14）：接在当前路径最后一条后面，新建一条 assistant 消息，`text` 只有一个不带名字的 `<prompt>` 框，`handwritten` 为真。不调模型，不能重答；编辑它照手动改提示词来，新版本也是自己写的。
 - 版本切换控件只在有兄弟版本的消息上显示，形如 `‹ 1/2 ›`。
 
 ### 5.3 fork
@@ -425,7 +428,10 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 生图节点的固定格式要求用 `docs/prompts/format-requirement-image.md`（P9 写）：和视频的一样用 `<title>` 和 `<prompt label="…">`；框里只放英文标签，英文逗号隔开，不写别的；标题概括这张图。设置页两份都能看。
 - 和视频节点不一样的地方：
   - 面板上时长和比例的位置换成尺寸和张数。尺寸九档：1024×1024；竖的 896×1152、832×1216、768×1344、640×1536；横的是这四个宽高对调，默认 832×1216。张数 1 到 8，默认 4。
-  - 出图设置存在 `node.image`。节点第一次变成生图节点时，按它的系列取默认值；底模下拉只列标成这个系列的底模（5.17）。
+  - 出图设置存在 `node.image`。节点第一次变成生图节点时，按它的系列取默认值；底模下拉只列标成这个系列的底模（5.17）。LoRA 可以挂几个，各带强度；选 LoRA 时能按名字搜，空格隔开的几个词都对得上才列出来，不分大小写。
+  - 输入框旁边有「写标签」：打开一个空的标签编辑窗（5.15），打中文英文都有联想，也能整串粘贴。「存成框」不问模型，存成一个框，回复那一栏写「自己写的」，角落写「自己写的，没有调用 AI」；这个框和模型写的一样能生图、编辑、打星、岔出。
+  - 写标签的窗里还有「让 AI 优化」，旁边能写一句要求：先把写的存成框，再在它后面像平时一样发一条消息给模型，内容是「优化上面这个框里我自己写的标签：」加要求，没写要求就用「保持原意，改成标准写法，补上缺的，去掉重复和冲突的」。模型带着系统提示词和前面的对话回一个新框，自己写的那个留着。
+  - 发给模型的对话里，自己写的框当成用户说的话：「我自己写了一个框：」加框的原文。
   - 槽位照旧：图照样发给模型看，也是参考图生图的来源（5.21）。5.4 的说明不写时长比例。
   - 提示词框上的按钮：复制、生图、打星、编辑（打开标签编辑窗，5.15）、沿此方向 fork。没有翻译（标签下面已经显示中文）和上传清单（那是往视频平台传图用的）。
   - 卡片上（画布和首页）：出过图的，缩略图换成最近出的图；没出过的照旧显示槽位里的图。时长比例那行换成尺寸和系列。
@@ -465,11 +471,12 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 底模属于哪个系列：设置里列出读到的底模，每个选 IL、Pony 或都不是，存 `settings.json` 的 `checkpoints`（都不是存 null）。没标过的按文件名猜，不分大小写：名字里有 pony 的当 Pony；有 illustrious、noob、wai，或者单独一个 IL（比如 IL-xxx、xxx_IL）的当 IL；别的两个都不是。节点的底模下拉只列这个系列的，都不是的哪里都不列。
 - AutoDL：
   - 开发者 Token 只存本机 `config.json`，和模型密钥一样不进工作文件夹；实例 uuid 和空闲多久关机（默认 15 分钟）存 `settings.json`。
-  - 填了 Token 后列出账号下的实例（`POST https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/list`，请求头 `Authorization: <Token>`），选一个。
-  - 状态用 `GET …/pro/status`；运行中时从 `GET …/pro/snapshot` 取 6006 端口的访问地址，当 ComfyUI 地址用。
+  - 填了 Token 后列出账号下的实例（`POST https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/list`，请求头 `Authorization: <Token>`），选一个。显卡和每小时的价格从各自的快照里取，价格的单位是千分之一元。
+  - 状态用 `GET …/pro/status`：`running` 是开着，`shutdown` 是关了。运行中时从 `GET …/pro/snapshot` 取 6006 端口的访问地址（`service_6006_domain`，只有域名和端口，前面加 `https://`），当 ComfyUI 地址用。
+  - AutoDL 出错时 HTTP 也是 200，看返回的 `code`：Token 不对是 `AuthorizeFailed`，实例不存在是 `RecordNotFoundError`，`msg` 是原话。余额不够的 `code` 文档没写，按原话里有没有「余额」认。
   - 出图时实例关着：先开机（`POST …/pro/power_on`，`{instance_uuid, payload: "gpu"}`），每 5 秒查一次状态；变成运行中以后，再等到 ComfyUI 的 `/system_stats` 能通，然后发任务。超过 5 分钟没好算失败。界面上显示「正在开机，等了 N 秒」。
-  - 设置里和出图设置里都能手动开机、关机（`POST …/pro/power_off`）。
-  - 自动关机：实例开着，程序这边最后一个任务结束后空闲到设定的分钟数，就关机。服务退出时（Ctrl+C），实例是程序开的而且还开着，先关机再退出。程序没开着时管不了，所以界面上要一直看得到实例开着。
+  - 设置里和出图设置里都能手动开机、关机（`POST …/pro/power_off`）。正在开机时点「别开了」：等着开机的图算叫停，已经发出的开机请求等它开好后马上关掉。
+  - 自动关机：实例开着，程序这边最后一个任务结束后空闲到设定的分钟数，就关机。实例不是程序开的、程序这边也没出过图的，从程序看到它开着时算起。到点时先看一眼 ComfyUI 的队列（`GET /queue`）：里面有任务（比如在 ComfyUI 网页上直接出的图）就不关，过一分钟再看；队列空了，从最后一次看到有任务时起再空闲到设定的分钟数才关。看不了队列（ComfyUI 连不上）照常关。服务退出时（Ctrl+C、关掉窗口），这次开机是程序开的、又没见它关掉，先发关机请求再退出。程序没开着时管不了，所以界面上要一直看得到实例开着。
   - 访问地址要不要另外鉴权、ComfyUI 是不是开机就自己起来、跑在哪个端口，文档没写。P11 开工前先用用户的真实例核对，结果写进 P11 的报告。
   - 出错要说清是哪种，带上 AutoDL 返回的原话：Token 不对、实例不存在、余额不够开不了机、开机超时。
 
@@ -491,18 +498,18 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 - 导入的工作流：
   - 只认 API 格式，就是在 ComfyUI 里用「导出（API）」存下来的 JSON，顶层是「节点号 → `{class_type, inputs}`」。导进来的是普通工作流文件（顶层有 `nodes`、`links`）时，提示「请在 ComfyUI 里用「导出（API）」再存一份」。
-  - 程序自动找往哪填：顺着 `KSampler`（或 `KSamplerAdvanced`）的 `positive`、`negative` 连线找到两个 `CLIPTextEncode` 的 `text`；`KSampler` 的 `seed`（`KSamplerAdvanced` 是 `noise_seed`）；`EmptyLatentImage` 的 `width`、`height`。找不到或者有好几个候选的，导入窗口里列出节点（节点号、类型、`_meta.title`）让用户选。正面一定要有，其他几项可以不填。
-  - 存到工作文件夹 `workflows/<id>.json`。设置里能改名、重新指定往哪填、删除。
+  - 程序自动找往哪填：顺着 `KSampler`（或 `KSamplerAdvanced`）的 `positive`、`negative` 连线找到两个 `CLIPTextEncode` 的 `text`，中间隔着 ControlNet、合并条件这类节点也顺着找过去；`KSampler` 的 `seed`（`KSamplerAdvanced` 是 `noise_seed`）；`EmptyLatentImage` 的 `width`、`height`。找不到或者有好几个候选的，导入窗口里列出节点（节点号、类型、`_meta.title`）让用户选，有候选的先选上第一个。正面一定要有，其他几项可以不填。
+  - 存到工作文件夹 `workflows/<id>.json`，名字不能重。设置里能改名、重新指定往哪填、删除（挪进 `.trash`，用它的节点出图时换回内置流程）。
   - 出图时只改这几个值，其他照原样；张数和种子照内置流程的做法。系列固定开头和默认负面词照样加，填的是整个 `text`，工作流里原来写的会被换掉。
   - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、修脸、局部重绘、参考图只用内置流程。
-- 发任务前对照 `/object_info`：工作流里有这台 ComfyUI 上没有的节点类型，直接说缺哪几个，不发。内置流程用到插件节点时（5.21）也一样。
+- 发任务前对照 `/object_info`：工作流里有这台 ComfyUI 上没有的节点类型，直接说缺哪几个，不发。节点列表是缓存的，说缺之前先重读一次，刚装好插件的不用手动刷新。内置流程用到插件节点时（5.21）也一样。
 
 ### 5.19 出图任务（第三批）
 
 - 点「生图」：服务端按节点的出图设置和这个框拼好参数，建一个 `ImageJob` 挂到这条 assistant 消息的 `images` 里，每张图一项，状态是排队，存盘后返回；然后逐张 `POST /prompt`（带本程序的 `client_id`），记下每张的 `prompt_id`。
 - 一个框可以点好几次生图，每次一个 `ImageJob`，按时间排。
 - 进度：服务端对每台 ComfyUI 开一个 WebSocket（`/ws?clientId=`），收 `executing`、`progress`（第几步、共几步）、`execution_success`、`execution_error`、`execution_interrupted`；排在第几用 `GET /queue` 算。前端从 `GET /api/image-jobs/events`（SSE）收变化。进度和排队位置不存盘。
-- 出完一张：`GET /history/{prompt_id}` 找到输出的图，`GET /view` 下载下来，存进临时文件夹（5.20），这一项改成完成。
+- 出完一张：`GET /history/{prompt_id}` 找到输出的图，`GET /view` 下载下来，存进临时文件夹（5.20），这一项改成完成。导入的工作流可能既有预览又有存图，取最后一张存图（`type` 是 `output`），没有存图的取最后一张预览。
 - 叫停：还在排队的从 ComfyUI 的队列里删掉（`POST /queue`，`{delete: [prompt_id…]}`）；正在跑的 `POST /interrupt`。新版 ComfyUI 的 `/interrupt` 能带 `prompt_id`，只停这一个，接的时候核对；老版本不认，会停掉 ComfyUI 当前正在跑的任何任务。已经出完的图留着。
 - 出错要说清是哪种，带上原话：
   - 连不上：地址不对，或者 ComfyUI 没开；
@@ -629,6 +636,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            POST     /canvases/:id/nodes/:nid/messages/:mid/regenerate      → SSE 流
            POST     /canvases/:id/nodes/:nid/messages/:mid/edit  {text}    → SSE 流（用户消息的新版本 + 回复）
            POST     /canvases/:id/nodes/:nid/messages/:mid/edit-prompt {promptIndex, text} → 新 assistant 版本，不调模型
+           POST     /canvases/:id/nodes/:nid/handwritten {parentId, text} → 节点；自己写的框，不调模型（5.14）
            POST     /canvases/:id/nodes/:nid/messages/:mid/star {promptIndex, on}
            POST     /canvases/:id/nodes/:nid/messages/:mid/translate {promptIndex, language, instruction?} → 这份译文（等模型写完才返回，见 5.11）
            POST     /canvases/:id/nodes/:nid/stop     停止正在生成的回复
@@ -659,12 +667,12 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            POST     /tags/convert                    {canvasId, nodeId, text} → 标签（让模型转，5.15）
 片段       GET/POST /fragments
            PATCH/DELETE /fragments/:id
-ComfyUI    GET      /comfy/status?target=lan|autodl  连不连得上、版本、显卡；AutoDL 另有实例状态和多久后自动关机
-           GET      /comfy/options?target=&refresh=1 底模、LoRA、采样器、各种模型、有哪些节点类型
+ComfyUI    GET      /comfy/status?target=lan|autodl  局域网那台连不连得上、版本、显卡；target=autodl 回 AutoDL 实例的状态、多久后自动关机
+           GET      /comfy/options?target=&refresh=1 底模、LoRA、采样器、各种模型、有哪些节点类型；不带 target 用这台电脑出图用的那台。AutoDL 关着时给读过的
            GET      /comfy/autodl/instances          用本机 Token 列实例
            POST     /comfy/autodl/power              {on} 开机或关机
 工作流     GET      /workflows
-           POST     /workflows                       {name, json} → 存好的工作流，带自动找到的填值位置和候选节点
+           POST     /workflows                       {name, file, graph, fill} → 存好的工作流。往哪填在导入窗口里就认好、挑好了，点「导入」才发
            PATCH    /workflows/:id                   {name, fill}
            DELETE   /workflows/:id
 出图       POST     /canvases/:id/nodes/:nid/messages/:mid/images   {promptIndex, kind, source?, reference?, again?} → ImageJob
@@ -684,7 +692,7 @@ ComfyUI    GET      /comfy/status?target=lan|autodl  连不连得上、版本、
            GET      /image-jobs/events               SSE，见下面
 ```
 
-出图事件（`/image-jobs/events`，第三批）：`{type:'job', canvasId, nodeId, messageId, job}`（任务或其中一张的状态变了，发整个任务）、`{type:'progress', jobId, index, step, total}`、`{type:'queue', jobId, index, position}`、`{type:'autodl', state, since, idleLeftMs}`。
+出图事件（`/image-jobs/events`，第三批）：`{type:'job', canvasId, nodeId, messageId, job}`（任务或其中一张的状态变了，发整个任务）、`{type:'progress', jobId, index, step, total}`、`{type:'queue', jobId, index, position}`、`{type:'autodl', state, since, idleLeftMs, …}`（AutoDL 实例的整个状态，新连上的页面先收到一次）。
 
 SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（send 和 edit 先发这个）、`{type:'assistant-start', message}`、`{type:'delta', text}`、`{type:'done', message}`（含解析结果和 usage）、`{type:'error', message}`。第三批加 `{type:'reasoning', text}`，是思考原文的一段（5.12）。服务端收到流的每一段就落盘一次 `text`（节流 1 秒），中断后再打开也能看到已收到的部分。
 
@@ -822,7 +830,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - 首页数据：最近动过的节点只算自己发过消息的；打过星的提示词带当时的图和译文，岔出去的节点复制来的只列一次；画布动过的时间算上节点；工作文件夹读不了返回 503。
 - 星标：岔出去的节点复制来的星，画布卡片上不显示；它自己回复里打的星照常显示。
 - 节点 fork：链复制正确、槽位和时长正确、父子关系正确。
-- send 走 mock-llm：SSE 事件顺序、消息落盘、解析结果、标题写进节点；regenerate 生成兄弟；edit 生成用户版本并复制快照；edit-prompt 不调模型。
+- send 走 mock-llm：SSE 事件顺序、消息落盘、解析结果、标题写进节点；regenerate 生成兄弟；edit 生成用户版本并复制快照；edit-prompt 不调模型；handwritten 不调模型，之后发给模型时当成用户说的话。
 - 图片导入：正常图原样复制；6000 像素图缩到 5760；200 像素图放大到 256；同一文件第二次导入复用 id；`.llm.jpg` 长边 1600。
 - 资产库：扫描只列支持的格式；搜索跨根文件夹；路径越界返回 403。
 - 停止生成后消息保留已收到的部分。
@@ -831,7 +839,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
   - 词库接口（用小词库）；更新词库对着 mock 起的假 Danbooru 接口，全部下完才换掉，中途失败旧的不动。
   - 出图任务对 mock-comfyui 的全过程：排队、进度、完成，文件出现在 `image-temp/当天/`；叫停排队的和正在跑的；几种失败的说法；服务重启后接着取图。
   - 下载：复制过去，文件夹不在资产库时 `inLibrary` 为假。
-  - AutoDL：出图时自动开机，空闲到点自动关机（用假时钟）。
+  - AutoDL：出图时自动开机，空闲到点自动关机，到点时 ComfyUI 上还有任务不关（用假时钟）。
   - 缺节点时不发任务。
 
 ### 9.4 端到端（Playwright，对 mock-llm）
@@ -842,7 +850,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 `tools/mock-comfyui`，Express 加 WebSocket，监听 3798，接口的样子照真的 ComfyUI：
 
-- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，一个 LoRA，常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`、`InpaintCropImproved`、`InpaintStitchImproved`）默认都有，测试能通过接口去掉某几个，测缺节点。
+- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，三个 LoRA（两个放在子文件夹 `IL/` 里，测按名字搜），常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`、`InpaintCropImproved`、`InpaintStitchImproved`）默认都有，测试能通过接口去掉某几个，测缺节点。
 - `/prompt`：检查底模文件名和节点类型，不对就返回 `node_errors`；收下后排队，一个一个跑，每个 5 步、共 1.5 秒，WebSocket 按真的格式发 `executing`、`progress`、`execution_success`。
 - 正面提示词含「慢」→ 每个跑 6 秒，测叫停；含「报错」→ `execution_error`；含「显存」→ 错误里写 `CUDA out of memory`。
 - `/history`、`/view`：图是按尺寸现画的 PNG，上面写着种子和正面提示词的前 40 个字；`/upload/image` 收图；`/queue` 能删；`/interrupt` 停当前的。

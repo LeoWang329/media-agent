@@ -1,5 +1,5 @@
 import { splitTags, tagKey } from './tags';
-import type { CardImageInfo, ChatNode, Family, FamilyDefaults, ImageSettings, PromptMeta } from './types';
+import type { AutodlSettings, CardImageInfo, ChatNode, Family, FamilyDefaults, ImageSettings, PromptMeta } from './types';
 
 export const FAMILIES: Family[] = ['IL', 'Pony'];
 
@@ -18,6 +18,10 @@ export const IMAGE_SIZES: { width: number; height: number }[] = [
 
 // 节点还没改过尺寸时用竖的 832×1216
 export const DEFAULT_IMAGE_SIZE = { width: 832, height: 1216 };
+
+// AutoDL 还没设置过：没选实例，空闲 15 分钟自动关机；能填 5 到 240 分钟，见 docs/dev-plan.md 5.17
+export const DEFAULT_AUTODL: AutodlSettings = { instanceUuid: null, idleMinutes: 15 };
+export const AUTODL_IDLE_MINUTES = { min: 5, max: 240 };
 
 // 两个系列的初始默认值，按常见用法填，见 docs/dev-plan.md 5.18；设置里能改
 export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {

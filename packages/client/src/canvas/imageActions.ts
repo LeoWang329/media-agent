@@ -2,6 +2,7 @@ import { imageErrorKind, isLiveImage, type GeneratedRef, type ImageJob, type Ima
 import { create } from 'zustand';
 import { api } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
+import { useComfyStore } from '../store/comfyStore';
 import { clock } from '../ui/format';
 import { trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
@@ -85,12 +86,15 @@ const findJob = ({ nodeId, messageId }: ImagePlace, jobId: string) => useCanvasS
 
 async function start(place: ImagePlace, body: unknown): Promise<ImageJob | undefined> {
   try {
+    // 出图设置是先改界面再排队存的：等刚改的存好再发，服务端按界面上看到的出
+    await useCanvasStore.getState().patchesSaved();
     const job = await trackWrite(api<ImageJob>(jobsUrl(place), { method: 'POST', body }));
     putJob(place, job);
     // 推送先到、已经出完的，出完时的提示在 onImageEvent 里说过了
     if ((findJob(place, job.id) ?? job).images.some(isLiveImage)) watching.add(job.id);
     refreshCards();
-    toast(`开始出 ${job.images.length} 张，按顺序排进 ComfyUI 的队列`);
+    const booting = job.target === 'autodl' && useComfyStore.getState().autodl?.state !== 'running';
+    toast(booting ? 'AutoDL 实例关着，先开机，开好了再出图。开机一般要一两分钟' : `开始出 ${job.images.length} 张，按顺序排进 ComfyUI 的队列`);
     return job;
   } catch (err) {
     failed(err);
@@ -160,7 +164,9 @@ export const usePicks = create<Picks>((set) => ({
 
 // 格子上、提示条里说的失败原因，一两个词
 export function shortError(error: string): string {
-  return { down: '连不上', checkpoint: '底模文件不在', rejected: 'ComfyUI 不收', memory: '显存不够', restart: '程序重启时没出完', other: '出错了' }[imageErrorKind(error)];
+  return { down: '连不上', checkpoint: '底模文件不在', rejected: 'ComfyUI 不收', missing: '缺插件', memory: '显存不够', restart: '程序重启时没出完', boot: '开机失败', other: '出错了' }[
+    imageErrorKind(error)
+  ];
 }
 
 // 一组的叫法：照着哪张再来的写清楚

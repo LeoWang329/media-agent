@@ -15,6 +15,9 @@ export function loadObjectInfo(url: string, refresh = false): Promise<ObjectInfo
   return info;
 }
 
+// 这台读过、缓存着：AutoDL 关机以后照样能给出读过的下拉选项
+export const hasObjectInfo = (url: string) => cache.has(url);
+
 // 下拉选项有两种写法：老的 [[选项…], {…}]，新的 ['COMBO', {options: […]}]
 function comboOptions(info: ObjectInfo, nodeType: string, input: string): string[] {
   const inputs = info[nodeType]?.input;
@@ -39,5 +42,6 @@ export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | n
     ipadapters: comboOptions(info, 'IPAdapterModelLoader', 'ipadapter_file'),
     clipVisions: comboOptions(info, 'CLIPVisionLoader', 'clip_name'),
     taggers: comboOptions(info, 'WD14Tagger|pysssss', 'model'),
+    nodeTypes: Object.keys(info),
   };
 }

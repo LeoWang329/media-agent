@@ -66,7 +66,7 @@ describe('本机配置', () => {
   it('没有配置文件时返回空配置', async () => {
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ workFolder: null, modelConfigs: [], assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null });
+    expect(res.body).toEqual({ workFolder: null, modelConfigs: [], assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null, comfyTarget: 'lan', autodlToken: null });
   });
 
   it('设工作文件夹：建好目录、复制默认提示词，再设一次不覆盖已改过的提示词', async () => {

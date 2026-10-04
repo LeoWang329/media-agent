@@ -6,6 +6,7 @@ import {
   DEFAULT_MODEL_THINKING,
   DEFAULT_PRICING,
   THINKING_STYLES,
+  type ComfyTarget,
   type Config,
   type ModelConfig,
   type ModelConfigWithKey,
@@ -19,13 +20,16 @@ import { withLock } from './store/locks';
 import { initWorkFolder } from './store/workFolder';
 
 // 本机 config.json；模型配置本身存在工作文件夹，这里只按 id 存 key。
-// comfyClientId 是连 ComfyUI 时用的固定身份，程序重启后用同一个，ComfyUI 才会把没跑完的任务的进度接着推过来
+// comfyClientId 是连 ComfyUI 时用的固定身份，程序重启后用同一个，ComfyUI 才会把没跑完的任务的进度接着推过来。
+// 出图用哪台 ComfyUI、AutoDL 的开发者 Token 也只存本机，见 docs/dev-plan.md 5.17
 type LocalConfig = {
   workFolder: string | null;
   apiKeys: Record<string, string>;
   assetFolders: string[];
   lastCollageFolder: string | null;
   lastDownloadFolder: string | null;
+  comfyTarget: ComfyTarget;
+  autodlToken: string | null;
   comfyClientId?: string;
 };
 
@@ -37,7 +41,13 @@ export function defaultConfigDir(): string {
 
 async function readLocalConfig(configDir: string): Promise<LocalConfig> {
   const saved = await readJson<Partial<LocalConfig>>(path.join(configDir, 'config.json'));
-  return { workFolder: null, apiKeys: {}, assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null, ...saved };
+  return { workFolder: null, apiKeys: {}, assetFolders: [], lastCollageFolder: null, lastDownloadFolder: null, comfyTarget: 'lan', autodlToken: null, ...saved };
+}
+
+// 出图那边用：工作文件夹、出图用哪台、AutoDL 的 Token，不用读模型配置
+export async function readComfyConfig(configDir: string): Promise<Pick<LocalConfig, 'workFolder' | 'comfyTarget' | 'autodlToken'>> {
+  const { workFolder, comfyTarget, autodlToken } = await readLocalConfig(configDir);
+  return { workFolder, comfyTarget, autodlToken };
 }
 
 const modelConfigsFile = (workFolder: string) => path.join(workFolder, 'model-configs.json');
@@ -57,6 +67,8 @@ export async function readConfig(configDir: string): Promise<Config> {
     assetFolders: local.assetFolders,
     lastCollageFolder: local.lastCollageFolder,
     lastDownloadFolder: local.lastDownloadFolder,
+    comfyTarget: local.comfyTarget,
+    autodlToken: local.autodlToken,
   };
 }
 
@@ -70,6 +82,7 @@ export function maskConfig(config: Config): Config {
   return {
     ...config,
     modelConfigs: config.modelConfigs.map((m) => ({ ...m, apiKey: m.apiKey ? API_KEY_MASK : '' })),
+    autodlToken: config.autodlToken ? API_KEY_MASK : null,
   };
 }
 
@@ -83,7 +96,7 @@ function changeLocalConfig(configDir: string, change: (local: LocalConfig) => Pr
   });
 }
 
-// PUT /config 只改请求里带了的 workFolder、modelConfigs
+// PUT /config 只改请求里带了的 workFolder、modelConfigs、comfyTarget、autodlToken
 export async function updateConfig(configDir: string, body: unknown): Promise<Config> {
   if (typeof body !== 'object' || body === null) throw new HttpError(400, '请求内容格式不对');
   const input = body as Record<string, unknown>;
@@ -116,6 +129,18 @@ export async function updateConfig(configDir: string, body: unknown): Promise<Co
         else delete local.apiKeys[id];
       }
       await writeJsonAtomic(modelConfigsFile(local.workFolder), items.map(({ apiKey: _, ...rest }) => rest));
+    }
+
+    if ('comfyTarget' in input) {
+      if (input.comfyTarget !== 'lan' && input.comfyTarget !== 'autodl') throw new HttpError(400, '出图用哪台只能是 lan 或 autodl');
+      local.comfyTarget = input.comfyTarget;
+    }
+
+    // 和模型密钥一样：打码的那串是没改，空着是清掉
+    if ('autodlToken' in input) {
+      const token = input.autodlToken === null ? '' : input.autodlToken;
+      if (typeof token !== 'string') throw new HttpError(400, 'AutoDL 的 Token 要是文字');
+      if (token !== API_KEY_MASK) local.autodlToken = token.trim() || null;
     }
   });
 }

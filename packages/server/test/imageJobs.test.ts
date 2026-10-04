@@ -1,8 +1,11 @@
 import {
+  BUILTIN_WORKFLOW,
   builtinGraph,
   FAMILY_DEFAULTS,
+  importedGraph,
   type CanvasDetail,
   type ChatNode,
+  type ComfyGraph,
   type ComfyOptions,
   type ComfyStatus,
   type Config,
@@ -11,6 +14,7 @@ import {
   type ImageJobEvent,
   type ImageTempInfo,
   type ImageWhere,
+  type ImportedWorkflow,
   type Message,
   type SharedSettings,
 } from '@media-agent/shared';
@@ -287,7 +291,7 @@ describe('出图任务', () => {
     // 正在出：出完几张、一共几张
     const slowId = await prepare('1girl, 慢', { count: 2 });
     const slow = await t.ok<ImageJob>('POST', imagesUrl(slowId), { promptIndex: 0 });
-    expect((await card())!.live).toEqual({ done: 0, total: 2 });
+    expect((await card())!.live).toEqual({ done: 0, total: 2, boot: false });
     await t.ok('POST', `${imagesUrl(slowId)}/${slow.id}/stop`);
     await until(slowId, slow.id, settled);
     expect((await card())!.failed).toBe(false);
@@ -435,7 +439,7 @@ describe('出图设置', () => {
       { name: 'il-test.safetensors', family: 'IL', guessed: true },
       { name: 'pony-test.safetensors', family: 'Pony', guessed: true },
     ]);
-    expect(options).toMatchObject({ loras: ['detail-test.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
+    expect(options).toMatchObject({ loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
     expect(options.samplers).toContain('euler_ancestral');
 
     await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });
@@ -475,5 +479,101 @@ describe('出图设置', () => {
 
     const fork = await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: replyId });
     expect(fork.image).toMatchObject({ width: 1216, height: 832, count: 2 });
+  });
+});
+
+// ComfyUI 自带的文生图「导出（API）」的样子，最后存图
+const API_WORKFLOW: ComfyGraph = {
+  '3': {
+    class_type: 'KSampler',
+    inputs: { seed: 5, steps: 20, cfg: 8, sampler_name: 'euler', scheduler: 'normal', denoise: 1, model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['5', 0] },
+    _meta: { title: 'KSampler' },
+  },
+  '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'pony-test.safetensors' }, _meta: { title: 'Load Checkpoint' } },
+  '5': { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512, batch_size: 1 }, _meta: { title: 'Empty Latent Image' } },
+  '6': { class_type: 'CLIPTextEncode', inputs: { text: 'beautiful scenery', clip: ['4', 1] }, _meta: { title: '正面' } },
+  '7': { class_type: 'CLIPTextEncode', inputs: { text: 'text, watermark', clip: ['4', 1] }, _meta: { title: '负面' } },
+  '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'ComfyUI', images: ['8', 0] } },
+};
+const FILL = {
+  positive: { node: '6', input: 'text' },
+  negative: { node: '7', input: 'text' },
+  seed: { node: '3', input: 'seed' },
+  width: { node: '5', input: 'width' },
+  height: { node: '5', input: 'height' },
+};
+
+describe('导入的工作流', () => {
+  const create = (body: Record<string, unknown> = {}) => t.ok<ImportedWorkflow>('POST', '/workflows', { name: '基础文生图', file: 'basic-api.json', graph: API_WORKFLOW, fill: FILL, ...body });
+
+  it('导入存进工作文件夹 workflows；名字重了、普通格式、往哪填对不上的不收；能改名、重新指定往哪填；删除挪进回收站', async () => {
+    const workflow = await create();
+    expect(workflow).toMatchObject({ name: '基础文生图', file: 'basic-api.json', graph: API_WORKFLOW, fill: FILL });
+    expect(workflow.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(await fs.readFile(path.join(t.work, 'workflows', `${workflow.id}.json`), 'utf8'))).toEqual(workflow);
+    expect(await t.ok('GET', '/workflows')).toEqual([workflow]);
+
+    expect(await t.call('POST', '/workflows', { name: '基础文生图', file: 'a.json', graph: API_WORKFLOW, fill: FILL })).toEqual({
+      status: 409,
+      body: { error: '已经有叫「基础文生图」的工作流，换一个名字' },
+    });
+    expect((await t.call('POST', '/workflows', { name: '普通格式', file: 'a.json', graph: { nodes: [], links: [] }, fill: FILL })).body).toEqual({
+      error: '这是普通的工作流文件，不是 API 格式。请在 ComfyUI 里用「导出（API）」再存一份',
+    });
+    expect((await t.call('POST', '/workflows', { name: '对不上', file: 'a.json', graph: API_WORKFLOW, fill: { ...FILL, seed: { node: '6', input: 'text' } } })).body).toEqual({
+      error: '种子要填的 6 号节点的 text 在工作流里不是数',
+    });
+    expect((await t.call('POST', '/workflows', { name: '没有正面', file: 'a.json', graph: API_WORKFLOW, fill: { ...FILL, positive: null } })).status).toBe(400);
+
+    const renamed = await t.ok<ImportedWorkflow>('PATCH', `/workflows/${workflow.id}`, { name: '改过名的', fill: { ...FILL, negative: null, width: null, height: null } });
+    expect(renamed).toEqual({ ...workflow, name: '改过名的', fill: { ...FILL, negative: null, width: null, height: null } });
+
+    await t.ok('DELETE', `/workflows/${workflow.id}`);
+    expect(await t.ok('GET', '/workflows')).toEqual([]);
+    expect((await fs.readdir(path.join(t.work, '.trash'))).some((name) => name.endsWith(`-workflow-${workflow.id}.json`))).toBe(true);
+    expect((await t.call('DELETE', `/workflows/${workflow.id}`)).status).toBe(404);
+  });
+
+  it('选导入的工作流出图：只换正面、负面、种子、尺寸，别的照原样；参数里记工作流，不记底模这些；取存下来的那张', async () => {
+    const workflow = await create();
+    const messageId = await prepare('1girl, smile', { workflowId: workflow.id, count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params).toEqual({
+      family: 'IL',
+      positive: 'masterpiece, best quality, 1girl, smile',
+      negative: FAMILY_DEFAULTS.IL.negative,
+      workflow: { id: workflow.id, name: '基础文生图', hash: workflow.hash },
+      width: 832,
+      height: 1216,
+    });
+    const done = await until(messageId, job.id, settled);
+    expect(done.images.map((image) => [image.status, image.width, image.height])).toEqual([
+      ['done', 832, 1216],
+      ['done', 832, 1216],
+    ]);
+    expect(done.params.checkpoint).toBeUndefined();
+    expect((await lastPrompts()).map((body) => body.prompt)).toEqual([importedGraph(workflow, job.params, 100), importedGraph(workflow, job.params, 101)]);
+  });
+
+  it('缺插件的一张都不发，说出缺哪几种节点；工作流删了，节点换回内置流程，照着它出的图再来就说删了', async () => {
+    const lacking = await create({ name: '缺插件的', graph: { ...API_WORKFLOW, '10': { class_type: 'NotInstalledTestNode', inputs: { image: ['8', 0] } } } });
+    const messageId = await prepare('1girl', { workflowId: lacking.id });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, job.id, settled)).images).toEqual([{ seed: 100, status: 'failed', error: '这台 ComfyUI 缺插件：object_info 里没有 NotInstalledTestNode' }]);
+    expect(await lastPrompts()).toEqual([]);
+
+    const workflow = await create();
+    await t.ok('PATCH', nodeUrl(), { image: { workflowId: workflow.id } });
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, first.id, settled);
+    await t.ok('DELETE', `/workflows/${workflow.id}`);
+
+    const again = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: first.id, index: 0, sameSeed: true } });
+    expect((await until(messageId, again.id, settled)).images[0].error).toBe('工作流「基础文生图」已经删了，在出图设置里换一个再出');
+    const builtin = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(builtin.params.workflow).toEqual(BUILTIN_WORKFLOW);
+    const done = await until(messageId, builtin.id, settled);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(builtinGraph(done.params, 100));
   });
 });

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import {
+  AUTODL_IDLE_MINUTES,
+  DEFAULT_AUTODL,
   DEFAULT_THINKING,
   FAMILIES,
   FAMILY_DEFAULTS,
@@ -24,7 +26,7 @@ export async function readSettings(work: string): Promise<SharedSettings> {
   return {
     ...saved,
     thinking: { ...DEFAULT_THINKING, ...saved?.thinking },
-    comfy: { lanUrl: null, ...saved?.comfy },
+    comfy: { lanUrl: null, ...saved?.comfy, autodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.autodl } },
     checkpoints: { ...saved?.checkpoints },
     defaults: { IL: { ...FAMILY_DEFAULTS.IL, ...saved?.defaults?.IL }, Pony: { ...FAMILY_DEFAULTS.Pony, ...saved?.defaults?.Pony } },
   };
@@ -37,7 +39,7 @@ export function updateSettings(work: string, body: unknown): Promise<SharedSetti
   return withLock(`settings:${work}`, async () => {
     const settings = await readSettings(work);
     if ('thinking' in input) settings.thinking = { ...settings.thinking, ...parseThinking(input.thinking) };
-    if ('comfy' in input) settings.comfy = { ...settings.comfy, ...parseComfy(input.comfy) };
+    if ('comfy' in input) settings.comfy = parseComfy(input.comfy, settings.comfy);
     if ('checkpoints' in input) settings.checkpoints = { ...settings.checkpoints, ...parseCheckpoints(input.checkpoints) };
     if ('defaults' in input) settings.defaults = parseDefaults(input.defaults, settings.defaults);
     await writeJsonAtomic(settingsFile(work), settings);
@@ -66,15 +68,35 @@ function parseThinking(value: unknown): Partial<ThinkingSettings> {
   return result;
 }
 
-// 局域网那台的地址：空着就是没填；去掉末尾的斜杠
-function parseComfy(value: unknown): Partial<SharedSettings['comfy']> {
+// 局域网那台的地址：空着就是没填；去掉末尾的斜杠。AutoDL 选的实例和空闲多久关机，只改带了的项
+function parseComfy(value: unknown, current: SharedSettings['comfy']): SharedSettings['comfy'] {
   const fields = object(value, 'ComfyUI 设置');
-  if (!('lanUrl' in fields)) return {};
-  const url = fields.lanUrl === null ? '' : fields.lanUrl;
-  if (typeof url !== 'string') throw new HttpError(400, 'ComfyUI 地址格式不对');
-  const trimmed = url.trim().replace(/\/+$/, '');
-  if (trimmed && !/^https?:\/\/[^\s/]+$/i.test(trimmed)) throw new HttpError(400, 'ComfyUI 地址要像 http://192.168.1.20:8188 这样，不带后面的路径');
-  return { lanUrl: trimmed || null };
+  const result = { ...current };
+  if ('lanUrl' in fields) {
+    const url = fields.lanUrl === null ? '' : fields.lanUrl;
+    if (typeof url !== 'string') throw new HttpError(400, 'ComfyUI 地址格式不对');
+    const trimmed = url.trim().replace(/\/+$/, '');
+    if (trimmed && !/^https?:\/\/[^\s/]+$/i.test(trimmed)) throw new HttpError(400, 'ComfyUI 地址要像 http://192.168.1.20:8188 这样，不带后面的路径');
+    result.lanUrl = trimmed || null;
+  }
+  if ('autodl' in fields) {
+    const autodl = object(fields.autodl, 'AutoDL 设置');
+    const next = { ...current.autodl };
+    if ('instanceUuid' in autodl) {
+      if (autodl.instanceUuid !== null && typeof autodl.instanceUuid !== 'string') throw new HttpError(400, 'AutoDL 实例格式不对');
+      next.instanceUuid = (autodl.instanceUuid as string | null)?.trim() || null;
+    }
+    if ('idleMinutes' in autodl) {
+      const minutes = autodl.idleMinutes;
+      const { min, max } = AUTODL_IDLE_MINUTES;
+      if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < min || minutes > max) {
+        throw new HttpError(400, `空闲多久自动关机要填 ${min} 到 ${max} 之间的整数分钟`);
+      }
+      next.idleMinutes = minutes;
+    }
+    result.autodl = next;
+  }
+  return result;
 }
 
 // 底模文件名 → 系列；null 是两个系列都不是

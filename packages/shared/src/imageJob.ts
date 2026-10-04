@@ -53,23 +53,27 @@ export function cardGenerated(node: Pick<ChatNode, 'messages'>, max: number, sta
   const messages = Object.values(node.messages);
   const jobs = messages.flatMap((message) => message.images ?? []);
   if (!jobs.length) return null;
-  const live = jobs.filter((job) => job.images.some(isLiveImage)).flatMap((job) => job.images);
+  const liveJobs = jobs.filter((job) => job.images.some(isLiveImage));
+  const live = liveJobs.flatMap((job) => job.images);
+  const boot = liveJobs.some((job) => job.target === 'autodl' && job.images.some((image) => image.status === 'queued' && !image.promptId));
   const latest = jobs.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
   return {
     images: generatedImages(messages, { starFirst }).slice(0, max),
-    live: live.length ? { done: live.filter((image) => image.status === 'done').length, total: live.length } : null,
+    live: live.length ? { done: live.filter((image) => image.status === 'done').length, total: live.length, boot } : null,
     failed: latest.images.every((image) => image.status === 'failed'),
   };
 }
 
 // 一张图没出成是哪一种，界面上按种类说清楚，见 docs/dev-plan.md 5.19：
-// 连不上、底模文件不在（ComfyUI 不收，说的是底模那一项）、ComfyUI 不收（别的原因）、显存不够、程序重启时没出完、别的
-export type ImageErrorKind = 'down' | 'checkpoint' | 'rejected' | 'memory' | 'restart' | 'other';
+// 连不上、底模文件不在（ComfyUI 不收，说的是底模那一项）、ComfyUI 不收（别的原因）、缺插件（导入的工作流用到这台没装的节点）、显存不够、程序重启时没出完、别的
+export type ImageErrorKind = 'down' | 'checkpoint' | 'rejected' | 'missing' | 'memory' | 'restart' | 'boot' | 'other';
 
 export function imageErrorKind(error: string): ImageErrorKind {
   if (error.startsWith('连不上 ComfyUI')) return 'down';
   if (error.startsWith('ComfyUI 不收这个任务')) return /CheckpointLoaderSimple[\s\S]*ckpt_name/.test(error) ? 'checkpoint' : 'rejected';
+  if (error.startsWith('这台 ComfyUI 缺插件')) return 'missing';
   if (error.startsWith('显存不够')) return 'memory';
   if (error.startsWith('程序重启')) return 'restart';
+  if (error.startsWith('AutoDL 开机失败')) return 'boot';
   return 'other';
 }

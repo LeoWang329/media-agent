@@ -14,7 +14,7 @@ import { CLOSED_OVERLAYS, openAssets, useOverlays } from '../canvas/overlays';
 import { RefPicker } from '../canvas/RefPicker';
 import { SysPromptDialog } from '../canvas/SysPromptDialog';
 import { TranslateDialog } from '../canvas/TranslateDialog';
-import { BoxTagEditor } from '../canvas/BoxTagEditor';
+import { BoxTagEditor, WriteTagsEditor } from '../canvas/BoxTagEditor';
 import { UploadDialog } from '../canvas/UploadDialog';
 import { ZoomDialog } from '../canvas/ZoomDialog';
 import { fitAll, useView, zoomBy } from '../canvas/view';
@@ -258,6 +258,7 @@ export function Canvas() {
       <SysPromptDialog />
       <TranslateDialog />
       <BoxTagEditor />
+      <WriteTagsEditor />
       <ZoomDialog />
       <GenSettingsDialog />
       <ImageViewer />

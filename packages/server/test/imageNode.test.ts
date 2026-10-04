@@ -1,4 +1,4 @@
-import type { CanvasDetail, Config, Fragment, HomeData, Message, TagCheck, TagConvertResult } from '@media-agent/shared';
+import type { CanvasDetail, ChatNode, Config, Fragment, HomeData, Message, TagCheck, TagConvertResult } from '@media-agent/shared';
 import express from 'express';
 import fs from 'node:fs/promises';
 import type { Server } from 'node:http';
@@ -102,6 +102,46 @@ describe('生图节点', () => {
     // 提示词删掉了：当视频节点
     await t.ok('DELETE', '/prompts/pony');
     expect(await card()).toBeNull();
+  });
+
+  it('自己写的框：不调模型，接在最后，标着自己写的，不能重答；之后发消息时当成用户说的话发给模型', async () => {
+    const requests: { messages: { role: string; content: unknown }[] }[] = [];
+    const llm = express();
+    llm.use(express.json({ limit: '10mb' }));
+    llm.post('/v1/chat/completions', (req, res) => {
+      requests.push(req.body);
+      res.type('text/event-stream').end(`data: ${JSON.stringify({ choices: [{ delta: { content: '<prompt>\n1girl, night\n</prompt>' } }] })}\n\ndata: [DONE]\n\n`);
+    });
+    const server: Server = await listen(llm);
+    try {
+      const config = await t.ok<Config>('GET', '/config');
+      await t.ok('PUT', '/config', { modelConfigs: [...config.modelConfigs, { ...config.modelConfigs[0], id: 'capture', name: 'capture', baseUrl: `${urlOf(server)}/v1` }] });
+      await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il', modelConfigId: 'capture' });
+
+      const node = await t.ok<ChatNode>('POST', `${nodeUrl()}/handwritten`, { parentId: null, text: '1girl, solo, red hair' });
+      const written = node.messages[node.activeChildOf.root];
+      expect(written).toMatchObject({ role: 'assistant', parentId: null, handwritten: true, systemPromptName: 'il', parsed: { prompts: [{ index: 0, text: '1girl, solo, red hair' }] } });
+      expect(requests).toEqual([]);
+      expect((await t.call('POST', `${nodeUrl()}/handwritten`, { parentId: 'gone', text: 'x' })).status).toBe(404);
+      expect((await t.call('POST', `${nodeUrl()}/handwritten`, { parentId: written.id, text: '  ' })).status).toBe(400);
+
+      const reply = ((await t.stream(`${nodeUrl()}/send`, { parentId: written.id, text: '优化上面这个框' })).at(-1) as { message: Message }).message;
+      const [, mine, ask] = requests[0].messages;
+      expect(mine).toEqual({ role: 'user', content: '我自己写了一个框：\n<prompt>\n1girl, solo, red hair\n</prompt>' });
+      expect(ask.role).toBe('user');
+      expect(JSON.stringify(ask.content)).toContain('优化上面这个框');
+
+      // 回复后面再写一个：接在回复后面；自己写的不能重答
+      const again = await t.ok<ChatNode>('POST', `${nodeUrl()}/handwritten`, { parentId: reply.id, text: 'blonde hair' });
+      const second = again.messages[again.activeChildOf[reply.id]];
+      expect(second).toMatchObject({ parentId: reply.id, handwritten: true });
+      const regenerate = await t.call('POST', `${nodeUrl()}/messages/${second.id}/regenerate`, {});
+      expect(regenerate.status).toBe(400);
+      expect(regenerate.body.error).toBe('这个框是自己写的，不是 AI 回的，没法重答');
+      expect(requests).toHaveLength(1);
+    } finally {
+      await close(server);
+    }
   });
 });
 

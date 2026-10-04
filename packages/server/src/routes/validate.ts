@@ -110,6 +110,7 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
     next.height = height as number;
   }
   if (fields.count !== undefined) next.count = integer(fields.count, '张数', 1, 8);
+  if (fields.workflowId !== undefined) next.workflowId = fields.workflowId === null ? null : uuid(fields.workflowId);
   if (fields.checkpoint !== undefined) next.checkpoint = text(fields.checkpoint, '底模');
   if (fields.loras !== undefined) {
     if (!Array.isArray(fields.loras)) throw new HttpError(400, 'LoRA 格式不对');

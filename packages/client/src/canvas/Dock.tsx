@@ -6,6 +6,7 @@ import { docPictures, docToDraft, docToText } from '../editor/document';
 import { usePictureEditor } from '../editor/usePictureEditor';
 import { MAX_SLOTS, useCanvasStore } from '../store/canvasStore';
 import { useComfyStore } from '../store/comfyStore';
+import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
 import { toast } from '../ui/toast';
@@ -49,7 +50,7 @@ export function Dock({ node }: { node: ChatNode }) {
         </button>
       </div>
       <Slots node={node} />
-      <Composer node={node} />
+      <Composer node={node} image={use === 'image'} />
       <input
         ref={fileInput}
         type="file"
@@ -116,7 +117,7 @@ function VideoParams({ node }: { node: ChatNode }) {
   );
 }
 
-// 生图节点：尺寸和张数，改了存进节点的出图设置；旁边是出图设置，按钮上写着用哪个底模
+// 生图节点：尺寸和张数，改了存进节点的出图设置；旁边是出图设置，按钮上写着用哪个底模，用导入的工作流时写工作流的名字
 function ImageParams({ node }: { node: ChatNode }) {
   const image = imageSize(node);
   const family = usePromptInfo(node.systemPromptName)?.family ?? 'IL';
@@ -125,9 +126,12 @@ function ImageParams({ node }: { node: ChatNode }) {
   const patchNode = useCanvasStore((s) => s.patchNode);
   const setCount = (count: number) => void patchNode(node.id, { image: { count } });
   const checkpoint = effectiveCheckpoint(settings, family, options);
+  const workflow = useNodeWorkflow(settings.workflowId);
 
   useEffect(() => {
     void useComfyStore.getState().loadOptions();
+    // 读不到时按钮上照旧写底模，打开出图设置会说读不到
+    if (!useWorkflowStore.getState().list) useWorkflowStore.getState().load().catch(() => undefined);
   }, []);
 
   // 套一层不占位的 span（原型也这样），出图设置按钮就不算槽位区右边那几个小图标按钮
@@ -175,16 +179,20 @@ function ImageParams({ node }: { node: ChatNode }) {
         className="btn btn-secondary btn-sm gen-cfg-btn"
         id="btnGenCfg"
         data-od-id="btn-generation-settings"
-        title="出图设置：用哪台 ComfyUI、底模、LoRA、种子……每个节点各存一份"
+        title="出图设置：用哪台 ComfyUI、工作流、底模、LoRA、种子……每个节点各存一份"
         onClick={() => useOverlays.setState({ genSettings: node.id })}
       >
         <Icon name="sliders" />
         出图设置
-        {checkpoint && (
-          <span className="lbl">
-            {shortCheckpoint(checkpoint)}
-            {settings.loras.length > 0 && ` + ${settings.loras.length} 个 LoRA`}
-          </span>
+        {workflow ? (
+          <span className="lbl">工作流「{workflow.name}」</span>
+        ) : (
+          checkpoint && (
+            <span className="lbl">
+              {shortCheckpoint(checkpoint)}
+              {settings.loras.length > 0 && ` + ${settings.loras.length} 个 LoRA`}
+            </span>
+          )
         )}
       </button>
     </span>
@@ -387,7 +395,7 @@ function Slots({ node }: { node: ChatNode }) {
   );
 }
 
-function Composer({ node }: { node: ChatNode }) {
+function Composer({ node, image }: { node: ChatNode; image: boolean }) {
   const busy = useCanvasStore((s) => Boolean(s.streams[node.id]) || Boolean(s.detail?.nodes.find((n) => n.id === node.id)?.generating));
   const focus = useCanvasStore((s) => (s.composerFocus?.nodeId === node.id ? s.composerFocus.seq : 0));
   const [empty, setEmpty] = useState(!node.draft.trim());
@@ -502,6 +510,20 @@ function Composer({ node }: { node: ChatNode }) {
           <Icon name="at" />
           引用图片
         </button>
+        {image && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            id="btnWriteTags"
+            data-od-id="btn-write-tags"
+            title="不问 AI，自己写一串标签变成一个框"
+            disabled={busy}
+            onClick={() => useOverlays.setState({ writeTags: node.id })}
+          >
+            <Icon name="edit" />
+            写标签
+          </button>
+        )}
         <span className="meta hide-sm">Enter 发送 · Shift+Enter 换行</span>
         <span className="grow" />
         {busy ? (

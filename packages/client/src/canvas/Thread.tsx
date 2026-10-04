@@ -333,11 +333,12 @@ function AssistantMessage({ node, message, ro, busy, live, stream, images }: Ass
   };
   const versions = shownVersions(node, message);
   const manual = Boolean(message.editedFromMessageId);
-  const retried = !manual && versions.findIndex((v) => v.id === message.id) > 0;
+  const handwritten = Boolean(message.handwritten);
+  const retried = !manual && !handwritten && versions.findIndex((v) => v.id === message.id) > 0;
 
   const head = (
     <div className="msg-head">
-      <span className="msg-role">回复</span>
+      <span className="msg-role">{handwritten ? '自己写的' : '回复'}</span>
       <span className="msg-time">{clock(message.createdAt)}</span>
       {manual ? (
         <span className="tag">
@@ -350,7 +351,7 @@ function AssistantMessage({ node, message, ro, busy, live, stream, images }: Ass
       {message.stopped && <span className="tag tag-warn">已叫停</span>}
       {!ro && <VersionSwitch node={node} message={message} busy={busy} />}
       <div className="msg-actions">
-        {!ro && !manual && !live && <Action name="regen" label="重答" icon="retry" onClick={regenerate} />}
+        {!ro && !manual && !handwritten && !live && <Action name="regen" label="重答" icon="retry" onClick={regenerate} />}
         {!live && !message.error && (
           <Action name="fork" label="从这里岔出" icon="branch" onClick={() => void useCanvasStore.getState().fork(node.id, message.id)} />
         )}
@@ -508,6 +509,7 @@ function ThinkingDone({ ms, reasoning }: { ms: number; reasoning: string }) {
 function ReplyMeta({ message, live, text }: { message: Message; live: boolean; text: string }) {
   const config = useCanvasStore((s) => s.modelConfigs.find((m) => m.id === message.modelConfigId));
   if (message.editedFromMessageId) return <div className="msg-meta">手动修改，没有调用 AI</div>;
+  if (message.handwritten) return <div className="msg-meta">自己写的，没有调用 AI</div>;
   const pricing = config?.pricing;
   // 正在写的回复还没记下模型名，先用模型配置里的
   const modelName = message.modelName ?? config?.model;

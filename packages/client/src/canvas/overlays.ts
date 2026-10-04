@@ -34,6 +34,7 @@ type Overlays = {
   translate: TranslateTarget | null;
   zoom: ZoomTarget | null;
   tags: TagsTarget | null;
+  writeTags: string | null; // 写标签：哪个节点的
   genSettings: string | null; // 出图设置：哪个节点的
   viewer: ImageTarget | null; // 看大图和参数
   download: DownloadTarget | null;
@@ -49,6 +50,7 @@ export const CLOSED_OVERLAYS = {
   translate: null,
   zoom: null,
   tags: null,
+  writeTags: null,
   genSettings: null,
   viewer: null,
   download: null,

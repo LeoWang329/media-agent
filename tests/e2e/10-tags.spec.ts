@@ -156,6 +156,7 @@ test('10.3 第 4 条：挑两个小块存成片段 → 另一个生图节点的�
   await expect(chips(page)).toHaveCount(7);
   await editor(page).locator('[data-te="frag"]').click();
   const picker = page.getByRole('dialog', { name: '插片段' });
+  await expect(picker.getByLabel('搜片段名')).toBeFocused();
   await picker.getByLabel('搜片段名').fill('测试角色');
   await picker.locator('.te-fr').filter({ hasText: '测试角色' }).click();
   await expect(toasts(page).filter({ hasText: '插进了「测试角色」的 2 个标签' })).toBeVisible();

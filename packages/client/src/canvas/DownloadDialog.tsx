@@ -28,11 +28,12 @@ function Download({ target }: { target: DownloadTarget }) {
   const inLibrary = Boolean(folder && rootOf(roots, folder));
   const count = target.items.length;
 
+  // 上次下载到哪：读回来之前已经选好文件夹的，不盖掉
   useEffect(() => {
     void (async () => {
       await useAssetStore.getState().load();
       const config = await api<Config>('/config').catch(() => null);
-      setFolder(config?.lastDownloadFolder ?? null);
+      setFolder((picked) => picked ?? config?.lastDownloadFolder ?? null);
       setLoaded(true);
     })();
   }, []);

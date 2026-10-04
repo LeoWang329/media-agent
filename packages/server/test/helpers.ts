@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
-import { createApp, imageJobsOf, type AppOptions } from '../src/app';
+import { autodlOf, createApp, imageJobsOf, type AppOptions } from '../src/app';
 
 export function listen(app: express.Express): Promise<Server> {
   return new Promise((resolve) => {
@@ -25,7 +25,7 @@ export const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() a
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 起一个用临时目录的服务，设好工作文件夹和指向 mock-llm 的模型配置
-export async function startTestApp(options: Pick<AppOptions, 'tagSources'> = {}) {
+export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'autodl'> = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
   const work = path.join(tmp, 'work');
   const configDir = path.join(tmp, 'config');
@@ -73,9 +73,10 @@ export async function startTestApp(options: Pick<AppOptions, 'tagSources'> = {})
     modelConfigs: [{ id: 'mock', name: 'mock', baseUrl: `${urlOf(mockLlm)}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }],
   });
 
-  // 关掉服务和出图任务的连接
+  // 关掉服务、出图任务的连接和 AutoDL 的计时
   async function shutdown() {
     imageJobsOf(app).close();
+    autodlOf(app).close();
     await close(server);
   }
 
@@ -90,6 +91,7 @@ export async function startTestApp(options: Pick<AppOptions, 'tagSources'> = {})
     stream,
     addImage,
     imageJobs: () => imageJobsOf(app),
+    autodl: () => autodlOf(app),
     // 模拟程序重启：同一个本机配置目录、同一个工作文件夹，换一个新的服务
     async restart() {
       await shutdown();

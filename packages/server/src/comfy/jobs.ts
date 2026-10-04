@@ -5,13 +5,17 @@ import {
   composeChecked,
   defaultImageSettings,
   familyWords,
+  importedGraph,
   isLiveImage as isLive,
   jobSeeds,
+  missingNodeTypes,
   negativePrompt,
   parsePromptMeta,
   positivePrompt,
   splitTags,
   type ChatNode,
+  type ComfyGraph,
+  type ComfyTarget,
   type Family,
   type ImageJob,
   type ImageJobEvent,
@@ -23,14 +27,16 @@ import { randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
-import { comfyClientId, readConfig } from '../config';
+import { comfyClientId, readComfyConfig, readConfig } from '../config';
 import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases, readNode, updateNode } from '../store/canvases';
 import { withLock } from '../store/locks';
 import { readPrompt } from '../store/prompts';
 import { readSettings } from '../store/settings';
+import { readWorkflow } from '../store/workflows';
 import { loadLibrary } from '../tags/library';
 import { checkTag } from '../tags/search';
+import { BootCancelled, type Autodl } from './autodl';
 import * as comfy from './client';
 import { saveTemp } from './files';
 import { comfyCheckpoints, loadObjectInfo } from './options';
@@ -45,6 +51,7 @@ type Tracked = JobPlace & {
   seed: number;
   index: number;
   url: string;
+  target: ComfyTarget;
   startedAt?: number;
   finishing?: boolean;
   position?: number;
@@ -69,7 +76,16 @@ export async function imageFamily(work: string, promptName: string): Promise<Fam
   return meta.family;
 }
 
-// 按节点现在的出图设置和这个框拼参数，见 docs/dev-plan.md 5.18
+// 节点选的导入的工作流；已经删了的当没选，用内置流程
+const chosenWorkflow = (work: string, id: string | null) =>
+  id
+    ? readWorkflow(work, id).catch((err) => {
+        if (err instanceof HttpError && err.status === 404) return null;
+        throw err;
+      })
+    : null;
+
+// 按节点现在的出图设置和这个框拼参数，见 docs/dev-plan.md 5.18。用导入的工作流时底模、LoRA、步数这些照工作流里的，不记
 async function paramsFor(work: string, node: ChatNode, text: string, settings: SharedSettings): Promise<{ params: ImageJobParams; seeds: number[] }> {
   const family = await imageFamily(work, node.systemPromptName);
   const defaults = settings.defaults[family];
@@ -78,22 +94,24 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
   const known = familyWords(defaults);
   const items = splitTags(text);
   const tags = composeChecked(items, items.map((item) => checkTag(library, item.name, known)));
+  const workflow = await chosenWorkflow(work, image.workflowId);
+  const prompts = { family, positive: positivePrompt(defaults, image.rating, tags), negative: negativePrompt(defaults, image.negativeExtra) };
   return {
-    params: {
-      family,
-      positive: positivePrompt(defaults, image.rating, tags),
-      negative: negativePrompt(defaults, image.negativeExtra),
-      workflow: BUILTIN_WORKFLOW,
-      width: image.width,
-      height: image.height,
-      checkpoint: image.checkpoint,
-      loras: image.loras,
-      steps: image.steps,
-      cfg: image.cfg,
-      sampler: image.sampler,
-      scheduler: image.scheduler,
-      clipSkip: defaults.clipSkip,
-    },
+    params: workflow
+      ? { ...prompts, workflow: { id: workflow.id, name: workflow.name, hash: workflow.hash }, width: image.width, height: image.height }
+      : {
+          ...prompts,
+          workflow: BUILTIN_WORKFLOW,
+          width: image.width,
+          height: image.height,
+          checkpoint: image.checkpoint,
+          loras: image.loras,
+          steps: image.steps,
+          cfg: image.cfg,
+          sampler: image.sampler,
+          scheduler: image.scheduler,
+          clipSkip: defaults.clipSkip,
+        },
     seeds: jobSeeds(image.seed ?? randomSeed(), image.count),
   };
 }
@@ -101,8 +119,9 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
 export type ImageJobs = ReturnType<typeof createImageJobs>;
 
 // 出图任务，见 docs/dev-plan.md 5.19：点生图时建一组、存盘，再逐张发给 ComfyUI；
-// 每台 ComfyUI 开一个 WebSocket 收进度，出完一张取回来存进临时文件夹。状态变了推给 /image-jobs/events
-export function createImageJobs(configDir: string) {
+// 每台 ComfyUI 开一个 WebSocket 收进度，出完一张取回来存进临时文件夹。状态变了推给 /image-jobs/events。
+// 用 AutoDL 的先等实例开好，AutoDL 的状态也从这里推；有图在 AutoDL 上出时告诉它，空闲自动关机从出完算起
+export function createImageJobs(configDir: string, autodl: Autodl) {
   const tracked = new Map<string, Tracked>();
   // 发任务的回复还没回来、进度先到了的，先存着，记上 prompt_id 后再处理
   const early = new Map<string, { at: number; messages: ComfyMessage[] }>();
@@ -113,8 +132,12 @@ export function createImageJobs(configDir: string) {
   const listeners = new Set<(event: ImageJobEvent) => void>();
   let clientId: Promise<string> | undefined;
   let closed = false;
+  // 正在等 AutoDL 开机或者正在往它上面发的组数
+  let autodlWork = 0;
 
   const emit = (event: ImageJobEvent) => listeners.forEach((listener) => listener(event));
+  const syncBusy = () => autodl.setBusy(autodlWork > 0 || [...tracked.values()].some((t) => t.target === 'autodl'));
+  const stopWatchingAutodl = autodl.subscribe((state) => emit({ type: 'autodl', ...state }));
   const later = (run: () => void, ms: number) => {
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -160,8 +183,10 @@ export function createImageJobs(configDir: string) {
 
   async function create(place: JobPlace, promptIndex: number, again?: { jobId: string; index: number; sameSeed: boolean }): Promise<ImageJob> {
     const settings = await readSettings(place.work);
-    const url = settings.comfy.lanUrl;
-    if (!url) throw new HttpError(400, '先在设置里填局域网 ComfyUI 的地址');
+    const { comfyTarget: target, autodlToken } = await readComfyConfig(configDir);
+    const lanUrl = settings.comfy.lanUrl;
+    if (target === 'lan' && !lanUrl) throw new HttpError(400, '先在设置里填局域网 ComfyUI 的地址');
+    if (target === 'autodl' && !(autodlToken && settings.comfy.autodl.instanceUuid)) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好实例');
     const node = await readNode(place.work, place.canvasId, place.nodeId);
     const message = node.messages[place.messageId];
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
@@ -190,7 +215,7 @@ export function createImageJobs(configDir: string) {
       createdAt: new Date().toISOString(),
       kind: 'txt2img',
       ...(source.from && { source: source.from }),
-      target: 'lan',
+      target,
       params: source.params,
       images: source.seeds.map((seed) => ({ seed, status: 'queued' })),
     };
@@ -200,16 +225,29 @@ export function createImageJobs(configDir: string) {
       return { ...current, messages: { ...current.messages, [target.id]: { ...target, images: [...(target.images ?? []), job] } } };
     });
     emit({ type: 'job', canvasId: place.canvasId, nodeId: place.nodeId, messageId: place.messageId, job });
-    void submit(place, job.id, url);
+    void submit(place, job.id, target === 'lan' ? lanUrl : null);
     return job;
   }
 
-  // 逐张发给 ComfyUI；每张发之前看一眼是不是已经叫停了
-  async function submit(place: JobPlace, jobId: string, url: string): Promise<void> {
-    submitting.set(url, (submitting.get(url) ?? 0) + 1);
+  // 逐张发给 ComfyUI；每张发之前看一眼是不是已经叫停了。lanUrl 是 null 的发给 AutoDL，先等它开好
+  async function submit(place: JobPlace, jobId: string, lanUrl: string | null): Promise<void> {
+    const target: ComfyTarget = lanUrl ? 'lan' : 'autodl';
+    if (target === 'autodl') {
+      autodlWork += 1;
+      syncBusy();
+    }
+    let url: string | null = null;
     try {
-      await connect(url);
-      await chooseCheckpoint(place, jobId, url);
+      const address =
+        lanUrl ??
+        (await autodl.ensureReady().catch((err) => {
+          throw err instanceof BootCancelled ? err : new comfy.ComfyError(`AutoDL 开机失败：${(err as Error).message}`);
+        }));
+      url = address;
+      submitting.set(address, (submitting.get(address) ?? 0) + 1);
+      await connect(address);
+      await chooseCheckpoint(place, jobId, address);
+      const graphFor = await graphMaker(place, jobId, address);
       const id = await (clientId ??= comfyClientId(configDir));
       for (let more = true; more; ) {
         more = await withLock(`image-job:${jobId}`, async () => {
@@ -219,29 +257,36 @@ export function createImageJobs(configDir: string) {
           const { seed } = job.images[index];
           const pick = (image: JobImage) => image.seed === seed && !image.promptId;
           try {
-            const promptId = await comfy.queuePrompt(url, builtinGraph(job.params, seed), id);
+            const promptId = await comfy.queuePrompt(address, graphFor(job.params, seed), id);
             await changeImages(place, jobId, pick, { promptId });
-            track({ ...place, jobId, promptId, seed, index, url });
+            track({ ...place, jobId, promptId, seed, index, url: address, target });
           } catch (err) {
             await changeImages(place, jobId, pick, { status: 'failed', error: (err as Error).message });
           }
           return true;
         }).catch(() => false);
       }
-      void refreshQueue(url);
+      void refreshQueue(address);
     } catch (err) {
-      // 连不上、这台 ComfyUI 上没有这个系列的底模：没发出去的都算失败
-      await changeImages(place, jobId, (image) => image.status === 'queued' && !image.promptId, { status: 'failed', error: (err as Error).message }).catch(() => {});
+      // 连不上、AutoDL 没开成、这台 ComfyUI 上没有这个系列的底模、缺插件：没发出去的都算失败；点了「别开了」的算叫停
+      const change: Partial<JobImage> = err instanceof BootCancelled ? { status: 'stopped' } : { status: 'failed', error: (err as Error).message };
+      await changeImages(place, jobId, (image) => image.status === 'queued' && !image.promptId, change).catch(() => {});
     } finally {
-      submitting.set(url, submitting.get(url)! - 1);
-      closeIfIdle(url);
+      if (url) {
+        submitting.set(url, submitting.get(url)! - 1);
+        closeIfIdle(url);
+      }
+      if (target === 'autodl') {
+        autodlWork -= 1;
+        syncBusy();
+      }
     }
   }
 
-  // 节点还没选过底模：用这台 ComfyUI 上这个系列的第一个，记进这一组的参数
+  // 节点还没选过底模：用这台 ComfyUI 上这个系列的第一个，记进这一组的参数。导入的工作流用它自己的底模
   async function chooseCheckpoint(place: JobPlace, jobId: string, url: string): Promise<void> {
     const { params } = await readJob(place, jobId);
-    if (params.checkpoint) return;
+    if (params.checkpoint || params.workflow.id) return;
     const marked = (await readSettings(place.work)).checkpoints;
     const info = await loadObjectInfo(url);
     const names = comfyCheckpoints(info);
@@ -250,8 +295,22 @@ export function createImageJobs(configDir: string) {
     await changeJob(place, jobId, (job) => ({ ...job, params: { ...job.params, checkpoint: name } }));
   }
 
+  // 怎么拼发出去的流程：内置的直接拼；导入的先对照这台 ComfyUI 装了哪些节点，缺的说清楚，一张都不发，见 docs/dev-plan.md 5.18
+  async function graphMaker(place: JobPlace, jobId: string, url: string): Promise<(params: ImageJobParams, seed: number) => ComfyGraph> {
+    const { params } = await readJob(place, jobId);
+    if (!params.workflow.id) return builtinGraph;
+    const workflow = await chosenWorkflow(place.work, params.workflow.id);
+    if (!workflow) throw new comfy.ComfyError(`工作流「${params.workflow.name}」已经删了，在出图设置里换一个再出`);
+    let missing = missingNodeTypes(workflow.graph, Object.keys(await loadObjectInfo(url)));
+    // 节点列表是缓存的，刚装了插件还没重读的话，重读一次再算
+    if (missing.length) missing = missingNodeTypes(workflow.graph, Object.keys(await loadObjectInfo(url, true)));
+    if (missing.length) throw new comfy.ComfyError(`这台 ComfyUI 缺插件：object_info 里没有 ${missing.join(', ')}`);
+    return (jobParams, seed) => importedGraph(workflow, jobParams, seed);
+  }
+
   function track(t: Tracked): void {
     tracked.set(t.promptId, t);
+    syncBusy();
     const waiting = early.get(t.promptId);
     early.delete(t.promptId);
     for (const message of waiting?.messages ?? []) handle(t, message);
@@ -259,6 +318,7 @@ export function createImageJobs(configDir: string) {
 
   function untrack(t: Tracked): void {
     tracked.delete(t.promptId);
+    syncBusy();
     closeIfIdle(t.url);
   }
 
@@ -371,7 +431,10 @@ export function createImageJobs(configDir: string) {
     const failed = messages.find(([type]) => type === 'execution_error');
     if (failed) return { status: 'failed', error: comfy.describeExecutionError(failed[1]) };
     if (messages.some(([type]) => type === 'execution_interrupted')) return { status: 'stopped' };
-    const ref = Object.values(entry?.outputs ?? {}).flatMap((output) => output.images ?? [])[0];
+    // 导入的工作流可能既有预览又有存图：取最后一张存下来的，没有存图的取最后一张预览
+    const refs = Object.values(entry?.outputs ?? {}).flatMap((output) => output.images ?? []);
+    const saved = refs.filter((ref) => ref.type === 'output');
+    const ref = (saved.length ? saved : refs).at(-1);
     if (!ref) return { status: 'failed', error: 'ComfyUI 说出完了，但没找到出的图' };
     const data = await comfy.viewImage(t.url, ref);
     const { width, height } = await sharp(data).metadata();
@@ -457,31 +520,36 @@ export function createImageJobs(configDir: string) {
     });
   }
 
-  // 服务启动时：没出完的按 prompt_id 查一次，见 docs/dev-plan.md 5.19
+  // 服务启动时：没出完的按 prompt_id 查一次，见 docs/dev-plan.md 5.19。AutoDL 的只在实例开着时查得到
   async function resume(): Promise<void> {
     const { workFolder: work } = await readConfig(configDir);
     if (!work) return;
-    const url = (await readSettings(work)).comfy.lanUrl;
+    const lanUrl = (await readSettings(work)).comfy.lanUrl;
+    let autodlUrl: Promise<string | null> | undefined;
     for (const canvas of await readAllCanvases(work).catch(() => [])) {
       for (const node of await listNodes(work, canvas.id).catch(() => [])) {
         for (const message of Object.values(node.messages)) {
           for (const job of message.images ?? []) {
             const place = { work, canvasId: canvas.id, nodeId: node.id, messageId: message.id };
-            for (const [index, image] of job.images.entries()) if (isLive(image)) await recover(place, job.id, index, image, url);
+            for (const [index, image] of job.images.entries()) {
+              if (!isLive(image)) continue;
+              const url = job.target === 'autodl' ? await (autodlUrl ??= autodl.address().catch(() => null)) : lanUrl;
+              await recover(place, job.id, index, image, url, job.target);
+            }
           }
         }
       }
     }
   }
 
-  async function recover(place: JobPlace, jobId: string, index: number, image: JobImage, url: string | null): Promise<void> {
+  async function recover(place: JobPlace, jobId: string, index: number, image: JobImage, url: string | null, target: ComfyTarget): Promise<void> {
     const lost = '程序重启时这张还没出完';
     if (!url || !image.promptId) {
       const pick = (item: JobImage) => (image.promptId ? item.promptId === image.promptId : item.seed === image.seed && !item.promptId);
       await changeImages(place, jobId, pick, { status: 'failed', error: lost }).catch(() => {});
       return;
     }
-    const t: Tracked = { ...place, jobId, promptId: image.promptId, seed: image.seed, index, url };
+    const t: Tracked = { ...place, jobId, promptId: image.promptId, seed: image.seed, index, url, target };
     try {
       await connect(url);
       track(t);
@@ -491,8 +559,9 @@ export function createImageJobs(configDir: string) {
     }
   }
 
-  // 新连上的页面先拿到现在排第几、走到第几步，之后再收变化
+  // 新连上的页面先拿到 AutoDL 的状态、现在排第几、走到第几步，之后再收变化
   function subscribe(listener: (event: ImageJobEvent) => void): () => void {
+    listener({ type: 'autodl', ...autodl.current() });
     for (const t of tracked.values()) {
       if (t.position) listener({ type: 'queue', jobId: t.jobId, index: t.index, position: t.position });
       if (t.progress) listener({ type: 'progress', jobId: t.jobId, index: t.index, ...t.progress });
@@ -504,6 +573,7 @@ export function createImageJobs(configDir: string) {
   // 测试收尾和服务退出时用：断开全部连接，不再重连
   function close(): void {
     closed = true;
+    stopWatchingAutodl();
     timers.forEach(clearTimeout);
     for (const socket of sockets.values()) socket.ws?.close();
     sockets.clear();

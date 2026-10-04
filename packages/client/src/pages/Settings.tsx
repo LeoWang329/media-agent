@@ -27,8 +27,9 @@ import { LEVEL_LABELS, STYLE_LABELS, styleNote } from '../ui/thinking';
 import { toast } from '../ui/toast';
 import { CheckpointsTab, ComfyTab, ImagesTab } from './SettingsComfy';
 import { FragmentsTab, TagLibraryTab } from './SettingsImage';
+import { WorkflowsTab } from './SettingsWorkflows';
 
-type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'comfy' | 'checkpoints' | 'taglib' | 'fragments' | 'images';
+type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'comfy' | 'checkpoints' | 'workflows' | 'taglib' | 'fragments' | 'images';
 
 const TABS: [Tab, string, IconName][] = [
   ['workdir', '工作文件夹', 'folder'],
@@ -42,6 +43,7 @@ const TABS: [Tab, string, IconName][] = [
 const IMAGE_TABS: [Tab, string, IconName][] = [
   ['comfy', 'ComfyUI', 'server'],
   ['checkpoints', '底模和默认值', 'sliders'],
+  ['workflows', '工作流', 'list'],
   ['taglib', '词库', 'tag'],
   ['fragments', '片段库', 'copy'],
   ['images', '出的图', 'download'],
@@ -104,6 +106,7 @@ export function Settings() {
           {config && tab === 'thinking' && <ThinkingTab key={config.workFolder} config={config} />}
           {config && tab === 'comfy' && <ComfyTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'checkpoints' && <CheckpointsTab key={config.workFolder} workFolder={config.workFolder} />}
+          {config && tab === 'workflows' && <WorkflowsTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'taglib' && <TagLibraryTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'fragments' && <FragmentsTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'images' && <ImagesTab key={config.workFolder} workFolder={config.workFolder} />}

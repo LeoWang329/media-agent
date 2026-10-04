@@ -30,6 +30,12 @@ export function Popover({ anchor, align = 'left', className, odId, label, onClos
     setPosition({ left: Math.max(8, Math.min(left, innerWidth - w - 8)), top });
   }, [anchor, align]);
 
+  // 摆好位置、看得见了，再把焦点放在带 data-autofocus 的元素上（React 的 autoFocus 跑在摆好之前，那时还藏着，不算数）
+  const placed = position !== null;
+  useEffect(() => {
+    if (placed) ref.current!.querySelector<HTMLElement>('[data-autofocus]')?.focus();
+  }, [placed]);
+
   useEffect(() => {
     const onPointer = (e: PointerEvent) => {
       const target = e.target as Element;

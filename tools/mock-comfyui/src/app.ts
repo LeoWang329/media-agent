@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import http from 'node:http';
 import sharp from 'sharp';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { createMockAutodl, MOCK_AUTODL_PATH, type MockAutodl, type MockAutodlOptions } from './autodl';
 
 // 假的 ComfyUI，接口和推送的样子照真的，见 docs/dev-plan.md 9.5。
-// 正面提示词含「慢」的每步走得慢（测叫停），含「报错」的跑到一半出错，含「显存」的报显存不够
+// 正面提示词含「慢」的每步走得慢（测叫停），含「报错」的跑到一半出错，含「显存」的报显存不够。
+// 假的 AutoDL 接口也挂在这里，见 ./autodl
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Task = { id: string; number: number; graph: Graph; clientId: string };
@@ -17,14 +19,14 @@ type HistoryEntry = {
   status: { status_str: 'success' | 'error'; completed: boolean; messages: [string, Record<string, unknown>][] };
 };
 
-export type MockComfyOptions = { stepMs?: number; slowStepMs?: number };
-export type MockComfy = { server: http.Server; close(): Promise<void> };
+export type MockComfyOptions = { stepMs?: number; slowStepMs?: number; autodl?: MockAutodlOptions };
+export type MockComfy = { server: http.Server; autodl: MockAutodl; close(): Promise<void> };
 
 const STEPS = 5;
 
 const MODELS = {
   checkpoints: ['il-test.safetensors', 'pony-test.safetensors'],
-  loras: ['detail-test.safetensors'],
+  loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
   schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
   upscale: ['4x-test.pth'],
@@ -140,9 +142,11 @@ async function drawImage(width: number, height: number, seed: number, positive: 
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-export function createMockComfy({ stepMs = 300, slowStepMs = 1200 }: MockComfyOptions = {}): MockComfy {
+export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autodlOptions }: MockComfyOptions = {}): MockComfy {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
+  const autodl = createMockAutodl(autodlOptions);
+  app.use(MOCK_AUTODL_PATH, autodl.router);
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Map<WebSocket, string>();
@@ -224,9 +228,11 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200 }: MockComfyOp
       }
       const data = await drawImage(Number(latent.width ?? 512), Number(latent.height ?? 512), seed, positive);
       if (current !== run) return;
-      const ref = { filename: `ComfyUI_temp_${randomUUID().slice(0, 5)}_00001_.png`, subfolder: '', type: 'temp' };
+      // 有存图节点的按真的放进 output，不然是预览用的 temp
+      const saveId = findNode(graph, 'SaveImage');
+      const outputId = saveId ?? findNode(graph, 'PreviewImage') ?? samplerId;
+      const ref = { filename: `ComfyUI_${saveId ? '' : 'temp_'}${randomUUID().slice(0, 5)}_00001_.png`, subfolder: '', type: saveId ? 'output' : 'temp' };
       images.set(ref.filename, data);
-      const outputId = findNode(graph, 'PreviewImage') ?? findNode(graph, 'SaveImage') ?? samplerId;
       const success = { prompt_id: task.id, timestamp: Date.now() };
       record(task, { [outputId]: { images: [ref] } }, true, [...run.started, ['execution_success', success]]);
       current = null;
@@ -303,7 +309,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200 }: MockComfyOp
   });
 
   app.get('/view', (req, res) => {
-    const data = req.query.type === 'temp' ? images.get(String(req.query.filename)) : undefined;
+    const data = req.query.type === 'temp' || req.query.type === 'output' ? images.get(String(req.query.filename)) : undefined;
     if (!data) {
       res.status(404).end();
       return;
@@ -314,6 +320,11 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200 }: MockComfyOp
   // 测试用：收到的每个 /prompt 请求体
   app.get('/_last-prompts', (_req, res) => {
     res.json(prompts);
+  });
+
+  // 测试用：假的 AutoDL 实例现在的状态、收到过的开机关机请求
+  app.get('/_autodl', (_req, res) => {
+    res.json({ instance: autodl.instance, calls: autodl.calls });
   });
 
   server.on('upgrade', (req, socket, head) => {
@@ -334,7 +345,9 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200 }: MockComfyOp
 
   return {
     server,
+    autodl,
     async close() {
+      autodl.close();
       clearTimeout(current?.timer);
       current = null;
       queue.length = 0;

@@ -1,8 +1,19 @@
-import { FAMILIES, type ComfyStatus, type Family, type FamilyDefaults, type ImageTempInfo, type SharedSettings } from '@media-agent/shared';
+import {
+  AUTODL_IDLE_MINUTES,
+  FAMILIES,
+  type AutodlInstance,
+  type AutodlSettings,
+  type ComfyStatus,
+  type Config,
+  type Family,
+  type FamilyDefaults,
+  type ImageTempInfo,
+  type SharedSettings,
+} from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
-import { gpuText, vramText } from '../components/ComfyPill';
+import { AutodlStateView, gpuText, instanceLine, PowerButton, vramText } from '../components/ComfyPill';
 import { useComfyStore } from '../store/comfyStore';
 import { CommitInput, CommitTextarea, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
 import { fmtSize } from '../ui/format';
@@ -10,7 +21,7 @@ import { Icon } from '../ui/Icon';
 import { trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
 
-// 设置里出图用的三节：局域网那台 ComfyUI、底模和两个系列的默认值、出的图，见 docs/dev-plan.md 6.4
+// 设置里出图用的三节：ComfyUI（出图用哪台、局域网那台、AutoDL 实例）、底模和两个系列的默认值、出的图，见 docs/dev-plan.md 6.4
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
@@ -18,6 +29,13 @@ const SHARED = (
   <span className="tag sx-where">
     <Icon name="folder" />
     存在工作文件夹，两台电脑共用
+  </span>
+);
+
+const LOCAL = (text: string) => (
+  <span className="tag sx-where">
+    <Icon name="lock" />
+    {text}
   </span>
 );
 
@@ -62,6 +80,7 @@ function TestResult({ status }: { status: ComfyStatus | 'testing' }) {
 }
 
 export function ComfyTab({ workFolder }: { workFolder: string | null }) {
+  const target = useComfyStore((s) => s.target);
   const [saved, setSaved] = useState<string | null>(null);
   const [url, setUrl] = useState('');
   const [result, setResult] = useState<ComfyStatus | 'testing' | null>(null);
@@ -69,10 +88,12 @@ export function ComfyTab({ workFolder }: { workFolder: string | null }) {
 
   useEffect(() => {
     if (!workFolder) return;
+    void useComfyStore.getState().loadTarget();
     api<SharedSettings>('/settings').then((settings) => {
       const lanUrl = settings.comfy.lanUrl ?? '';
       setSaved(lanUrl);
-      setUrl(lanUrl);
+      // 读回来之前已经在框里填了的，不盖掉
+      setUrl((typed) => typed || lanUrl);
       if (!lanUrl) return;
       setResult('testing');
       void useComfyStore.getState().checkStatus().then(setResult);
@@ -81,10 +102,10 @@ export function ComfyTab({ workFolder }: { workFolder: string | null }) {
 
   if (!workFolder) return NO_FOLDER;
 
-  // 地址改了才存；换了地址，下拉选项要重新读
+  // 地址改了才存；存过的还没读回来时，填了就存，空着不动；换了地址，下拉选项要重新读
   const saveUrl = async (): Promise<boolean> => {
     const next = url.trim();
-    if (saved === null || next === saved.trim()) return true;
+    if (saved === null ? !next : next === saved.trim()) return true;
     try {
       const settings = await putSettings({ comfy: { lanUrl: next || null } });
       setSaved(settings.comfy.lanUrl ?? '');
@@ -111,10 +132,27 @@ export function ComfyTab({ workFolder }: { workFolder: string | null }) {
       <div className="st-head">
         <div>
           <h2>ComfyUI</h2>
-          <p>出图的程序跑在有显卡的电脑上，这台只有核显。局域网里那台填好地址就能出图，所有节点共用。</p>
+          <p>出图的程序跑在有显卡的电脑上，这台只有核显。两台都能接：局域网里那台，和 AutoDL 上租的实例。出图用哪台随时能切，所有节点共用。</p>
         </div>
       </div>
-      <section className="card editor" data-od-id="comfy-lan">
+      <section className="card editor" data-od-id="comfy-source">
+        <div className="row-between" style={{ marginBottom: 6 }}>
+          <h3>出图用哪台</h3>
+          {LOCAL('只存在这台电脑上')}
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <div className="seg" id="cfUse" role="group" aria-label="出图用哪台">
+            <button type="button" aria-pressed={target === 'lan'} onClick={() => void useComfyStore.getState().setTarget('lan')}>
+              局域网那台
+            </button>
+            <button type="button" aria-pressed={target === 'autodl'} onClick={() => void useComfyStore.getState().setTarget('autodl')}>
+              AutoDL 实例
+            </button>
+          </div>
+          <span className="hint">两台电脑可能不在同一个网络里，所以各自记一份。</span>
+        </div>
+      </section>
+      <section className="card editor" style={{ marginTop: 16 }} data-od-id="comfy-lan">
         <div className="row-between" style={{ marginBottom: 10 }}>
           <h3>局域网那台</h3>
           {SHARED}
@@ -156,7 +194,168 @@ export function ComfyTab({ workFolder }: { workFolder: string | null }) {
           </div>
         )}
       </section>
+      <AutodlCard />
     </>
+  );
+}
+
+// 关机超过一天的标出来：连续关机 60 天会被释放
+const RELEASE_DAYS = 60;
+function instanceOption(instance: AutodlInstance): string {
+  const days = instance.stoppedAt ? Math.floor((Date.now() - Date.parse(instance.stoppedAt)) / 86_400_000) : 0;
+  return days >= 1 ? `${instanceLine(instance)} · 已经关机 ${days} 天，再关 ${Math.max(0, RELEASE_DAYS - days)} 天会被释放` : instanceLine(instance);
+}
+
+const idleMinutes = (text: string) => {
+  const n = Number(text);
+  return Number.isInteger(n) && n >= AUTODL_IDLE_MINUTES.min && n <= AUTODL_IDLE_MINUTES.max ? n : null;
+};
+
+// AutoDL 实例：开发者 Token 只存本机；选哪个实例、空闲多久自动关机存工作文件夹；状态和开机关机，见 docs/dev-plan.md 5.17
+function AutodlCard() {
+  const autodl = useComfyStore((s) => s.autodl);
+  const [tokenSet, setTokenSet] = useState<boolean | null>(null);
+  const [token, setToken] = useState('');
+  const [chosen, setChosen] = useState<AutodlSettings | null>(null);
+  const [instances, setInstances] = useState<AutodlInstance[] | null>(null);
+  const [listError, setListError] = useState('');
+
+  const loadInstances = () =>
+    api<AutodlInstance[]>('/comfy/autodl/instances').then(
+      (list) => {
+        setInstances(list);
+        setListError('');
+      },
+      (err: Error) => setListError(err.message),
+    );
+
+  useEffect(() => {
+    api<Config>('/config').then((config) => {
+      setTokenSet(Boolean(config.autodlToken));
+      if (config.autodlToken) void loadInstances();
+    }, failed);
+    api<SharedSettings>('/settings').then((settings) => setChosen(settings.comfy.autodl), failed);
+    void useComfyStore.getState().checkAutodl();
+  }, []);
+
+  // 存好后输入框清空，不再显示
+  const saveToken = async () => {
+    const value = token.trim();
+    if (!value) return;
+    try {
+      await trackWrite(api<Config>('/config', { method: 'PUT', body: { autodlToken: value } }));
+      setToken('');
+      toast(tokenSet ? 'Token 已替换' : 'Token 已存到这台电脑');
+      setTokenSet(true);
+      void loadInstances();
+      void useComfyStore.getState().checkAutodl();
+    } catch (err) {
+      failed(err);
+    }
+  };
+
+  const saveAutodl = async (patch: Partial<AutodlSettings>) => {
+    try {
+      setChosen((await putSettings({ comfy: { autodl: patch } })).comfy.autodl);
+      void useComfyStore.getState().checkAutodl();
+    } catch (err) {
+      failed(err);
+    }
+  };
+
+  const listed = instances ?? [];
+  const missing = chosen?.instanceUuid && !listed.some((instance) => instance.uuid === chosen.instanceUuid);
+  return (
+    <section className="card editor" style={{ marginTop: 16 }} data-od-id="comfy-autodl">
+      <div className="row-between" style={{ marginBottom: 10 }}>
+        <h3>AutoDL 实例</h3>
+        {LOCAL('Token 只存在这台电脑上')}
+      </div>
+      <div className="kv">
+        <div className="kv-row">
+          <span className="k">开发者 Token</span>
+          <div className="stack" style={{ gap: 6 }} data-od-id="field-autodl-token">
+            <div className="mf-keystate">
+              {tokenSet ? (
+                <>
+                  <span className="tag tag-ok">
+                    <Icon name="check" />
+                    已配置
+                  </span>
+                  <span className="meta">存在这台电脑上</span>
+                </>
+              ) : (
+                tokenSet === false && <span className="tag tag-warn">还没配置</span>
+              )}
+            </div>
+            <input
+              className="input mono"
+              id="adToken"
+              type="password"
+              autoComplete="new-password"
+              spellCheck={false}
+              placeholder={tokenSet ? '输入新 Token 可以替换，按回车存好' : '粘贴 Token，按回车存好'}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              onBlur={() => void saveToken()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+            <span className="hint">在 AutoDL 控制台「设置 → 开发者 Token」里拿。存好后输入框会清空，不再显示，另一台电脑要各填一次。</span>
+          </div>
+        </div>
+        <div className="kv-row">
+          <span className="k">实例</span>
+          <div className="stack" style={{ gap: 6 }}>
+            <select className="select" id="adInst" value={chosen?.instanceUuid ?? ''} disabled={!chosen} onChange={(e) => void saveAutodl({ instanceUuid: e.target.value || null })}>
+              {!chosen?.instanceUuid && <option value="">{tokenSet ? '选一个实例' : '先填 Token'}</option>}
+              {missing && <option value={chosen.instanceUuid!}>{chosen.instanceUuid}（账号下没列出来）</option>}
+              {listed.map((instance) => (
+                <option key={instance.uuid} value={instance.uuid}>
+                  {instanceOption(instance)}
+                </option>
+              ))}
+            </select>
+            <span className={`hint${listError ? ' is-error' : ''}`}>{listError || '填了 Token 后列出账号下的实例。ComfyUI 要跑在实例的 6006 端口上。'}</span>
+          </div>
+        </div>
+        <div className="kv-row">
+          <span className="k">状态</span>
+          <div className="stack" style={{ gap: 8 }}>
+            <div className="row" style={{ flexWrap: 'wrap' }} id="adState">
+              <AutodlStateView autodl={autodl} where="settings" />
+            </div>
+            {autodl?.error && (autodl.state === 'failed' || autodl.state === 'unknown') && <div className="cf-err">{autodl.error}</div>}
+            {autodl && autodl.state !== 'unset' && autodl.state !== 'unknown' && (
+              <div className="row">
+                <PowerButton autodl={autodl} />
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="kv-row">
+          <span className="k">空闲多久自动关机</span>
+          <div className="stack" style={{ gap: 6 }}>
+            <div className="input-group" style={{ width: 160 }}>
+              <CommitInput
+                className="input mono"
+                id="adIdle"
+                type="number"
+                min={AUTODL_IDLE_MINUTES.min}
+                max={AUTODL_IDLE_MINUTES.max}
+                value={String(chosen?.idleMinutes ?? '')}
+                parse={idleMinutes}
+                disabled={!chosen}
+                onCommit={(v) => void saveAutodl({ idleMinutes: Number(v) })}
+              />
+              <span className="mf-unit">分钟</span>
+            </div>
+            <span className="hint">程序最后一个出图任务结束后开始算。程序是开着的才管得到；按 Ctrl+C 关程序时，如果实例是程序开的，会先关机再退出。程序没开时管不了，记得自己看一眼。</span>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -167,6 +366,7 @@ const RATING_FIELDS: [keyof FamilyDefaults['rating'], string][] = [
 ];
 
 export function CheckpointsTab({ workFolder }: { workFolder: string | null }) {
+  const target = useComfyStore((s) => s.target);
   const [settings, setSettings] = useState<SharedSettings | null>(null);
   const options = useComfyStore((s) => s.options);
   const optionsError = useComfyStore((s) => s.optionsError);
@@ -175,6 +375,7 @@ export function CheckpointsTab({ workFolder }: { workFolder: string | null }) {
   useEffect(() => {
     if (!workFolder) return;
     api<SharedSettings>('/settings').then(setSettings, failed);
+    void useComfyStore.getState().loadTarget();
     void useComfyStore.getState().loadOptions();
   }, [workFolder]);
 
@@ -223,7 +424,7 @@ export function CheckpointsTab({ workFolder }: { workFolder: string | null }) {
           <h3>读到的底模各属哪个系列</h3>
           <button type="button" className="btn btn-secondary btn-sm" id="ckRefresh" disabled={loading} onClick={() => void reload()}>
             {loading ? <span className="spinner" /> : <Icon name="refresh" />}
-            {loading ? '正在读…' : '从局域网那台重新读'}
+            {loading ? '正在读…' : `从${target === 'autodl' ? ' AutoDL 实例' : '局域网那台'}重新读`}
           </button>
         </div>
         <p className="hint" style={{ marginBottom: 10 }}>
@@ -248,9 +449,9 @@ export function CheckpointsTab({ workFolder }: { workFolder: string | null }) {
         ) : (
           <p className="hint">
             {optionsError ? (
-              optionsError.includes('还没填') ? (
+              optionsError.includes('还没填') || optionsError.includes('先在设置里填') ? (
                 <>
-                  还没填局域网 ComfyUI 的地址，先去 <Link to={{ hash: 'comfy' }}>ComfyUI</Link> 里填。
+                  {optionsError}，先去 <Link to={{ hash: 'comfy' }}>ComfyUI</Link> 里填。
                 </>
               ) : (
                 optionsError

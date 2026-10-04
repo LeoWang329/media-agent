@@ -31,7 +31,11 @@ import { checkOf, rememberChecks, useTagChecks } from './tagStore';
 // 能让 AI 转标签时：用哪个节点的模型配置问，界面上写着模型名和思考档位
 export type ConvertWith = { canvasId: string; nodeId: string; model: string; level: string };
 
+// 写标签时的「让 AI 优化」：先把写的存成框，再带一句要求发给模型；成了才关
+export type OptimizeWith = { placeholder: string; onOptimize: (text: string, requirement: string) => Promise<boolean> };
+
 type Props = {
+  title?: string; // 默认「编辑标签」
   sub: string; // 标题下面的小字：改的是哪个框
   text: string;
   family: Family | null;
@@ -39,6 +43,7 @@ type Props = {
   saveLabel: string;
   footNote: string;
   onSave: (text: string) => Promise<boolean>; // 存成了才关
+  optimize?: OptimizeWith;
   onClose: () => void;
 };
 
@@ -82,7 +87,7 @@ const seconds = (since: number) => Math.max(0, Math.round((Date.now() - since) /
 
 // 标签编辑窗：标签是一行文字里的小块；打字联想，逗号或回车把打的字变成小块；点小块调权重或删掉，拖动换顺序。
 // 能插片段、挑几个存成片段；打的中文词库里没有时让 AI 转成标签。见 docs/dev-plan.md 5.15
-export function TagEditor({ sub, text, family, convert, saveLabel, footNote, onSave, onClose }: Props) {
+export function TagEditor({ title = '编辑标签', sub, text, family, convert, saveLabel, footNote, onSave, optimize, onClose }: Props) {
   const [, setVersion] = useState(0);
   const [query, setQuery] = useState('');
   const [found, setFound] = useState<{ q: string; hits: TagHit[] }>({ q: '', hits: [] });
@@ -92,6 +97,7 @@ export function TagEditor({ sub, text, family, convert, saveLabel, footNote, onS
   const [busy, setBusy] = useState<{ label: string; note: string; since: number } | null>(null);
   const [fragAnchor, setFragAnchor] = useState<DOMRect | null>(null);
   const [saving, setSaving] = useState<TagItem[] | null>(null);
+  const [requirement, setRequirement] = useState('');
   const [, tick] = useState(0);
   const hits = found.q === query ? found.hits : [];
 
@@ -297,6 +303,13 @@ export function TagEditor({ sub, text, family, convert, saveLabel, footNote, onS
     if (await onSave(items.map((item) => item.raw).join(', '))) onClose();
   }
 
+  async function optimizeNow() {
+    if (!editor || !optimize) return;
+    const items = allItems(editor);
+    if (!items.length) return toast('一个标签都没有，没法优化', { tone: 'warn' });
+    if (await optimize.onOptimize(items.map((item) => item.raw).join(', '), requirement.trim())) onClose();
+  }
+
   const stopPicking = () => {
     if (editor) {
       const tr = editor.state.tr;
@@ -313,10 +326,10 @@ export function TagEditor({ sub, text, family, convert, saveLabel, footNote, onS
   const typing = editor ? typedBefore(editor.state) : null;
 
   return (
-    <Dialog className={`dialog-wide te-dialog${picking ? ' is-picking' : ''}`} label="编辑标签" odId="dialog-tag-editor" onClose={onClose}>
+    <Dialog className={`dialog-wide te-dialog${picking ? ' is-picking' : ''}`} label={title} odId="dialog-tag-editor" onClose={onClose}>
       <div className="dialog-head te-head">
         <div className="stack grow" style={{ gap: 2, minWidth: 0 }}>
-          <h2>编辑标签</h2>
+          <h2>{title}</h2>
           <span className="meta" id="teSub">
             {sub}
           </span>
@@ -422,6 +435,27 @@ export function TagEditor({ sub, text, family, convert, saveLabel, footNote, onS
           {preview || '（还没有标签）'}
         </p>
       </div>
+      {optimize && (
+        <div className="te-optimize">
+          <input
+            className="input"
+            id="teReq"
+            aria-label="优化要求"
+            placeholder={optimize.placeholder}
+            value={requirement}
+            onChange={(e) => setRequirement(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              void optimizeNow();
+            }}
+          />
+          <button type="button" className="btn btn-secondary" data-te="optimize" onClick={() => void optimizeNow()}>
+            <Icon name="sparkles" />
+            让 AI 优化
+          </button>
+        </div>
+      )}
       <div className="dialog-foot">
         <span className="meta grow">{footNote}</span>
         <button type="button" className="btn btn-secondary" onClick={onClose}>

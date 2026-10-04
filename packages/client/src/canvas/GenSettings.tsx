@@ -1,15 +1,19 @@
-import type { ChatNode, Family, ImageRating, ImageSettings } from '@media-agent/shared';
-import { useEffect } from 'react';
+import { missingNodeTypes, type ChatNode, type ComfyTarget, type Family, type ImageRating, type ImageSettings } from '@media-agent/shared';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { LanState } from '../components/ComfyPill';
 import { useCanvasStore } from '../store/canvasStore';
-import { useComfyStore } from '../store/comfyStore';
+import { useComfyStore, type AutodlNow } from '../store/comfyStore';
+import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { anyNumber, CommitInput, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
+import { Popover } from '../ui/Popover';
+import { toast } from '../ui/toast';
 import { effectiveCheckpoint, useImageSettings, usePromptInfo } from './imageNode';
 import { useOverlays } from './overlays';
 
-// 出图设置：每个节点各存一份，常动的放上面，很少动的收起来。改一项存一项，见 docs/dev-plan.md 5.14
+// 出图设置：每个节点各存一份，常动的放上面，很少动的收起来。改一项存一项，见 docs/dev-plan.md 5.14。
+// 选了导入的工作流，底模、LoRA、步数这些照工作流里的，不显示
 
 export const RATING_LABELS: Record<ImageRating, string> = { none: '不加', general: '全年龄', sensitive: '擦边', explicit: '成人' };
 const RATINGS = Object.keys(RATING_LABELS) as ImageRating[];
@@ -28,15 +32,32 @@ function GenSettings({ node }: { node: ChatNode }) {
   const defaults = useCanvasStore((s) => s.defaults[family]);
   const options = useComfyStore((s) => s.options);
   const optionsError = useComfyStore((s) => s.optionsError);
+  const target = useComfyStore((s) => s.target);
   const status = useComfyStore((s) => s.status);
+  const autodl = useComfyStore((s) => s.autodl);
   const checking = useComfyStore((s) => s.checking);
+  const workflows = useWorkflowStore((s) => s.list);
+  const workflow = useNodeWorkflow(image.workflowId);
+  const missing = workflow && options ? missingNodeTypes(workflow.graph, options.nodeTypes) : [];
 
   useEffect(() => {
+    void useComfyStore.getState().loadTarget();
     void useComfyStore.getState().loadOptions();
     void useComfyStore.getState().checkStatus();
+    void useComfyStore.getState().checkAutodl();
+    useWorkflowStore
+      .getState()
+      .load()
+      .catch((err: Error) => toast(`读不到导入的工作流：${err.message}`, { tone: 'danger', ms: 4500 }));
   }, []);
 
   const save = (patch: Partial<ImageSettings>) => void useCanvasStore.getState().patchNode(node.id, { image: patch });
+
+  // 换了一台，底模、LoRA 这些下拉从那台重新读
+  const switchTo = async (next: ComfyTarget) => {
+    await useComfyStore.getState().setTarget(next);
+    void useComfyStore.getState().loadOptions();
+  };
 
   const mine = options?.checkpoints.filter((c) => c.family === family).map((c) => c.name) ?? [];
   const others = (options?.checkpoints.length ?? 0) - mine.length;
@@ -63,90 +84,123 @@ function GenSettings({ node }: { node: ChatNode }) {
       <div className="dialog-body gc-body">
         <div className="gc-sec">
           <h4>
-            用哪台 ComfyUI<span className="meta">所有节点共用</span>
+            用哪台 ComfyUI<span className="meta">所有节点共用，只记在这台电脑上</span>
           </h4>
+          <div className="seg gc-src" role="group" aria-label="用哪台 ComfyUI">
+            <button type="button" aria-pressed={target === 'lan'} data-gc="lan" onClick={() => void switchTo('lan')}>
+              局域网那台
+            </button>
+            <button type="button" aria-pressed={target === 'autodl'} data-gc="autodl" onClick={() => void switchTo('autodl')}>
+              AutoDL 实例
+            </button>
+          </div>
           <span className="gc-src-state">
-            <b>局域网那台</b>
-            <LanState status={status} checking={checking} />
-            {status?.url && <span className="meta mono">{status.url}</span>}
+            {target === 'autodl' ? (
+              <AutodlSource autodl={autodl} />
+            ) : (
+              <>
+                <LanState status={status} checking={checking} />
+                {status?.url && <span className="meta mono">{status.url}</span>}
+              </>
+            )}
           </span>
         </div>
         <div className="gc-sec">
-          <h4>
-            底模
-            <span className="meta">
-              只列标成 {family} 的{others > 0 ? `，另有 ${others} 个不是 ${family}` : ''}
-            </span>
-          </h4>
-          <select className="select" id="gcCkpt" aria-label="底模" value={checkpoint} onChange={(e) => save({ checkpoint: e.target.value })} disabled={!checkpointList.length}>
-            {!checkpointList.length && <option value="">{optionsError ? '读不到底模列表' : '正在读底模列表…'}</option>}
-            {checkpointList.map((name) => (
-              <option key={name} value={name}>
-                {name}
-                {options && !mine.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
+          <h4>工作流</h4>
+          <select className="select" id="gcWf" aria-label="工作流" value={workflow?.id ?? ''} onChange={(e) => save({ workflowId: e.target.value || null })}>
+            <option value="">内置基础流程</option>
+            {workflows?.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}（导入的）
               </option>
             ))}
           </select>
-          {optionsError && (
+          {workflow && (
             <p className="hint">
               <Icon name="info" className="icon-sm" />
-              {optionsError}
-            </p>
-          )}
-          {options && !mine.length && (
-            <p className="hint">
-              <Icon name="info" className="icon-sm" />
-              这台 ComfyUI 上没有标成 {family} 的底模，去设置「底模和默认值」里看看底模各标成了哪个系列。
+              导入的工作流里，底模、LoRA、步数这些按它自己的来，这里不用填。程序只往里填提示词、种子、尺寸。
+              {missing.length > 0 && (
+                <>
+                  <br />
+                  <b className="gc-warn">这台 ComfyUI 上没有这几种节点：{missing.join('、')}，出图前会拦下来。</b>
+                </>
+              )}
             </p>
           )}
         </div>
-        <div className="gc-sec">
-          <h4>
-            LoRA<span className="meta">可以挂几个，各带强度</span>
-          </h4>
-          <div className="gc-loras">
-            {image.loras.map((lora, i) => (
-              <div className="gc-lora" key={i}>
-                <select
-                  className="select"
-                  aria-label="LoRA"
-                  value={lora.name}
-                  onChange={(e) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, name: e.target.value } : l)) })}
+        {!workflow && (
+          <>
+            <div className="gc-sec">
+              <h4>
+                底模
+                <span className="meta">
+                  只列标成 {family} 的{others > 0 ? `，另有 ${others} 个不是 ${family}` : ''}
+                </span>
+              </h4>
+              <select className="select" id="gcCkpt" aria-label="底模" value={checkpoint} onChange={(e) => save({ checkpoint: e.target.value })} disabled={!checkpointList.length}>
+                {!checkpointList.length && <option value="">{optionsError ? '读不到底模列表' : '正在读底模列表…'}</option>}
+                {checkpointList.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                    {options && !mine.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
+                  </option>
+                ))}
+              </select>
+              {optionsError && (
+                <p className="hint">
+                  <Icon name="info" className="icon-sm" />
+                  {optionsError}
+                </p>
+              )}
+              {options && !mine.length && (
+                <p className="hint">
+                  <Icon name="info" className="icon-sm" />
+                  这台 ComfyUI 上没有标成 {family} 的底模，去设置「底模和默认值」里看看底模各标成了哪个系列。
+                </p>
+              )}
+            </div>
+            <div className="gc-sec">
+              <h4>
+                LoRA<span className="meta">可以挂几个，各带强度</span>
+              </h4>
+              <div className="gc-loras">
+                {image.loras.map((lora, i) => (
+                  <div className="gc-lora" key={i}>
+                    <LoraSelect
+                      value={lora.name}
+                      loras={pick(loras, lora.name)}
+                      onPick={(name) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, name } : l)) })}
+                    />
+                    <CommitInput
+                      className="input mono"
+                      type="number"
+                      step="0.05"
+                      min="-2"
+                      max="2"
+                      aria-label="强度"
+                      value={String(lora.strength)}
+                      parse={anyNumber}
+                      onCommit={(v) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, strength: Number(v) } : l)) })}
+                    />
+                    <button type="button" className="btn btn-ghost btn-icon btn-sm" aria-label="去掉" onClick={() => save({ loras: image.loras.filter((_, j) => j !== i) })}>
+                      <Icon name="x" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={!loras.length}
+                  title={loras.length ? undefined : '这台 ComfyUI 上没有 LoRA'}
+                  onClick={() => save({ loras: [...image.loras, { name: loras.find((l) => !image.loras.some((x) => x.name === l)) ?? loras[0], strength: 0.8 }] })}
                 >
-                  {pick(loras, lora.name).map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-                <CommitInput
-                  className="input mono"
-                  type="number"
-                  step="0.05"
-                  min="-2"
-                  max="2"
-                  aria-label="强度"
-                  value={String(lora.strength)}
-                  parse={anyNumber}
-                  onCommit={(v) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, strength: Number(v) } : l)) })}
-                />
-                <button type="button" className="btn btn-ghost btn-icon btn-sm" aria-label="去掉" onClick={() => save({ loras: image.loras.filter((_, j) => j !== i) })}>
-                  <Icon name="x" />
+                  <Icon name="plus" />
+                  挂一个 LoRA
                 </button>
               </div>
-            ))}
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={!loras.length}
-              title={loras.length ? undefined : '这台 ComfyUI 上没有 LoRA'}
-              onClick={() => save({ loras: [...image.loras, { name: loras.find((l) => !image.loras.some((x) => x.name === l)) ?? loras[0], strength: 0.8 }] })}
-            >
-              <Icon name="plus" />
-              挂一个 LoRA
-            </button>
-          </div>
-        </div>
+            </div>
+          </>
+        )}
         <div className="gc-sec">
           <h4>种子</h4>
           <div className="row">
@@ -169,50 +223,54 @@ function GenSettings({ node }: { node: ChatNode }) {
             <Icon name="chev-down" className="icon-sm chev" />
             很少动的
             <span className="meta mono">
-              {image.steps} 步 · CFG {image.cfg} · {image.sampler} · {image.scheduler} · {RATING_LABELS[image.rating]}
+              {workflow ? `评级 ${RATING_LABELS[image.rating]}` : `${image.steps} 步 · CFG ${image.cfg} · ${image.sampler} · ${image.scheduler} · ${RATING_LABELS[image.rating]}`}
             </span>
           </summary>
           <div className="gc-grid">
-            <div className="field">
-              <label htmlFor="gcSteps">步数</label>
-              <CommitInput className="input mono" id="gcSteps" type="number" min="1" max="150" value={String(image.steps)} parse={integerFrom(1)} onCommit={(v) => save({ steps: Number(v) })} />
-            </div>
-            <div className="field">
-              <label htmlFor="gcCfg">
-                CFG<span className="muted">（提示词管得多严）</span>
-              </label>
-              <CommitInput
-                className="input mono"
-                id="gcCfg"
-                type="number"
-                min="1"
-                max="30"
-                step="0.5"
-                value={String(image.cfg)}
-                parse={numberFrom(0)}
-                onCommit={(v) => save({ cfg: Number(v) })}
-              />
-            </div>
-            <div className="field">
-              <label htmlFor="gcSampler">采样器</label>
-              <select className="select" id="gcSampler" value={image.sampler} onChange={(e) => save({ sampler: e.target.value })}>
-                {pick(options?.samplers ?? [], image.sampler).map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="field">
-              <label htmlFor="gcSched">调度器</label>
-              <select className="select" id="gcSched" value={image.scheduler} onChange={(e) => save({ scheduler: e.target.value })}>
-                {pick(options?.schedulers ?? [], image.scheduler).map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {!workflow && (
+              <>
+                <div className="field">
+                  <label htmlFor="gcSteps">步数</label>
+                  <CommitInput className="input mono" id="gcSteps" type="number" min="1" max="150" value={String(image.steps)} parse={integerFrom(1)} onCommit={(v) => save({ steps: Number(v) })} />
+                </div>
+                <div className="field">
+                  <label htmlFor="gcCfg">
+                    CFG<span className="muted">（提示词管得多严）</span>
+                  </label>
+                  <CommitInput
+                    className="input mono"
+                    id="gcCfg"
+                    type="number"
+                    min="1"
+                    max="30"
+                    step="0.5"
+                    value={String(image.cfg)}
+                    parse={numberFrom(0)}
+                    onCommit={(v) => save({ cfg: Number(v) })}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="gcSampler">采样器</label>
+                  <select className="select" id="gcSampler" value={image.sampler} onChange={(e) => save({ sampler: e.target.value })}>
+                    {pick(options?.samplers ?? [], image.sampler).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="gcSched">调度器</label>
+                  <select className="select" id="gcSched" value={image.scheduler} onChange={(e) => save({ scheduler: e.target.value })}>
+                    {pick(options?.schedulers ?? [], image.scheduler).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
             <div className="field gc-wide">
               <span className="label">评级</span>
               <div className="seg" id="gcRating" role="group" aria-label="评级">
@@ -243,4 +301,126 @@ function GenSettings({ node }: { node: ChatNode }) {
       </div>
     </Dialog>
   );
+}
+
+// 选 LoRA：点开能按名字搜。几个词用空格隔开，名字里都有才列出来，不分大小写；上下键挑、回车选
+function LoraSelect({ value, loras, onPick }: { value: string; loras: string[]; onPick: (name: string) => void }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  return (
+    <>
+      <button type="button" className="select gc-lora-name" aria-label="LoRA" title={value} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
+        {value}
+      </button>
+      {anchor && (
+        <LoraSearch
+          anchor={anchor}
+          value={value}
+          loras={loras}
+          onPick={(name) => {
+            setAnchor(null);
+            onPick(name);
+          }}
+          onClose={() => setAnchor(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function LoraSearch({ anchor, value, loras, onPick, onClose }: { anchor: DOMRect; value: string; loras: string[]; onPick: (name: string) => void; onClose: () => void }) {
+  const [q, setQ] = useState('');
+  // 刚打开时停在现在选的那个上
+  const [active, setActive] = useState(() => Math.max(0, loras.indexOf(value)));
+  const list = useRef<HTMLDivElement>(null);
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = loras.filter((name) => words.every((word) => name.toLowerCase().includes(word)));
+
+  useEffect(() => {
+    list.current?.querySelector('.is-on')?.scrollIntoView({ block: 'nearest' });
+  }, [active, q]);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      setActive((i) => Math.min(Math.max(i + step, 0), shown.length - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (shown[active]) onPick(shown[active]);
+    }
+  };
+
+  return (
+    <Popover anchor={anchor} className="gc-lora-pop" odId="popover-pick-lora" label="选 LoRA" onClose={onClose}>
+      <input
+        className="input"
+        placeholder={`搜名字，一共 ${loras.length} 个`}
+        aria-label="搜 LoRA"
+        data-autofocus
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setActive(0);
+        }}
+        onKeyDown={onKeyDown}
+      />
+      <div className="gc-lora-list" role="listbox" aria-label="LoRA 列表" ref={list}>
+        {shown.map((name, i) => (
+          <button
+            key={name}
+            type="button"
+            role="option"
+            aria-selected={name === value}
+            className={`gc-lora-opt${i === active ? ' is-on' : ''}`}
+            onMouseMove={() => setActive(i)}
+            onClick={() => onPick(name)}
+          >
+            {name}
+          </button>
+        ))}
+        {!shown.length && <p className="gp-none">没有名字里带「{q.trim()}」的 LoRA</p>}
+      </div>
+    </Popover>
+  );
+}
+
+// AutoDL 现在怎样：开着就在扣钱；关着的点生图时自动开机
+function AutodlSource({ autodl }: { autodl: AutodlNow | null }) {
+  switch (autodl?.state) {
+    case 'running':
+      return (
+        <span className="tag tag-warn">
+          <Icon name="power" />
+          运行中 · 在扣钱
+        </span>
+      );
+    case 'booting':
+      return <span className="tag tag-accent">正在开机</span>;
+    case 'stopping':
+      return <span className="tag">正在关机</span>;
+    case 'failed':
+      return <span className="tag tag-danger">开机失败</span>;
+    case 'unknown':
+      return <span className="tag tag-danger">查不到状态</span>;
+    case 'unset':
+      return (
+        <>
+          <span className="tag">还没设置</span>
+          <span className="meta">在设置的「ComfyUI」里填 Token、选实例</span>
+        </>
+      );
+    case 'off':
+      return (
+        <>
+          <span className="tag">已关机</span>
+          <span className="meta">点生图时自动开机</span>
+        </>
+      );
+    default:
+      return (
+        <span className="meta">
+          <span className="spinner" /> 正在查…
+        </span>
+      );
+  }
 }

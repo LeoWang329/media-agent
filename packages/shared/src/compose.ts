@@ -35,6 +35,9 @@ export function composeMessages(
   for (const message of path) {
     if (message.role === 'user') {
       messages.push({ role: 'user', content: userContent(message, imageUrl) });
+    } else if (message.handwritten) {
+      // 自己写的框不是模型写的，当成用户说的话发，模型才知道是用户写的
+      messages.push({ role: 'user', content: `我自己写了一个框：\n${message.text}` });
     } else if (!message.error && message.text) {
       // 失败的回复跳过；停得太早一个字都没收到的也跳过，空内容有的接口会报错
       messages.push({ role: 'assistant', content: message.text });

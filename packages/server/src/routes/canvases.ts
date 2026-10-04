@@ -4,6 +4,7 @@ import {
   descendantIds,
   editedPromptMessage,
   editedUserMessage,
+  handwrittenMessage,
   parentKey,
   slotDiff,
   type ChatNode,
@@ -172,6 +173,7 @@ export function canvasRoutes(configDir: string): express.Router {
     await runGeneration({ configDir, work: await work(), canvasId, nodeId }, res, (node) => {
       const target = node.messages[req.params.messageId];
       if (target?.role !== 'assistant' || !target.parentId) throw new HttpError(404, '找不到这条回复');
+      if (target.handwritten) throw new HttpError(400, '这个框是自己写的，不是 AI 回的，没法重答');
       return { node, replyTo: node.messages[target.parentId] };
     });
   });
@@ -262,6 +264,20 @@ export function canvasRoutes(configDir: string): express.Router {
         const edited = editedPromptMessage(original, promptIndex, text, randomUUID(), new Date().toISOString());
         if (!edited) throw new HttpError(404, '这条回复里没有第 ' + (promptIndex + 1) + ' 个提示词框');
         return addMessage(node, edited);
+      }),
+    );
+  });
+
+  // 自己写的框（生图节点的「写标签」）：接在 parentId 后面，不调模型
+  router.post('/canvases/:canvasId/nodes/:nodeId/handwritten', async (req, res) => {
+    const { canvasId, nodeId } = ids(req);
+    const text = v.nonEmptyText(req.body?.text, '标签');
+    const parentId: string | null = req.body?.parentId ?? null;
+    if (isGenerating(nodeId)) throw new HttpError(409, '这个节点正在生成回复，先停止或等它写完');
+    res.status(201).json(
+      await updateNode(await work(), canvasId, nodeId, (node) => {
+        if (parentId !== null && !node.messages[parentId]) throw new HttpError(404, '找不到要接在后面的那条消息');
+        return addMessage(node, handwrittenMessage(node, parentId, text, randomUUID(), new Date().toISOString()));
       }),
     );
   });

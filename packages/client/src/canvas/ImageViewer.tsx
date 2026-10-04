@@ -58,6 +58,7 @@ function Viewer({ target }: { target: ImageTarget }) {
   const message = node.messages[target.messageId];
   const job = message?.images?.find((j) => j.id === target.jobId);
   const status = useComfyStore((s) => s.status);
+  const autodlName = useComfyStore((s) => s.autodl?.instance?.name ?? null);
   const [where, setWhere] = useState<ImageWhere | null>(null);
 
   // 这个框出过的图，按框下面显示的顺序；还在出的不算
@@ -114,7 +115,7 @@ function Viewer({ target }: { target: ImageTarget }) {
             {at + 1} / {list.length}
           </span>
         </div>
-        <Side target={target} job={job} jobs={jobs} where={where} title={node.title} label={box?.label} family={family} lanUrl={status?.url ?? null} />
+        <Side target={target} job={job} jobs={jobs} where={where} title={node.title} label={box?.label} family={family} lanUrl={status?.url ?? null} autodlName={autodlName} />
       </div>
     </Dialog>
   );
@@ -149,9 +150,19 @@ function Stage({ at, job, where }: { at: ImageAt; job: ImageJob; where: ImageWhe
   );
 }
 
-type SideProps = { target: ImageTarget; job: ImageJob; jobs: ImageJob[]; where: ImageWhere | null; title: string; label?: string; family: Family; lanUrl: string | null };
+type SideProps = {
+  target: ImageTarget;
+  job: ImageJob;
+  jobs: ImageJob[];
+  where: ImageWhere | null;
+  title: string;
+  label?: string;
+  family: Family;
+  lanUrl: string | null;
+  autodlName: string | null;
+};
 
-function Side({ target, job, jobs, where, title, label, family, lanUrl }: SideProps) {
+function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlName }: SideProps) {
   const defaults = useCanvasStore((s) => s.defaults[family]);
   const image = job.images[target.index];
   const { params } = job;
@@ -272,37 +283,49 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl }: SidePr
             {image.width ?? params.width}×{image.height ?? params.height}
           </span>
         </Kv>
-        <Kv k="底模">
-          <span className="mono">{shortCheckpoint(params.checkpoint ?? '')}</span> <span className="tag">{family}</span>
-        </Kv>
-        <Kv k="LoRA">
-          {params.loras?.length ? (
-            params.loras.map((lora, i) => (
-              <span key={i}>
-                {i > 0 && <br />}
-                <span className="mono">{shortCheckpoint(lora.name)}</span> <span className="meta mono">{lora.strength}</span>
+        {params.workflow.id ? (
+          <Kv k="底模、LoRA、步数">
+            <span className="meta">按工作流里原来的</span>
+          </Kv>
+        ) : (
+          <>
+            <Kv k="底模">
+              <span className="mono">{shortCheckpoint(params.checkpoint ?? '')}</span> <span className="tag">{family}</span>
+            </Kv>
+            <Kv k="LoRA">
+              {params.loras?.length ? (
+                params.loras.map((lora, i) => (
+                  <span key={i}>
+                    {i > 0 && <br />}
+                    <span className="mono">{shortCheckpoint(lora.name)}</span> <span className="meta mono">{lora.strength}</span>
+                  </span>
+                ))
+              ) : (
+                <span className="meta">没挂</span>
+              )}
+            </Kv>
+            <Kv k="步数 · CFG">
+              <span className="mono">
+                {params.steps} · {params.cfg}
               </span>
-            ))
-          ) : (
-            <span className="meta">没挂</span>
-          )}
-        </Kv>
-        <Kv k="步数 · CFG">
-          <span className="mono">
-            {params.steps} · {params.cfg}
-          </span>
-        </Kv>
-        <Kv k="采样器 · 调度器">
-          <span className="mono">
-            {params.sampler} · {params.scheduler}
-          </span>
-        </Kv>
-        <Kv k="clip skip">
-          <span className="mono">{params.clipSkip}</span>
-        </Kv>
+            </Kv>
+            <Kv k="采样器 · 调度器">
+              <span className="mono">
+                {params.sampler} · {params.scheduler}
+              </span>
+            </Kv>
+            <Kv k="clip skip">
+              <span className="mono">{params.clipSkip}</span>
+            </Kv>
+          </>
+        )}
         <Kv k="工作流">{params.workflow.id ? `导入的「${params.workflow.name}」` : '内置基础流程'}</Kv>
         <Kv k="ComfyUI">
-          局域网 {lanUrl && <span className="meta mono">{lanUrl.replace(/^https?:\/\//, '')}</span>}
+          {job.target === 'autodl' ? (
+            <>AutoDL {autodlName && <span className="meta">{autodlName}</span>}</>
+          ) : (
+            <>局域网 {lanUrl && <span className="meta mono">{lanUrl.replace(/^https?:\/\//, '')}</span>}</>
+          )}
         </Kv>
         <Kv k="用时">{image.ms ? <span className="mono">{seconds(image.ms)}</span> : <span className="meta">—</span>}</Kv>
         <Kv k="出图时间">

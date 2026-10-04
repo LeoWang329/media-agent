@@ -1,6 +1,7 @@
 import express, { type ErrorRequestHandler } from 'express';
 import http from 'node:http';
 import path from 'node:path';
+import { createAutodl, type Autodl, type AutodlOptions } from './comfy/autodl';
 import { createImageJobs, type ImageJobs } from './comfy/jobs';
 import { maskConfig, readConfig, requireWorkFolder, updateConfig } from './config';
 import { HttpError } from './httpError';
@@ -13,6 +14,7 @@ import { fragmentRoutes } from './routes/fragments';
 import { imageRoutes } from './routes/images';
 import { promptRoutes } from './routes/prompts';
 import { tagRoutes } from './routes/tags';
+import { workflowRoutes } from './routes/workflows';
 import { readSettings, updateSettings } from './store/settings';
 import { workFolderStatus } from './store/workFolder';
 import { DEFAULT_TAG_SOURCES, type TagSources } from './tags/update';
@@ -23,32 +25,42 @@ export type AppOptions = {
   clientDist?: string;
   // 更新词库从哪下，测试换成假的
   tagSources?: TagSources;
+  // AutoDL 的接口地址和几个等待时间，测试换成 mock-comfyui 里假的
+  autodl?: AutodlOptions;
 };
 
-// 出图任务挂在 app.locals 上，服务启动后接着取没出完的图，测试收尾时断开
+// 出图任务和 AutoDL 挂在 app.locals 上：服务启动后接着取没出完的图，退出时关 AutoDL，测试收尾时断开
 export const imageJobsOf = (app: express.Express) => app.locals.imageJobs as ImageJobs;
+export const autodlOf = (app: express.Express) => app.locals.autodl as Autodl;
 
-export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOURCES }: AppOptions): express.Express {
+export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOURCES, autodl: autodlOptions }: AppOptions): express.Express {
   const app = express();
-  app.use(express.json());
+  // 导入的工作流整份放在请求里，大的有好几百 KB
+  app.use(express.json({ limit: '20mb' }));
   const api = express.Router();
-  const imageJobs = createImageJobs(configDir);
+  const autodl = createAutodl(configDir, autodlOptions);
+  const imageJobs = createImageJobs(configDir, autodl);
+  app.locals.autodl = autodl;
   app.locals.imageJobs = imageJobs;
 
   api.get('/config', async (_req, res) => {
     res.json(maskConfig(await readConfig(configDir)));
   });
 
+  // 换了 AutoDL 的 Token，重新查一次实例
   api.put('/config', async (req, res) => {
     res.json(maskConfig(await updateConfig(configDir, req.body)));
+    if (req.body && 'autodlToken' in req.body) void autodl.refresh();
   });
 
   api.get('/settings', async (_req, res) => {
     res.json(await readSettings(await requireWorkFolder(configDir)));
   });
 
+  // 换了 AutoDL 实例、改了空闲多久关机，马上照新的来
   api.put('/settings', async (req, res) => {
     res.json(await updateSettings(await requireWorkFolder(configDir), req.body));
+    if (req.body && 'comfy' in req.body) void autodl.refresh();
   });
 
   api.get('/work-folder', async (_req, res) => {
@@ -74,7 +86,8 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   api.use(promptRoutes(configDir));
   api.use(tagRoutes(configDir, tagSources));
   api.use(fragmentRoutes(configDir));
-  api.use(comfyRoutes(configDir));
+  api.use(comfyRoutes(configDir, autodl));
+  api.use(workflowRoutes(configDir));
   api.use(imageRoutes(configDir, imageJobs));
 
   api.use(() => {
@@ -94,7 +107,7 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   return app;
 }
 
-export function startServer(options: AppOptions & { port: number }): Promise<http.Server> {
+export function startServer(options: AppOptions & { port: number }): Promise<{ server: http.Server; app: express.Express }> {
   return new Promise((resolve, reject) => {
     const app = createApp(options);
     const server = http.createServer(app);
@@ -103,7 +116,7 @@ export function startServer(options: AppOptions & { port: number }): Promise<htt
       imageJobsOf(app)
         .resume()
         .catch((err) => console.error('接着取没出完的图失败', err));
-      resolve(server);
+      resolve({ server, app });
     });
   });
 }

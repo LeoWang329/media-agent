@@ -2,6 +2,7 @@ import { aspectRatioText, hiddenNodeIds, type NodeSummary } from '@media-agent/s
 import { memo, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
+import { useComfyStore } from '../store/comfyStore';
 import { Icon } from '../ui/Icon';
 import { showMenu, showMenuAt } from '../ui/menu';
 import { RenameInput } from '../ui/RenameInput';
@@ -231,6 +232,7 @@ type NodeProps = {
 const GraphNode = memo(
   function GraphNode({ summary: n, canvasId, selected, dragging, fresh, generating, hiddenCount, register }: NodeProps) {
     const renaming = useRenaming((s) => s.nodeId === n.id && s.where === 'card');
+    const autodlBooting = useComfyStore((s) => s.autodl?.state === 'booting');
     const shown = n.slots.slice(0, 5);
     return (
       <div
@@ -293,7 +295,7 @@ const GraphNode = memo(
           {n.generated?.live ? (
             <span className="tag tag-accent">
               <span className="dot dot-live" />
-              出图 {n.generated.live.done}/{n.generated.live.total}
+              {n.generated.live.boot && autodlBooting ? '等开机' : `出图 ${n.generated.live.done}/${n.generated.live.total}`}
             </span>
           ) : (
             n.generated?.failed && (

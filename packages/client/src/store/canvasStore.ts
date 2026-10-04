@@ -83,6 +83,7 @@ type CanvasState = {
   createNode: (x: number, y: number) => Promise<ChatNode | undefined>;
   // 下面几个返回服务端改成没有，改成了再弹提示
   patchNode: (nodeId: string, patch: NodePatch) => Promise<boolean>;
+  patchesSaved: () => Promise<void>; // 排着队的节点改动都存好了（成没成都算）
   saveLayouts: (layouts: CanvasNodeLayout[], label: string) => Promise<boolean>;
   deleteNode: (nodeId: string) => Promise<number | undefined>; // 返回一共删了几个节点
   fork: (nodeId: string, messageId: string, draftPrefix?: string) => Promise<ChatNode | undefined>;
@@ -93,6 +94,7 @@ type CanvasState = {
   stop: (nodeId: string) => Promise<boolean>;
   star: (nodeId: string, messageId: string, promptIndex: number, on: boolean) => Promise<boolean>;
   editPrompt: (nodeId: string, messageId: string, promptIndex: number, text: string) => Promise<boolean>;
+  writeBox: (nodeId: string, text: string) => Promise<boolean>;
   translate: (nodeId: string, messageId: string, promptIndex: number, language: TranslateLanguage, instruction: string) => Promise<PromptTranslation>;
   switchVersion: (nodeId: string, messageId: string) => Promise<boolean>;
   place: (nodeId: string, sources: ImageSource[], options?: PlaceOptions) => Promise<Placed[]>;
@@ -551,6 +553,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         return node;
       }),
 
+    patchesSaved: () => patchQueue.then(() => undefined),
+
     // 改名、时长、比例能撤销；模型配置、系统提示词、草稿这些不算
     patchNode: (nodeId, patch) => {
       const node = get().nodes[nodeId];
@@ -660,6 +664,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     editPrompt: (nodeId, messageId, promptIndex, text) =>
       attempt(async () => {
         const node = await write<ChatNode>(`${nodeUrl(nodeId)}/messages/${messageId}/edit-prompt`, 'POST', { promptIndex, text });
+        mergeFields(nodeId, node, ['messages', 'rootIds', 'activeChildOf']);
+        await refreshCanvas();
+        return true;
+      }).then(Boolean),
+
+    // 自己写的框：接在当前路径最后，不问模型
+    writeBox: (nodeId, text) =>
+      attempt(async () => {
+        const parentId = activePath(get().nodes[nodeId]).at(-1)?.id ?? null;
+        const node = await write<ChatNode>(`${nodeUrl(nodeId)}/handwritten`, 'POST', { parentId, text });
         mergeFields(nodeId, node, ['messages', 'rootIds', 'activeChildOf']);
         await refreshCanvas();
         return true;

@@ -1,6 +1,8 @@
-import { imageErrorKind, isLiveImage, type ChatNode, type ImageJob, type JobImage, type Message } from '@media-agent/shared';
+import { imageErrorKind, isLiveImage, type ChatNode, type ComfyTarget, type ImageJob, type JobImage, type Message } from '@media-agent/shared';
 import { useState } from 'react';
-import { imageKey, useComfyStore } from '../store/comfyStore';
+import { Link } from 'react-router';
+import { secondsSince, useNow } from '../components/ComfyPill';
+import { imageKey, useComfyStore, waitingBoot } from '../store/comfyStore';
 import { clock } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { generate, imageSrc, jobLabel, shortError, stopJob, usePicks, type ImageAt } from './imageActions';
@@ -48,11 +50,21 @@ export function ImageJobs({ node, message, promptIndex, ro }: Props) {
   );
 }
 
-// 一组的状态：正在出、全失败、出完几张几张失败几张叫停
-function JobState({ job }: { job: ImageJob }) {
+// 一组的状态：等 AutoDL 开机、正在出、全失败、出完几张几张失败几张叫停
+function JobState({ job, booting }: { job: ImageJob; booting: boolean }) {
+  const since = useComfyStore((s) => s.autodl?.since ?? null);
+  const now = useNow(booting);
   const count = (status: JobImage['status']) => job.images.filter((image) => image.status === status).length;
   const [done, failed, stopped, queued] = [count('done'), count('failed'), count('stopped'), count('queued')];
   const total = job.images.length;
+  if (booting) {
+    return (
+      <>
+        <span className="spinner" />
+        AutoDL 正在开机，等了 <span className="mono">{secondsSince(since, now)} 秒</span>，开好了再排队
+      </>
+    );
+  }
   if (job.images.some(isLiveImage)) {
     return (
       <>
@@ -91,6 +103,7 @@ function JobState({ job }: { job: ImageJob }) {
 
 function Job({ node, message, job, jobs, ro }: { node: ChatNode; message: Message; job: ImageJob; jobs: ImageJob[]; ro: boolean }) {
   const picked = usePicks((s) => s.picked[job.id] ?? NONE);
+  const booting = useComfyStore((s) => waitingBoot(job.target, job.images, s.autodl));
   const [gone, setGone] = useState<number[]>([]);
   const place = { nodeId: node.id, messageId: message.id };
   const live = job.images.some(isLiveImage);
@@ -107,14 +120,15 @@ function Job({ node, message, job, jobs, ro }: { node: ChatNode; message: Messag
         <span className="ig-meta meta">
           <span className="mono">{clock(job.createdAt)}</span>
           <span>{job.images.length} 张</span>
-          <span>局域网</span>
+          <span>{job.target === 'autodl' ? 'AutoDL' : '局域网'}</span>
+          {job.params.workflow.id && <span>工作流「{job.params.workflow.name}」</span>}
           <span className="mono">
             {job.params.width}×{job.params.height}
           </span>
         </span>
         <span className="grow" />
         <span className="ig-state">
-          <JobState job={job} />
+          <JobState job={job} booting={booting} />
         </span>
         {!ro && live && (
           <button type="button" className="btn btn-ghost btn-sm" data-jact="stop" onClick={() => void stopJob(place, job)}>
@@ -151,6 +165,7 @@ function Job({ node, message, job, jobs, ro }: { node: ChatNode; message: Messag
             gone={gone.includes(index)}
             onGone={() => setGone((list) => [...list, index])}
             steps={job.params.steps ?? 0}
+            booting={booting}
           />
         ))}
       </div>
@@ -159,9 +174,9 @@ function Job({ node, message, job, jobs, ro }: { node: ChatNode; message: Messag
   );
 }
 
-type CellProps = { at: ImageAt; image: JobImage; ro: boolean; picked: boolean; gone: boolean; onGone: () => void; steps: number };
+type CellProps = { at: ImageAt; image: JobImage; ro: boolean; picked: boolean; gone: boolean; onGone: () => void; steps: number; booting: boolean };
 
-function Cell({ at, image, ro, picked, gone, onGone, steps }: CellProps) {
+function Cell({ at, image, ro, picked, gone, onGone, steps, booting }: CellProps) {
   const key = imageKey(at.jobId, at.index);
   const progress = useComfyStore((s) => s.progress[key]);
   const position = useComfyStore((s) => s.queue[key]);
@@ -215,20 +230,29 @@ function Cell({ at, image, ro, picked, gone, onGone, steps }: CellProps) {
       </>
     );
   } else if (image.status === 'running') {
+    // 导入的工作流不知道一共几步，等 ComfyUI 推来第一步再写
     const total = progress?.total || steps;
     const step = progress?.step ?? 0;
     inner = (
       <>
         <span className="ig-ph">
-          <span className="mono">
-            {step}/{total} 步
-          </span>
+          {total > 0 && (
+            <span className="mono">
+              {step}/{total} 步
+            </span>
+          )}
           <small>正在出</small>
         </span>
         <span className="ig-bar">
           <i style={{ width: `${total ? Math.round((step / total) * 100) : 0}%` }} />
         </span>
       </>
+    );
+  } else if (image.status === 'queued' && booting && !image.promptId) {
+    inner = (
+      <span className="ig-ph">
+        <small>等开机</small>
+      </span>
     );
   } else if (image.status === 'queued') {
     inner = (
@@ -286,13 +310,15 @@ function Cell({ at, image, ro, picked, gone, onGone, steps }: CellProps) {
 }
 
 // 没出成的原因：标题、说人话的解释、ComfyUI 的原话
-export function errorParts(error: string, checkpoint: string): { title: string; text: string; raw: string } {
+export function errorParts(error: string, checkpoint: string, target: ComfyTarget): { title: string; text: string; raw: string } {
   const after = (mark: string) => (error.includes(mark) ? error.slice(error.indexOf(mark) + mark.length) : '');
   switch (imageErrorKind(error)) {
     case 'down': {
-      const url = error.match(/（(https?:\/\/[^）]+?)(\/ws)?）/)?.[1] ?? 'ComfyUI 的地址';
+      const url = target === 'autodl' ? 'AutoDL 实例的访问地址' : (error.match(/（(https?:\/\/[^）]+?)(\/ws)?）/)?.[1] ?? 'ComfyUI 的地址');
       return { title: '连不上 ComfyUI', text: `${url} 没有响应。地址不对，或者那台电脑上 ComfyUI 没开。`, raw: after('原话：') };
     }
+    case 'boot':
+      return { title: 'AutoDL 开机失败，这组没有发出去', text: after('AutoDL 开机失败：'), raw: '' };
     case 'checkpoint':
       return {
         title: '底模文件不在',
@@ -301,6 +327,11 @@ export function errorParts(error: string, checkpoint: string): { title: string; 
       };
     case 'rejected':
       return { title: 'ComfyUI 不收这个任务', text: '这台 ComfyUI 检查参数时没通过，下面是它的原话。', raw: after('ComfyUI 不收这个任务：') };
+    case 'missing': {
+      const raw = after('缺插件：');
+      const types = raw.replace(/^object_info 里没有 /, '').split(', ');
+      return { title: '这台 ComfyUI 缺插件，没有发出去', text: `工作流要用 ${types.join('、')}，这台 ComfyUI 上没有这几种节点。装好对应的插件、重启 ComfyUI 后再出。`, raw };
+    }
     case 'memory':
       return { title: '显存不够', text: 'ComfyUI 出图时报了 out of memory。可以把尺寸调小、少挂几个 LoRA。出完的那几张留着。', raw: after('显存不够：') };
     case 'restart':
@@ -311,7 +342,8 @@ export function errorParts(error: string, checkpoint: string): { title: string; 
 }
 
 function JobError({ node, message, job, error, ro }: { node: ChatNode; message: Message; job: ImageJob; error: string; ro: boolean }) {
-  const parts = errorParts(error, job.params.checkpoint ?? '');
+  const parts = errorParts(error, job.params.checkpoint ?? '', job.target);
+  const retry = () => void generate({ nodeId: node.id, messageId: message.id }, job.promptIndex);
   return (
     <div className="ig-err" data-od-id="image-job-error">
       <Icon name="warn" />
@@ -328,7 +360,24 @@ function JobError({ node, message, job, error, ro }: { node: ChatNode; message: 
               换底模
             </button>
           )}
-          <button type="button" className="btn btn-secondary btn-sm" data-jact="retry" onClick={() => void generate({ nodeId: node.id, messageId: message.id }, job.promptIndex)}>
+          {imageErrorKind(error) === 'boot' && (
+            <>
+              <Link className="btn btn-secondary btn-sm" to={{ pathname: '/settings', hash: 'comfy' }}>
+                <Icon name="gear" />
+                去设置
+              </Link>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-jact="useLan"
+                onClick={() => void useComfyStore.getState().setTarget('lan').then(retry)}
+              >
+                <Icon name="server" />
+                改用局域网那台
+              </button>
+            </>
+          )}
+          <button type="button" className="btn btn-secondary btn-sm" data-jact="retry" onClick={retry}>
             <Icon name="retry" />
             再出一次
           </button>

@@ -149,6 +149,7 @@ describe('出图失败是哪一种', () => {
     expect(imageErrorKind('连不上 ComfyUI 的进度推送（http://192.168.1.20:8188/ws）：地址不对，或者 ComfyUI 没开')).toBe('down');
     expect(imageErrorKind("ComfyUI 不收这个任务：CheckpointLoaderSimple（1 号节点）ckpt_name: 'gone.safetensors' not in ['a.safetensors']")).toBe('checkpoint');
     expect(imageErrorKind("ComfyUI 不收这个任务：LoraLoader（2 号节点）lora_name: 'x' not in []")).toBe('rejected');
+    expect(imageErrorKind('这台 ComfyUI 缺插件：object_info 里没有 FaceDetailer')).toBe('missing');
     expect(imageErrorKind('显存不够：CUDA out of memory')).toBe('memory');
     expect(imageErrorKind('程序重启时这张还没出完')).toBe('restart');
     expect(imageErrorKind('出图出错（KSampler）：坏了')).toBe('other');

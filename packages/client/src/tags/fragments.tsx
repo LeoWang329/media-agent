@@ -27,7 +27,7 @@ export function FragmentPicker({ anchor, onPick, onClose }: { anchor: DOMRect; o
   const shown = (fragments ?? []).filter((fragment) => !query || fragment.name.includes(query));
   return (
     <Popover anchor={anchor} className="te-frags" odId="popover-insert-fragment" label="插片段" onClose={onClose}>
-      <input className="input" id="teFq" placeholder="搜片段名" aria-label="搜片段名" autoFocus value={q} onChange={(e) => setQ(e.target.value)} />
+      <input className="input" id="teFq" placeholder="搜片段名" aria-label="搜片段名" data-autofocus value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="te-fr-list">
         {FRAGMENT_CATEGORIES.map(({ value, label }) => {
           const list = shown.filter((fragment) => fragment.category === value);
