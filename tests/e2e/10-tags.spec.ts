@@ -43,19 +43,19 @@ test('10.3 第 2 条：系统提示词选 il → 面板是尺寸和张数 → �
   await expect(box(page).locator('.tg-foot')).toContainText('1 处换成了标准写法');
   await expect(box(page).locator('.tg-foot')).toContainText('1 个词库里没有');
 
-  const golden = boxChip(page, 'golden hair');
+  const golden = boxChip(page, 'goldish hair');
   await expect(golden).toHaveClass(/is-unknown/);
   await golden.click();
   const unknown = page.getByRole('dialog', { name: '换掉不认识的标签' });
   await unknown.locator('[data-near="blonde_hair"]').click();
-  await expect(toasts(page).filter({ hasText: '「golden hair」换成了「blonde hair」，存成了新版本' })).toBeVisible();
+  await expect(toasts(page).filter({ hasText: '「goldish hair」换成了「blonde hair」，存成了新版本' })).toBeVisible();
   await expect(lastReply(page).locator('.ver')).toHaveText('2/2');
-  await expect(boxChip(page, 'golden hair')).toHaveCount(0);
+  await expect(boxChip(page, 'goldish hair')).toHaveCount(0);
 
   await box(page).locator('[data-act="copy"]').click();
   await expect(toasts(page).filter({ hasText: '已复制提示词（7 个标签）' })).toBeVisible();
   const text = await copied(page);
-  expect(text).not.toContain('golden hair');
+  expect(text).not.toContain('goldish hair');
   expect(text).not.toContain('blond hair');
   expect(text).toBe('1girl, solo, long hair, blonde hair, blonde hair, smile, hatsune miku');
 
@@ -84,7 +84,7 @@ test('10.3 第 3 条：编辑窗里打「金发」选第一个候选、拖到最
 
   // 按住拖到第一个小块的左半边
   await chips(page).last().dragTo(chips(page).first(), { targetPosition: { x: 3, y: 8 } });
-  await expect(chipNames(page)).toHaveText(['blonde hair', '1girl', 'solo', 'long hair', 'blonde hair', 'golden hair', 'smile', 'hatsune miku']);
+  await expect(chipNames(page)).toHaveText(['blonde hair', '1girl', 'solo', 'long hair', 'blonde hair', 'goldish hair', 'smile', 'hatsune miku']);
 
   await chips(page).first().click();
   const weight = page.getByRole('dialog', { name: '调权重' });
@@ -115,7 +115,7 @@ test('10.3 第 3 条：编辑窗里打「金发」选第一个候选、拖到最
     'solo',
     'long hair',
     'blonde hair',
-    'golden hair',
+    'goldish hair',
     'smile',
     'hatsune miku',
     'sitting',

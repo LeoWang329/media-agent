@@ -69,17 +69,20 @@ function searchChinese(library: TagLibrary, query: string, limit: number): TagHi
 
 // 校验一个标签：在词库里、是别名，或者不认识（给最接近的 5 个）。
 // known 是这个系列固定开头和评级词里的词（见 familyWords），算认识，但不给 tag，拼提示词时原样照写（Pony 的 score_9 要留着下划线）；
-// 显示时归进元标签，中文那行写质量词或评级词
+// 显示时归进元标签，中文那行写质量词或评级词。
+// 已废弃的也算认识：Danbooru 撤了的标签（比如 bangs）底模多半还认得。masterpiece 也是已废弃的，固定开头里的照样写质量词
 export function checkTag(library: TagLibrary, input: string, known: Map<string, string> = new Map()): TagCheck {
   const key = tagKey(input);
   const entry = library.byTag.get(key);
-  if (entry && !entry.deprecated) return { input, status: 'ok', tag: entry.tag, zh: entry.zh, category: entry.category, count: entry.count };
+  const ok = (found: TagEntry): TagCheck => ({ input, status: 'ok', tag: found.tag, zh: found.zh, category: found.category, count: found.count });
+  if (entry && !entry.deprecated) return ok(entry);
   const word = known.get(key);
   if (word) return { input, status: 'ok', zh: word, category: 5 };
+  if (entry) return ok(entry);
   const target = library.aliases.get(key);
   if (target) {
     const found = library.byTag.get(target)!;
-    if (!found.deprecated) return { input, status: 'alias', tag: found.tag, zh: found.zh, category: found.category, count: found.count };
+    return { input, status: 'alias', tag: found.tag, zh: found.zh, category: found.category, count: found.count };
   }
   return { input, status: 'unknown', suggestions: suggest(library, key, 5) };
 }

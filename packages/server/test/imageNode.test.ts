@@ -72,7 +72,7 @@ describe('生图节点', () => {
       ((await t.stream(`${nodeUrl()}/send`, { parentId, text })).at(-1) as { message: Message }).message;
     await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
     const first = await send('写一个');
-    expect(first.parsed).toMatchObject({ title: '测试图片', prompts: [{ text: '1girl, solo, long hair, blond hair, golden hair, smile, hatsune miku' }] });
+    expect(first.parsed).toMatchObject({ title: '测试图片', prompts: [{ text: '1girl, solo, long hair, blond hair, goldish hair, smile, hatsune miku' }] });
 
     await t.ok('PATCH', nodeUrl(), { duration: 12 });
     const second = await reply(first.id, '改一下');

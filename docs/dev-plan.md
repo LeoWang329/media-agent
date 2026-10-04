@@ -382,7 +382,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 ### 5.13 词库（第三批）
 
 - 仓库里的 `data/danbooru/` 是 2026-10-03 下的快照，来源和覆盖情况见 `docs/requirements-interview-image.md`「查到的事实」：
-  - `tags.csv`：`tag, category, count, deprecated`，Danbooru 上用过 50 次以上的标签，124,319 个。分类 0 通用、1 画师、3 作品、4 角色、5 元标签。
+  - `tags.csv`：`tag, category, count, deprecated`，Danbooru 上用过 50 次以上的标签，再加上全部已废弃的标签（Danbooru 撤了的，比如 bangs，现在多是 0 次），一共 128,261 个，其中已废弃的 4,056 个。分类 0 通用、1 画师、3 作品、4 角色、5 元标签。
   - `aliases.csv`：`alias, tag`，官方生效的别名 41,281 条。
   - `zh/*.csv`：`tag, category, aliases, zh, count, notes`。`zh` 是中文名；`aliases` 是常用叫法，用 `|` 隔开，有日文原名、社区叫法、英文旧写法；`notes` 是一句说明。文件开头带 BOM。MIT 许可，`zh/LICENSE` 跟着数据走。
 - 工作文件夹里没有 `tags/` 时，从仓库复制一份过去（和自带系统提示词一样）。服务启动时读进内存：以 `tags.csv` 为准，按 tag 并上中文名、常用叫法、说明；`aliases.csv` 只留指向 `tags.csv` 里有的标签的。
@@ -392,11 +392,11 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 中文：比中文名和常用叫法，开头对上的在前；
   - 同一档里按使用次数从多到少，已废弃的不出；最多 20 个，每个带中文名、分类、使用次数，靠别名对上的注明是哪个别名。
 - 校验，每个标签得出三种之一：
-  - 认识：在词库里，或者是这个系列固定开头、评级词里的词（5.18）。
+  - 认识：在词库里（已废弃的也算，底模多半还认得），或者是这个系列固定开头、评级词里的词（5.18）。
   - 别名：是官方别名，给出标准名。
-  - 不认识：给最接近的 5 个，先用上面的搜索取，不够再按编辑距离补。已废弃的也算不认识。LoRA 的触发词、自然语言短语也会落在这里，只标出来，不替换、不删。
+  - 不认识：给最接近的 5 个，先用上面的搜索取，不够再按编辑距离补，已废弃的不给。LoRA 的触发词、自然语言短语也会落在这里，只标出来，不替换、不删。
 - 更新词库（设置里手动点）：服务端照快照的做法重新下，大约 4 分钟，界面上显示下到哪一步。
-  - 标签：`https://danbooru.donmai.us/tags.json?search[post_count]=%3E50&limit=1000&page=a<上一页最大的 id>&only=id,name,post_count,category,is_deprecated`，从 `page=a0` 翻到返回空为止。
+  - 标签：`https://danbooru.donmai.us/tags.json?search[post_count]=%3E50&limit=1000&page=a<上一页最大的 id>&only=id,name,post_count,category,is_deprecated`，从 `page=a0` 翻到返回空为止；再把 `search[post_count]=%3E50` 换成 `search[is_deprecated]=true` 同样翻一遍，补上前面没有的已废弃标签。
   - 别名：`https://danbooru.donmai.us/tag_aliases.json?search[status]=active&limit=1000&page=a<上一页最大的 id>&only=id,antecedent_name,consequent_name`，同样翻页。
   - 中文对照：`https://raw.githubusercontent.com/amenorira/danbooru-tags-data-zh/main/` 下的 `tags/` 五个文件和 `LICENSE`。
   - 请求头带 `User-Agent: media-agent`，一页一页按顺序请求，中间隔 0.5 秒。全部下完才整体换掉 `tags/`；中途失败，旧的不动，说是哪一步失败的。
@@ -789,7 +789,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - 第三批：
   - 请求里带了思考参数（`reasoning_effort`、`enable_thinking`、`thinking_budget`、`thinking`，或者模型名以 `reasoner` 结尾）→ 正文最后一行写「思考参数：」加收到的参数原样，测试靠它断言发了什么；这些参数表示开着思考时（`enable_thinking` 是假、`thinking.type` 是 disabled 的不算），正文前先用 `reasoning_content` 分 4 段发「思考：……」，共 1 秒。没带思考参数的不写这一行，原来的用例不受影响。翻译的回复同样处理。
   - 系统消息里写着「转成 Danbooru 标签」（5.15 的转标签）→ 只回 `sitting, window, book, reading`。
-  - 系统消息里写着「框里只放英文标签」（生图的固定格式要求）→ 出 `<title>测试图片</title>` 和一个框：`1girl, solo, long hair, blond hair, golden hair, smile, hatsune miku`。blond hair 是官方别名，golden hair 不认识，测 5.15。用户文字含「三个方向」时出三个框。
+  - 系统消息里写着「框里只放英文标签」（生图的固定格式要求）→ 出 `<title>测试图片</title>` 和一个框：`1girl, solo, long hair, blond hair, goldish hair, smile, hatsune miku`。blond hair 是官方别名，goldish hair 不认识，测 5.15。用户文字含「三个方向」时出三个框。
 
 ### 9.2 单元测试（vitest，`packages/shared`）
 
@@ -878,7 +878,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 ### 10.3 第三批
 
 1. 设置里总档位调到中，mock 那套模型配置的思考写法选 reasoning_effort → 发「写一个」→ 正文出来前显示「正在思考」→ 回复上面有折叠的「思考了 N 秒」，点开有「思考：」→ 回复最后一行「思考参数」含 `reasoning_effort` 和 `medium` → 翻译这个框，译文最后一行的「思考参数」是 `low`（翻译默认关，reasoning_effort 关的时候发 `low`）。
-2. 新建节点，系统提示词选 `il` → 面板上是尺寸和张数，没有时长和比例 → 发「写一个」→ 框里的标签是小块，long hair 下面是「长发」；blond hair 显示成 blonde hair，注明原来写的；golden hair 标不认识，点开候选里有 blonde hair，选它 → 回复显示 `2/2` → 复制拿到的里面没有 golden hair 和 blond hair。
+2. 新建节点，系统提示词选 `il` → 面板上是尺寸和张数，没有时长和比例 → 发「写一个」→ 框里的标签是小块，long hair 下面是「长发」；blond hair 显示成 blonde hair，注明原来写的；goldish hair 标不认识，点开候选里有 blonde hair，选它 → 回复显示 `2/2` → 复制拿到的里面没有 goldish hair 和 blond hair。
 3. 标签编辑窗：打「金发」，候选第一个是 blonde hair → 选中 → 拖到最前 → 权重调到 1.2 → 存 → 复制拿到的以 `(blonde hair:1.2), ` 开头。再打开，打「坐在窗边看书」→ 让模型转成标签 → 多了 sitting、window、book、reading 四个小块。
 4. 选两个小块存成片段「测试角色」→ 另一个生图节点的编辑窗里搜「测试角色」插进来 → 设置的片段库里看得到，删掉后编辑窗里搜不到。
 5. 设置里填 mock-comfyui 的地址，测试连接显示版本和显卡 → 底模里 pony-test 自动标成 Pony → 生图节点张数选 2，点「生图」→ 框下面两张先排队、再显示进度、最后出图 → 两个文件在工作文件夹 `image-temp/当天/` 里 → 打开大图，参数里正面以 `masterpiece, best quality, ` 开头，两张的种子差 1；mock 收到的请求里 `CLIPSetLastLayer` 是 −2。

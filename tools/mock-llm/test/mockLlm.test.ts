@@ -95,7 +95,7 @@ describe('mock-llm', () => {
     const image: ChatMessage = { role: 'system', content: '输出格式要求：\n1. 框里只放英文标签，用英文逗号隔开。' };
     const one = planReply([image, userMessage('写一个')]).reply;
     expect(one).toContain('<title>测试图片</title>');
-    expect(one).toContain('<prompt>\n1girl, solo, long hair, blond hair, golden hair, smile, hatsune miku\n</prompt>');
+    expect(one).toContain('<prompt>\n1girl, solo, long hair, blond hair, goldish hair, smile, hatsune miku\n</prompt>');
     const three = planReply([image, userMessage('给我三个方向')]).reply;
     expect(three.match(/^<prompt label="方向.：[^"]+">\n1girl, solo/gm)).toHaveLength(3);
 

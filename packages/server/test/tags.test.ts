@@ -21,6 +21,7 @@ hair_flower,0,500000,0
 thick_eyebrows,0,300000,0
 ^_^,0,150000,0
 eyebrows,0,38000,1
+masterpiece,0,0,1
 `,
   'aliases.csv': `alias,tag
 blond_hair,blonde_hair
@@ -55,6 +56,13 @@ const TAG_PAGES: Record<string, object[]> = {
   ],
   a7: [{ id: 9, name: 'old_tag', post_count: 100, category: 0, is_deprecated: true }],
 };
+// 已废弃的另查一次：bangs 现在 0 次；old_tag 第一次已经下过了
+const DEPRECATED_PAGES: Record<string, object[]> = {
+  a0: [
+    { id: 5, name: 'bangs', post_count: 0, category: 0, is_deprecated: true },
+    { id: 9, name: 'old_tag', post_count: 100, category: 0, is_deprecated: true },
+  ],
+};
 const ALIAS_PAGES: Record<string, object[]> = { a0: [{ id: 4, antecedent_name: 'longer_hair', consequent_name: 'long_hair' }] };
 const NEW_GENERAL = `${ZH_HEADER}\nnew_tag,0,,新标签,60,\n`;
 
@@ -75,7 +83,8 @@ beforeEach(async () => {
   });
   app.get('/tags.json', async (req, res) => {
     if (hold) await hold;
-    res.json(TAG_PAGES[req.query.page as string] ?? []);
+    const deprecated = req.query['search[is_deprecated]'] === 'true';
+    res.json((deprecated ? DEPRECATED_PAGES : TAG_PAGES)[req.query.page as string] ?? []);
   });
   app.get('/tag_aliases.json', (req, res) => {
     if (failAliases) res.status(500).end();
@@ -136,10 +145,13 @@ describe('校验', () => {
     expect(phrase).toEqual({ input: 'sitting by the window', status: 'unknown', suggestions: [] });
   });
 
-  it('已废弃的和指向已废弃标签的别名都算不认识', async () => {
-    const results = await check(['eyebrows', 'eyebrow']);
-    expect(results.map((result) => result.status)).toEqual(['unknown', 'unknown']);
-    expect(results[0].suggestions?.map((hit) => hit.tag)).toEqual(['thick_eyebrows']);
+  it('已废弃的算认识（底模多半还认得），指向它的别名换成它；搜索和候选里照旧不出', async () => {
+    const [deprecated, alias, gone] = await check(['eyebrows', 'eyebrow', 'masterpiece']);
+    expect(deprecated).toEqual({ input: 'eyebrows', status: 'ok', tag: 'eyebrows', zh: '眉毛', category: 0, count: 38000 });
+    expect(alias).toMatchObject({ input: 'eyebrow', status: 'alias', tag: 'eyebrows' });
+    expect(gone).toEqual({ input: 'masterpiece', status: 'ok', tag: 'masterpiece', zh: '', category: 0, count: 0 });
+    // 离 eyebrowz 最近的是已废弃的 eyebrows（差一个字母），不给它
+    expect((await check(['eyebrowz']))[0]).toEqual({ input: 'eyebrowz', status: 'unknown', suggestions: [] });
   });
 
   it('带了系列时，这个系列固定开头和评级词里的词也算认识，标上是质量词还是评级词', async () => {
@@ -149,6 +161,8 @@ describe('校验', () => {
       { input: 'rating_safe', status: 'ok', zh: '评级词', category: 5 },
     ]);
     expect((await check(['best quality', 'score_9'], 'IL')).map((result) => result.status)).toEqual(['ok', 'unknown']);
+    // masterpiece 在词库里是已废弃的，在固定开头里照样标质量词
+    expect(await check(['masterpiece'], 'IL')).toEqual([{ input: 'masterpiece', status: 'ok', zh: '质量词', category: 5 }]);
     expect((await t.call('POST', '/tags/check', { tags: 'smile' })).status).toBe(400);
     expect((await t.call('POST', '/tags/check', { tags: ['smile'], family: 'SDXL' })).status).toBe(400);
   });
@@ -167,6 +181,8 @@ describe('词库放在哪', () => {
     expect(info.withZh).toBeGreaterThan(10000);
     expect(info.zhByUse).toBeGreaterThan(0.9);
     expect(info.aliases).toBeGreaterThan(10000);
+    // 0 次的已废弃标签也在快照里
+    expect((await check(['bangs']))[0]).toMatchObject({ status: 'ok', tag: 'bangs', count: 0 });
     expect((await fs.readdir(path.join(t.work, 'tags', 'zh'))).sort()).toEqual(['LICENSE', 'artist.csv', 'character.csv', 'copyright.csv', 'general.csv', 'meta.csv']);
   });
 });
@@ -182,13 +198,15 @@ describe('更新词库', () => {
     expect(await t.ok('GET', '/tags/info')).toEqual(LIBRARY_INFO);
     const events = await t.stream<TagUpdateEvent>('/tags/update', {});
 
-    expect(events.slice(0, 3)).toEqual([
+    // 下标签查两次：用过 50 次以上的，再是全部已废弃的，页数和条数接着数
+    expect(events.slice(0, 4)).toEqual([
       { type: 'progress', step: 'tags', page: 1, rows: 2 },
       { type: 'progress', step: 'tags', page: 2, rows: 3 },
+      { type: 'progress', step: 'tags', page: 3, rows: 5 },
       { type: 'progress', step: 'aliases', page: 1, rows: 1 },
     ]);
-    expect(events.slice(3, 9).map((event) => event.type === 'progress' && event.step === 'zh' && event.file)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(events[9]).toEqual({ type: 'done', info: { updatedAt: today(), tags: 2, withZh: 1, zhByUse: 60 / 7_000_060, aliases: 1 } });
+    expect(events.slice(4, 10).map((event) => event.type === 'progress' && event.step === 'zh' && event.file)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(events[10]).toEqual({ type: 'done', info: { updatedAt: today(), tags: 2, withZh: 1, zhByUse: 60 / 7_000_060, aliases: 1 } });
 
     const tagRequests = requests.filter((request) => request.path === '/tags.json');
     expect(tagRequests[0]).toEqual({
@@ -196,14 +214,15 @@ describe('更新词库', () => {
       query: { 'search[post_count]': '>50', only: 'id,name,post_count,category,is_deprecated', limit: '1000', page: 'a0' },
       agent: 'media-agent',
     });
-    expect(tagRequests.map((request) => (request.query as { page: string }).page)).toEqual(['a0', 'a7', 'a9']);
+    expect(tagRequests[3].query).toEqual({ 'search[is_deprecated]': 'true', only: 'id,name,post_count,category,is_deprecated', limit: '1000', page: 'a0' });
+    expect(tagRequests.map((request) => (request.query as { page: string }).page)).toEqual(['a0', 'a7', 'a9', 'a0', 'a9']);
     expect(requests.filter((request) => request.path === '/tag_aliases.json').map((request) => request.query)).toEqual([
       { 'search[status]': 'active', only: 'id,antecedent_name,consequent_name', limit: '1000', page: 'a0' },
       { 'search[status]': 'active', only: 'id,antecedent_name,consequent_name', limit: '1000', page: 'a4' },
     ]);
 
     const read = (file: string) => fs.readFile(path.join(t.work, 'tags', file), 'utf8');
-    expect(await read('tags.csv')).toBe('tag,category,count,deprecated\nlong_hair,0,7000000,0\nold_tag,0,100,1\nnew_tag,0,60,0\n');
+    expect(await read('tags.csv')).toBe('tag,category,count,deprecated\nlong_hair,0,7000000,0\nold_tag,0,100,1\nnew_tag,0,60,0\nbangs,0,0,1\n');
     expect(await read('aliases.csv')).toBe('alias,tag\nlonger_hair,long_hair\n');
     expect(await read('zh/general.csv')).toBe(NEW_GENERAL);
     expect(await read('zh/LICENSE')).toBe('MIT');

@@ -19,6 +19,9 @@ export const DEFAULT_TAG_SOURCES: TagSources = {
 const ZH_FILES = ['tags/artist.csv', 'tags/character.csv', 'tags/copyright.csv', 'tags/general.csv', 'tags/meta.csv', 'LICENSE'];
 const HEADERS = { 'User-Agent': 'media-agent' };
 
+type TagRow = { id: number; name: string; post_count: number; category: number; is_deprecated: boolean };
+const TAG_FIELDS = 'id,name,post_count,category,is_deprecated';
+
 // 正在更新时的开关，设置里点「停止更新」用它
 let running: AbortController | null = null;
 
@@ -40,15 +43,14 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
   try {
     await fs.mkdir(path.join(fresh, 'zh'), { recursive: true });
 
-    const tags = await step('下标签', () =>
-      pages<{ id: number; name: string; post_count: number; category: number; is_deprecated: boolean }>(
-        sources,
-        signal,
-        'tags.json',
-        { 'search[post_count]': '>50', only: 'id,name,post_count,category,is_deprecated' },
-        (page, rows) => onProgress({ type: 'progress', step: 'tags', page, rows }),
-      ),
-    );
+    // 用过 50 次以上的，再加上全部已废弃的：Danbooru 撤了的标签（比如 bangs）现在多是 0 次，底模多半还认得
+    const tags = await step('下标签', async () => {
+      const onPage = pageCounter('tags', onProgress);
+      const used = await pages<TagRow>(sources, signal, 'tags.json', { 'search[post_count]': '>50', only: TAG_FIELDS }, onPage);
+      const deprecated = await pages<TagRow>(sources, signal, 'tags.json', { 'search[is_deprecated]': 'true', only: TAG_FIELDS }, onPage);
+      const names = new Set(used.map((t) => t.name));
+      return [...used, ...deprecated.filter((t) => !names.has(t.name))];
+    });
     tags.sort((a, b) => b.post_count - a.post_count || a.name.localeCompare(b.name));
     const tagRows = tags.map((t) => csvRow([t.name, t.category, t.post_count, t.is_deprecated ? 1 : 0]));
     await fs.writeFile(path.join(fresh, 'tags.csv'), [csvRow(['tag', 'category', 'count', 'deprecated']), ...tagRows, ''].join('\n'));
@@ -59,7 +61,7 @@ export async function updateTagLibrary(work: string, sources: TagSources, onProg
         signal,
         'tag_aliases.json',
         { 'search[status]': 'active', only: 'id,antecedent_name,consequent_name' },
-        (page, rows) => onProgress({ type: 'progress', step: 'aliases', page, rows }),
+        pageCounter('aliases', onProgress),
       ),
     );
     aliases.sort((a, b) => a.consequent_name.localeCompare(b.consequent_name) || a.antecedent_name.localeCompare(b.antecedent_name));
@@ -114,13 +116,20 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
-// 按 id 翻页：page=a<上一页最大的 id>，每页 1000 条，翻到返回空为止；一页一页按顺序请求
+// 这一步翻到第几页、一共下了多少条，推给前端；一步里查好几次的，页数和条数接着往下数
+function pageCounter(name: 'tags' | 'aliases', onProgress: (event: TagUpdateEvent) => void): (rows: number) => void {
+  let page = 0;
+  let total = 0;
+  return (rows) => onProgress({ type: 'progress', step: name, page: (page += 1), rows: (total += rows) });
+}
+
+// 按 id 翻页：page=a<上一页最大的 id>，每页 1000 条，翻到返回空为止；一页一页按顺序请求。onPage 收到这一页有几条
 async function pages<T extends { id: number }>(
   sources: TagSources,
   signal: AbortSignal,
   resource: string,
   search: Record<string, string>,
-  onPage: (page: number, rows: number) => void,
+  onPage: (rows: number) => void,
 ): Promise<T[]> {
   const rows: T[] = [];
   let after = 0;
@@ -132,7 +141,7 @@ async function pages<T extends { id: number }>(
     if (!batch.length) return rows;
     rows.push(...batch);
     after = Math.max(...batch.map((row) => row.id));
-    onPage(page, rows.length);
+    onPage(batch.length);
     if (sources.pageDelayMs) await sleep(sources.pageDelayMs, undefined, { signal });
   }
 }
