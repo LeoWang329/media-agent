@@ -3,27 +3,32 @@ import {
   builtinGraph,
   checkpointFamily,
   composeChecked,
-  defaultImageSettings,
   familyWords,
+  imageSettingsOf,
   importedGraph,
   isLiveImage as isLive,
   jobSeeds,
   missingNodeTypes,
   negativePrompt,
   parsePromptMeta,
+  PLUGIN_OF,
   positivePrompt,
   splitTags,
   type ChatNode,
   type ComfyGraph,
   type ComfyTarget,
+  type DetailPass,
   type Family,
+  type FamilyDefaults,
   type ImageJob,
   type ImageJobEvent,
   type ImageJobParams,
+  type ImageRating,
   type JobImage,
   type SharedSettings,
+  type UpscaleSettings,
 } from '@media-agent/shared';
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -38,7 +43,7 @@ import { loadLibrary } from '../tags/library';
 import { checkTag } from '../tags/search';
 import { BootCancelled, type Autodl } from './autodl';
 import * as comfy from './client';
-import { saveTemp } from './files';
+import { imageFile, saveTemp } from './files';
 import { comfyCheckpoints, loadObjectInfo } from './options';
 
 // 一组图挂在哪条回复下
@@ -85,17 +90,47 @@ const chosenWorkflow = (work: string, id: string | null) =>
       })
     : null;
 
+// 框里的标签拼成发出去的那串：别名换成标准名、括号转义，见 docs/dev-plan.md 5.15
+async function tagComposer(work: string, defaults: FamilyDefaults): Promise<(text: string) => string> {
+  const library = await loadLibrary(work);
+  const known = familyWords(defaults);
+  return (text) => {
+    const items = splitTags(text);
+    return composeChecked(items, items.map((item) => checkTag(library, item.name, known)));
+  };
+}
+
+// 放大和部位重绘开着的才记，见 docs/dev-plan.md 5.21。部位重绘这道写了正面就换掉框里的标签、写了负面就换掉额外的负面词，
+// 系列固定开头、评级词、默认负面词照加；没写的空着，出图时用原图的
+function stagesFor(
+  upscale: UpscaleSettings,
+  details: DetailPass[],
+  defaults: FamilyDefaults,
+  rating: ImageRating,
+  compose: (text: string) => string,
+): Pick<ImageJobParams, 'upscale' | 'details'> {
+  if (upscale.on && !upscale.model) throw new HttpError(400, '放大还没选放大模型，在出图设置里选一个');
+  details.forEach((pass, i) => {
+    if (pass.on && !pass.detector) throw new HttpError(400, `部位重绘第 ${i + 1} 道还没选检测模型`);
+  });
+  const passes = details
+    .filter((pass) => pass.on)
+    .map((pass) => ({
+      ...pass,
+      positive: pass.positive.trim() ? positivePrompt(defaults, rating, compose(pass.positive)) : '',
+      negative: pass.negative.trim() ? negativePrompt(defaults, pass.negative) : '',
+    }));
+  return { ...(upscale.on && { upscale }), ...(passes.length > 0 && { details: passes }) };
+}
+
 // 按节点现在的出图设置和这个框拼参数，见 docs/dev-plan.md 5.18。用导入的工作流时底模、LoRA、步数这些照工作流里的，不记
 async function paramsFor(work: string, node: ChatNode, text: string, settings: SharedSettings): Promise<{ params: ImageJobParams; seeds: number[] }> {
   const family = await imageFamily(work, node.systemPromptName);
   const defaults = settings.defaults[family];
-  const image = node.image ?? defaultImageSettings(defaults);
-  const library = await loadLibrary(work);
-  const known = familyWords(defaults);
-  const items = splitTags(text);
-  const tags = composeChecked(items, items.map((item) => checkTag(library, item.name, known)));
+  const image = imageSettingsOf(node.image, defaults);
+  const compose = await tagComposer(work, defaults);
   const workflow = await chosenWorkflow(work, image.workflowId);
-  const prompts = { family, positive: positivePrompt(defaults, image.rating, tags), negative: negativePrompt(defaults, image.negativeExtra) };
+  const prompts = { family, positive: positivePrompt(defaults, image.rating, compose(text)), negative: negativePrompt(defaults, image.negativeExtra) };
   return {
     params: workflow
       ? { ...prompts, workflow: { id: workflow.id, name: workflow.name, hash: workflow.hash }, width: image.width, height: image.height }
@@ -111,10 +146,35 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
           sampler: image.sampler,
           scheduler: image.scheduler,
           clipSkip: defaults.clipSkip,
+          ...stagesFor(image.upscale, image.details, defaults, image.rating, compose),
         },
     seeds: jobSeeds(image.seed ?? randomSeed(), image.count),
   };
 }
+
+// 出完的图上补做放大和部位重绘，见 docs/dev-plan.md 5.21：提示词、底模、LoRA、种子这些用原图那一组记的，
+// 原图是导入的工作流出的，底模这些用节点现在的出图设置；尺寸是原图的
+async function refineParams(work: string, node: ChatNode, from: ImageJobParams, image: JobImage, refine: Refine, settings: SharedSettings): Promise<ImageJobParams> {
+  if (!refine.upscale.on && !refine.details.some((pass) => pass.on)) throw new HttpError(400, '放大和部位重绘至少开一样');
+  const defaults = settings.defaults[from.family];
+  const current = imageSettingsOf(node.image, defaults);
+  const model = from.workflow.id
+    ? { checkpoint: current.checkpoint, loras: current.loras, steps: current.steps, cfg: current.cfg, sampler: current.sampler, scheduler: current.scheduler, clipSkip: defaults.clipSkip }
+    : { checkpoint: from.checkpoint, loras: from.loras, steps: from.steps, cfg: from.cfg, sampler: from.sampler, scheduler: from.scheduler, clipSkip: from.clipSkip };
+  return {
+    family: from.family,
+    positive: from.positive,
+    negative: from.negative,
+    workflow: BUILTIN_WORKFLOW,
+    width: image.width ?? from.width,
+    height: image.height ?? from.height,
+    ...model,
+    ...stagesFor(refine.upscale, refine.details, defaults, current.rating, await tagComposer(work, defaults)),
+  };
+}
+
+export type Again = { jobId: string; index: number; sameSeed: boolean };
+export type Refine = { jobId: string; index: number; upscale: UpscaleSettings; details: DetailPass[] };
 
 export type ImageJobs = ReturnType<typeof createImageJobs>;
 
@@ -136,7 +196,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
   let autodlWork = 0;
 
   const emit = (event: ImageJobEvent) => listeners.forEach((listener) => listener(event));
-  const syncBusy = () => autodl.setBusy(autodlWork > 0 || [...tracked.values()].some((t) => t.target === 'autodl'));
+  const syncBusy = () => autodl.setBusy('images', autodlWork > 0 || [...tracked.values()].some((t) => t.target === 'autodl'));
   const stopWatchingAutodl = autodl.subscribe((state) => emit({ type: 'autodl', ...state }));
   const later = (run: () => void, ms: number) => {
     const timer = setTimeout(() => {
@@ -181,7 +241,8 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       },
     );
 
-  async function create(place: JobPlace, promptIndex: number, again?: { jobId: string; index: number; sameSeed: boolean }): Promise<ImageJob> {
+  // 点「生图」出这个框；again 是「同样参数再来」「只换种子再来」，refine 是出完的图上补做放大和部位重绘
+  async function create(place: JobPlace, promptIndex: number, { again, refine }: { again?: Again; refine?: Refine } = {}): Promise<ImageJob> {
     const settings = await readSettings(place.work);
     const { comfyTarget: target, autodlToken } = await readComfyConfig(configDir);
     const lanUrl = settings.comfy.lanUrl;
@@ -191,29 +252,43 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     const message = node.messages[place.messageId];
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
 
-    let source: { promptIndex: number; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
+    let source: { promptIndex: number; kind: ImageJob['kind']; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
     if (again) {
-      // 「同样参数再来」用同一个种子，「只换种子再来」随机一个，都只出一张；记下照着哪张出的
+      // 「同样参数再来」用同一个种子，「只换种子再来」随机一个，都只出一张；记下照着哪张出的。
+      // 补做出的图再来，是把原来那张原图再补做一次
       const job = message.images?.find((j) => j.id === again.jobId);
       const image = job?.images[again.index];
       if (!job || !image) throw new HttpError(404, '找不到要照着再来的那张图');
       source = {
         promptIndex: job.promptIndex,
+        kind: job.kind,
         params: job.params,
         seeds: [again.sameSeed ? image.seed : randomSeed()],
+        from: job.kind === 'refine' ? job.source : { kind: 'generated', jobId: job.id, seed: image.seed },
+      };
+    } else if (refine) {
+      const job = message.images?.find((j) => j.id === refine.jobId);
+      const image = job?.images[refine.index];
+      if (!job || image?.status !== 'done') throw new HttpError(404, '找不到要补做的那张图');
+      if (!(await imageFile(place.work, image))) throw new HttpError(409, '这张图的临时文件清掉了，也没下载过，没法补做');
+      source = {
+        promptIndex: job.promptIndex,
+        kind: 'refine',
+        params: await refineParams(place.work, node, job.params, image, refine, settings),
+        seeds: [image.seed],
         from: { kind: 'generated', jobId: job.id, seed: image.seed },
       };
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
-      source = { promptIndex, ...(await paramsFor(place.work, node, box.text, settings)) };
+      source = { promptIndex, kind: 'txt2img', ...(await paramsFor(place.work, node, box.text, settings)) };
     }
 
     const job: ImageJob = {
       id: randomUUID(),
       promptIndex: source.promptIndex,
       createdAt: new Date().toISOString(),
-      kind: 'txt2img',
+      kind: source.kind,
       ...(source.from && { source: source.from }),
       target,
       params: source.params,
@@ -295,17 +370,41 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     await changeJob(place, jobId, (job) => ({ ...job, params: { ...job.params, checkpoint: name } }));
   }
 
-  // 怎么拼发出去的流程：内置的直接拼；导入的先对照这台 ComfyUI 装了哪些节点，缺的说清楚，一张都不发，见 docs/dev-plan.md 5.18
+  // 怎么拼发出去的流程，见 docs/dev-plan.md 5.18、5.21：先对照这台 ComfyUI 装了哪些节点，缺的说清楚，一张都不发。
+  // 出完的图上补做的，先把原图传上去
   async function graphMaker(place: JobPlace, jobId: string, url: string): Promise<(params: ImageJobParams, seed: number) => ComfyGraph> {
-    const { params } = await readJob(place, jobId);
-    if (!params.workflow.id) return builtinGraph;
+    const job = await readJob(place, jobId);
+    const { params } = job;
+    if (!params.workflow.id) {
+      await requireNodes(url, builtinGraph(params, 0, job.kind === 'refine' ? { image: '' } : undefined));
+      const input = job.kind === 'refine' ? { image: await uploadSource(place, job, url) } : undefined;
+      return (jobParams, seed) => builtinGraph(jobParams, seed, input);
+    }
     const workflow = await chosenWorkflow(place.work, params.workflow.id);
     if (!workflow) throw new comfy.ComfyError(`工作流「${params.workflow.name}」已经删了，在出图设置里换一个再出`);
-    let missing = missingNodeTypes(workflow.graph, Object.keys(await loadObjectInfo(url)));
-    // 节点列表是缓存的，刚装了插件还没重读的话，重读一次再算
-    if (missing.length) missing = missingNodeTypes(workflow.graph, Object.keys(await loadObjectInfo(url, true)));
-    if (missing.length) throw new comfy.ComfyError(`这台 ComfyUI 缺插件：object_info 里没有 ${missing.join(', ')}`);
+    await requireNodes(url, workflow.graph);
     return (jobParams, seed) => importedGraph(workflow, jobParams, seed);
+  }
+
+  // 节点列表是缓存的，刚装了插件还没重读的话，重读一次再算
+  async function requireNodes(url: string, graph: ComfyGraph): Promise<void> {
+    let missing = missingNodeTypes(graph, Object.keys(await loadObjectInfo(url)));
+    if (missing.length) missing = missingNodeTypes(graph, Object.keys(await loadObjectInfo(url, true)));
+    if (!missing.length) return;
+    const plugins = [...new Set(missing.flatMap((type) => (PLUGIN_OF[type] ? [PLUGIN_OF[type]] : [])))];
+    throw new comfy.ComfyError(`这台 ComfyUI 缺插件：object_info 里没有 ${missing.join(', ')}${plugins.length ? `，要装 ${plugins.join('、')}` : ''}`);
+  }
+
+  // 补做的原图传给 ComfyUI；文件名按内容算，同一张传几次都是同一个名字
+  async function uploadSource(place: JobPlace, job: ImageJob, url: string): Promise<string> {
+    const node = await readNode(place.work, place.canvasId, place.nodeId);
+    const from = node.messages[place.messageId]?.images
+      ?.find((j) => j.id === job.source?.jobId)
+      ?.images.find((image) => image.seed === job.source?.seed && image.status === 'done');
+    const file = from && (await imageFile(place.work, from));
+    if (!file) throw new comfy.ComfyError('要补做的那张原图找不到了：删掉了，或者临时文件清掉了又没下载过');
+    const data = await fs.readFile(file);
+    return comfy.uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}.png`);
   }
 
   function track(t: Tracked): void {

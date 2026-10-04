@@ -35,7 +35,7 @@ function useCommit(value: string, parse: Parse, onCommit: (v: string | number) =
   };
 }
 
-// 常用的几种：任意数字、不小于 min 的整数、不小于 min 的数、去掉首尾空格的文字
+// 常用的几种：任意数字、不小于 min 的整数、不小于 min 的数、在 min 和 max 之间的数、去掉首尾空格的文字
 const toNumber = (text: string) => (text.trim() !== '' && Number.isFinite(Number(text)) ? Number(text) : null);
 export const anyNumber: Parse = toNumber;
 export const integerFrom =
@@ -49,5 +49,11 @@ export const numberFrom =
   (text) => {
     const n = toNumber(text);
     return n !== null && n >= min ? n : null;
+  };
+export const numberBetween =
+  (min: number, max: number): Parse =>
+  (text) => {
+    const n = toNumber(text);
+    return n !== null && n >= min && n <= max ? n : null;
   };
 export const trimmed: Parse = (text) => text.trim();

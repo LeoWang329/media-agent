@@ -1,4 +1,5 @@
 import express from 'express';
+import { MOCK_SSH_PASSWORD } from './ssh';
 
 // 假的 AutoDL Art 开发者接口，返回的样子照真的，见 docs/dev-plan.md 9.5。
 // 一个实例，开始是关着的；开机后 bootMs 变成运行中，关机后 stopMs 变成关机。6006 的访问地址指回 mock 自己，
@@ -8,7 +9,8 @@ export const MOCK_AUTODL_PATH = '/autodl/api/v1/adl_dev/dev/instance/pro';
 export const MOCK_AUTODL_TOKEN = 'mock-autodl-token';
 export const MOCK_AUTODL_UUID = 'pro-mock00000001';
 
-export type MockAutodlOptions = { bootMs?: number; stopMs?: number };
+// sshCommand 给快照里的 ssh_command，指向假的 SSH
+export type MockAutodlOptions = { bootMs?: number; stopMs?: number; sshCommand?: () => string };
 export type MockAutodl = {
   router: express.Router;
   // 测试用：实例现在的状态、收到的开机关机请求；fail 里放了的，下一次这个接口按它返回错误
@@ -20,7 +22,7 @@ export type MockAutodl = {
 
 const time = (iso: string | null) => ({ Time: iso ?? '0001-01-01T00:00:00Z', Valid: Boolean(iso) });
 
-export function createMockAutodl({ bootMs = 2000, stopMs = 500 }: MockAutodlOptions = {}): MockAutodl {
+export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () => 'ssh -p 10000 root@mock' }: MockAutodlOptions = {}): MockAutodl {
   const router = express.Router();
   const instance: MockAutodl['instance'] = { status: 'shutdown', startedAt: null, stoppedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() };
   const calls: MockAutodl['calls'] = [];
@@ -90,8 +92,8 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500 }: MockAutodlOpti
       origin_pay_price: 1770,
       snapshot_gpu_alias_name: 'vGPU-32GB',
       cpu_arch: 'x86',
-      ssh_command: 'ssh -p 10000 root@mock',
-      root_password: 'mock-password',
+      ssh_command: sshCommand(),
+      root_password: MOCK_SSH_PASSWORD,
       jupyter_token: 'mock-jupyter',
       service_6006_domain: req.headers.host,
       service_6006_port: 6006,

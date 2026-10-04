@@ -101,7 +101,7 @@ export function WorkflowsTab({ workFolder }: { workFolder: string | null }) {
             <b>内置基础流程</b>
             <span className="tag">自带</span>
           </div>
-          <p className="hint">底模 → LoRA → 正负面提示词 → 空白画布 → 采样 → 出图。只用 ComfyUI 自带的节点。</p>
+          <p className="hint">底模 → LoRA → 正负面提示词 → 空白画布 → 采样 → 出图，能接着放大、重画脸手这些部位。基础的几步只用 ComfyUI 自带的节点；部位重绘要装 Impact Pack 和 Impact Subpack。</p>
         </div>
         {list?.map((workflow) => {
           const missing = nodeTypes ? missingNodeTypes(workflow.graph, nodeTypes) : [];

@@ -1,8 +1,8 @@
-import { DEFAULT_AUTODL, type AutodlInstance, type AutodlState } from '@media-agent/shared';
+import { DEFAULT_AUTODL, type AutodlBusy, type AutodlInstance, type AutodlState } from '@media-agent/shared';
 import { readComfyConfig } from '../config';
 import { HttpError } from '../httpError';
 import { readSettings } from '../store/settings';
-import { AUTODL_API, AutodlError, comfyAddress, findInstance, instanceStatus, listInstances, powerOff, powerOn, type AutodlAccess } from './autodlApi';
+import { AUTODL_API, AutodlError, comfyAddress, findInstance, instanceStatus, listInstances, powerOff, powerOn, sshAccess, type AutodlAccess, type SshAccess } from './autodlApi';
 import { queueState, systemStats } from './client';
 
 // AutoDL 实例的开机、关机、空闲自动关机，见 docs/dev-plan.md 5.17。
@@ -32,7 +32,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     upSince: null,
     idleLeftMs: null,
     idleMinutes: DEFAULT_AUTODL.idleMinutes,
-    busy: false,
+    busyWith: [],
     byApp: false,
     error: null,
     instance: null,
@@ -243,9 +243,9 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     return current();
   }
 
-  // 空闲自动关机：实例开着、程序这边没有图在出，从这时起算，到点看一眼 ComfyUI 的队列再关
+  // 空闲自动关机：实例开着、程序这边没有图在出也没有模型在传，从这时起算，到点看一眼 ComfyUI 的队列再关
   function armIdle(): void {
-    if (idle || closed || state.state !== 'running' || state.busy) return;
+    if (idle || closed || state.state !== 'running' || state.busyWith.length) return;
     idle = { from: Date.now(), timer: setTimeout(() => void onIdle(), state.idleMinutes * minuteMs) };
     publish({});
   }
@@ -268,7 +268,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
   async function onIdle(): Promise<void> {
     const mine = idle;
     if (!mine) return;
-    if (closed || state.busy || state.state !== 'running') return disarm();
+    if (closed || state.busyWith.length || state.state !== 'running') return disarm();
     const t = await target().catch(() => null);
     if (idle !== mine) return;
     if (!t) return disarm();
@@ -299,12 +299,13 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     }
   }
 
-  // 出图那边告诉这里：程序这边有没有图在 AutoDL 上出
-  function setBusy(busy: boolean): void {
-    if (busy === state.busy) return;
-    if (busy) disarm();
-    publish({ busy });
-    if (!busy) armIdle();
+  // 出图、传模型那边告诉这里：程序这边有没有图在 AutoDL 上出、有没有模型在传。有一样在忙就不算空闲
+  function setBusy(what: AutodlBusy, on: boolean): void {
+    if (on === state.busyWith.includes(what)) return;
+    const busyWith = on ? [...state.busyWith, what] : state.busyWith.filter((one) => one !== what);
+    if (busyWith.length) disarm();
+    publish({ busyWith });
+    if (!busyWith.length) armIdle();
   }
 
   // 开着的实例上 ComfyUI 的地址，关着的是 null
@@ -313,6 +314,13 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     if (!t) return null;
     if (state.state !== 'running' && !boot) await refresh();
     return state.state === 'running' ? (url ??= await comfyAddress(t, t.uuid)) : null;
+  }
+
+  // 传模型用：选的那个实例的 SSH 地址和密码，每次现查
+  async function ssh(): Promise<SshAccess> {
+    const t = await target();
+    if (!t) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好实例');
+    return sshAccess(t, t.uuid);
   }
 
   // 设置里选实例用：账号下的全部实例
@@ -352,5 +360,5 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     listeners.clear();
   }
 
-  return { current, refresh, ensureReady, power, setBusy, address, lastAddress: () => url, instances, subscribe, exit, close };
+  return { current, refresh, ensureReady, power, setBusy, address, lastAddress: () => url, ssh, instances, subscribe, exit, close };
 }

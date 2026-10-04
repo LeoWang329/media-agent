@@ -1,5 +1,8 @@
 import type { StreamEvent } from '@media-agent/shared';
 
+// 出错时 message 是服务端给的原因，status 是 HTTP 状态码
+export type ApiError = Error & { status: number };
+
 export async function api<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const hasBody = options.body !== undefined;
   const res = await fetch(`/api${path}`, {
@@ -8,7 +11,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     body: hasBody ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.error ?? `请求失败（HTTP ${res.status}）`);
+  if (!res.ok) throw Object.assign(new Error(data?.error ?? `请求失败（HTTP ${res.status}）`), { status: res.status });
   return data as T;
 }
 

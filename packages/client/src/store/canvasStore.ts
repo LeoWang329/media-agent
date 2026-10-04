@@ -1,9 +1,9 @@
 import {
   activePath,
   addMessage,
-  defaultImageSettings,
   FAMILY_DEFAULTS,
   hiddenNodeIds,
+  imageSettingsOf,
   isSupportedImageName,
   pathSnapshot,
   switchVersion as switchVersionInTree,
@@ -150,8 +150,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     }));
   const imageName = (imageId: string) => get().detail?.images[imageId]?.originalName ?? '这张图';
   // 节点现在的出图设置：改过的用节点自己的，没改过的按系列的默认值，和服务端一样
-  const imageSettingsOf = (node: ChatNode): ImageSettings =>
-    node.image ?? defaultImageSettings(get().defaults[get().prompts.find((p) => p.name === node.systemPromptName)?.family ?? 'IL']);
+  const nodeImageSettings = (node: ChatNode): ImageSettings =>
+    imageSettingsOf(node.image, get().defaults[get().prompts.find((p) => p.name === node.systemPromptName)?.family ?? 'IL']);
 
   // 卡片上的标题、概述、槽位缩略图由服务端算，改完重新读一遍画布；读不到只提示，不算这次操作失败
   const refreshCanvas = () => get().refresh().catch(failed);
@@ -237,7 +237,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     const keys = Object.keys(patch);
     keys.forEach((key) => countQueued(`${nodeId}:${key}`, 1));
     const { image, ...fields } = patch;
-    changeNode(nodeId, (node) => ({ ...node, ...fields, ...(image && { image: { ...imageSettingsOf(node), ...image } }) }));
+    changeNode(nodeId, (node) => ({ ...node, ...fields, ...(image && { image: { ...nodeImageSettings(node), ...image } }) }));
     const run = patchQueue.then(async () => {
       let server: ChatNode;
       try {

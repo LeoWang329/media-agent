@@ -17,3 +17,4 @@ export * from './imageDefaults';
 export * from './promptMeta';
 export * from './imageJob';
 export * from './workflow';
+export * from './remoteModels';

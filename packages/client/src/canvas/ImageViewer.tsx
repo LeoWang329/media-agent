@@ -1,4 +1,4 @@
-import { type Family, type FamilyDefaults, type ImageJob, type ImageWhere } from '@media-agent/shared';
+import { imageSettingsOf, type DetailPass, type Family, type FamilyDefaults, type ImageJob, type ImageWhere, type UpscaleSettings } from '@media-agent/shared';
 import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
@@ -8,12 +8,13 @@ import { copyText } from '../ui/copy';
 import { dayTime } from '../ui/format';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
-import { again, imageSrc, imageUrl, jobLabel, removeImage, revealImage, shortError, starImage, type ImageAt } from './imageActions';
+import { again, imageSrc, imageUrl, jobLabel, refine, removeImage, revealImage, shortError, starImage, type ImageAt } from './imageActions';
 import { boxJobs, cellOrder } from './ImageJobs';
 import { shortCheckpoint } from './imageNode';
 import { useOverlays, type ImageTarget } from './overlays';
+import { DetailPassList, UpscaleFields } from './StageFields';
 
-// 看大图和参数：这个框出过的图一张张翻，能下载、打星、删、在资源管理器里显示、再来
+// 看大图和参数：这个框出过的图一张张翻，能下载、打星、删、在资源管理器里显示、再来、补做放大和部位重绘
 
 const close = () => useOverlays.setState({ viewer: null });
 const show = (at: ImageTarget) => useOverlays.setState({ viewer: at });
@@ -185,6 +186,7 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
     close();
     void again(target, sameSeed);
   };
+  const [refining, setRefining] = useState(false);
 
   return (
     <aside className="ib-side">
@@ -250,7 +252,21 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
           <Icon name="sparkles" />
           只换种子再来
         </button>
+        {done && (
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm${refining ? ' is-on' : ''}`}
+            id="ibRefine"
+            disabled={Boolean(gone)}
+            title={gone ? '这张没下载过，临时文件清掉了，没法补做' : undefined}
+            onClick={() => setRefining((on) => !on)}
+          >
+            <Icon name="wand" />
+            放大和重绘
+          </button>
+        )}
       </div>
+      {refining && done && !gone && <RefineForm key={`${target.jobId}:${target.index}`} target={target} family={family} size={{ width: image.width ?? params.width, height: image.height ?? params.height }} />}
       <div className="ib-params" data-od-id="image-params">
         <div className="ib-prompt">
           <span className="k">正面提示词</span>
@@ -319,6 +335,30 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             </Kv>
           </>
         )}
+        {params.upscale && (
+          <Kv k="放大">
+            <span className="mono">{params.upscale.model.replace(/\.(pth|safetensors)$/, '')}</span>{' '}
+            <span className="meta mono">
+              {params.upscale.scale}× · 重绘 {params.upscale.denoise}
+            </span>
+          </Kv>
+        )}
+        {params.details && (
+          <Kv k="部位重绘">
+            {params.details.map((pass, i) => (
+              <span key={i} className="ib-pass">
+                {i > 0 && <br />}
+                <span className="mono">{pass.detector.replace(/\.pt$/, '')}</span>{' '}
+                <span className="meta mono">
+                  阈值 {pass.threshold} · 重绘 {pass.denoise} · {pass.guideSize}
+                </span>
+                {(pass.positive || pass.negative) && (
+                  <span className="meta">（自己写了{[pass.positive && '正面', pass.negative && '负面'].filter(Boolean).join('和')}）</span>
+                )}
+              </span>
+            ))}
+          </Kv>
+        )}
         <Kv k="工作流">{params.workflow.id ? `导入的「${params.workflow.name}」` : '内置基础流程'}</Kv>
         <Kv k="ComfyUI">
           {job.target === 'autodl' ? (
@@ -348,5 +388,38 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
         </button>
       </div>
     </aside>
+  );
+}
+
+// 出完的图上补做：先拿节点现在的放大和部位重绘，能关掉、能改，点「开始」才发，见 docs/dev-plan.md 5.21
+function RefineForm({ target, family, size }: { target: ImageTarget; family: Family; size: { width: number; height: number } }) {
+  const node = useCanvasStore((s) => s.nodes[target.nodeId]);
+  const defaults = useCanvasStore((s) => s.defaults[family]);
+  const options = useComfyStore((s) => s.options);
+  const [upscale, setUpscale] = useState<UpscaleSettings>(() => imageSettingsOf(node.image, defaults).upscale);
+  const [details, setDetails] = useState<DetailPass[]>(() => imageSettingsOf(node.image, defaults).details);
+  const ready = upscale.on || details.some((pass) => pass.on);
+
+  useEffect(() => {
+    void useComfyStore.getState().loadOptions();
+  }, []);
+
+  const go = () => {
+    close();
+    void refine(target, upscale, details);
+  };
+
+  return (
+    <div className="ib-form ib-refine" data-od-id="image-refine">
+      <span className="ib-form-k">放大</span>
+      <UpscaleFields value={upscale} models={options?.upscaleModels ?? []} size={size} onChange={setUpscale} />
+      <span className="ib-form-k">部位重绘</span>
+      <DetailPassList passes={details} detectors={options?.detectors ?? []} onChange={setDetails} />
+      <p className="hint">先拿的是节点现在的出图设置，在这里改不影响节点。底模、提示词、种子用这张图的。</p>
+      <span className="grow" />
+      <button type="button" className="btn btn-primary btn-sm" id="ibRefineGo" disabled={!ready} title={ready ? undefined : '放大和部位重绘至少开一样'} onClick={go}>
+        开始
+      </button>
+    </div>
   );
 }

@@ -174,7 +174,7 @@ describe('AutoDL', () => {
     expect(watcher.states.find((s) => s.state === 'running')).toMatchObject({ byApp: true });
 
     // 出完了开始算空闲：5「分钟」后关机
-    const idle = await until(status, (s) => s.state === 'running' && !s.busy && s.idleLeftMs !== null);
+    const idle = await until(status, (s) => s.state === 'running' && !s.busyWith.length && s.idleLeftMs !== null);
     expect(idle.idleLeftMs).toBeLessThanOrEqual(5 * MINUTE_MS);
     const off = await until(status, (s) => s.state === 'off');
     expect(off).toMatchObject({ byApp: false, idleLeftMs: null });
@@ -186,11 +186,11 @@ describe('AutoDL', () => {
     await useAutodl(5);
     mock.autodl.instance.status = 'running';
     mock.autodl.instance.startedAt = new Date(Date.now() - 23 * 60_000).toISOString();
-    expect(await status()).toMatchObject({ state: 'running', byApp: false, busy: false, upSince: Date.parse(mock.autodl.instance.startedAt) });
+    expect(await status()).toMatchObject({ state: 'running', byApp: false, busyWith: [], upSince: Date.parse(mock.autodl.instance.startedAt) });
 
     await t.ok('PATCH', nodeUrl(), { image: { count: 3 } });
     const job = await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 });
-    const busy = await until(status, (s) => s.busy);
+    const busy = await until(status, (s) => s.busyWith.includes('images'));
     expect(busy.idleLeftMs).toBeNull();
     await settledJob(job.id);
     expect((await readJob(job.id))!.images.map((image) => image.status)).toEqual(['done', 'done', 'done']);

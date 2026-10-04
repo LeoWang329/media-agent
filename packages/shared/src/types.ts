@@ -47,7 +47,8 @@ export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family 
 // 两份固定格式要求：视频节点的、生图节点的
 export type FormatRequirements = { video: string; image: string };
 
-// 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18
+// 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18。
+// 用哪个放大、检测模型不在这里，由预设管
 export type FamilyDefaults = {
   prefix: string;
   negative: string;
@@ -57,10 +58,6 @@ export type FamilyDefaults = {
   sampler: string;
   scheduler: string;
   clipSkip: number;
-  upscaleModel: string | null;
-  poseModel: string | null;
-  styleModel: string | null;
-  clipVision: string | null;
 };
 
 // 词库里的一个标签；tag 是 Danbooru 的写法（小写、下划线），category 0 通用、1 画师、3 作品、4 角色、5 元标签。
@@ -134,7 +131,28 @@ export type ImageSettings = {
   seed: number | null; // null 是每次随机
   rating: ImageRating;
   negativeExtra: string; // 接在系列默认负面词后面
+  upscale: UpscaleSettings;
+  details: DetailPass[]; // 部位重绘，按顺序做
 };
+
+// 放大，像 WebUI 的高清修复，见 docs/dev-plan.md 5.21：先用放大模型放大，缩到出图尺寸乘倍数；denoise 是 0 时不重画
+export type UpscaleSettings = { on: boolean; model: string; scale: number; denoise: number };
+
+// 部位重绘的一道，像 WebUI 的 ADetailer：detector 是检测模型，bbox/ 下的重画整个框，segm/ 下的只重画轮廓里面；
+// guideSize 是检测到的地方放大到多大再画；positive 写了换掉框里的标签，negative 写了换掉额外的负面词
+export type DetailPass = {
+  on: boolean;
+  detector: string;
+  threshold: number;
+  denoise: number;
+  guideSize: number;
+  positive: string;
+  negative: string;
+};
+
+// 预设：出图设置整套存一个名字，存在工作文件夹 image-presets.json，按系列分开，见 docs/dev-plan.md 5.21
+export type PresetSettings = Omit<ImageSettings, 'count' | 'seed'>;
+export type ImagePreset = { id: string; name: string; family: Family; settings: PresetSettings; createdAt: string; updatedAt: string };
 
 // ComfyUI 的 API 格式：节点号 → 节点类型和输入；连线写成 [节点号, 第几个输出]。导出来的还带着 _meta.title，是节点在界面上的标题
 export type ComfyGraph = Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: { title?: string } }>;
@@ -155,7 +173,8 @@ export type ImportedWorkflow = {
 };
 
 // 发给 ComfyUI 的全部参数，「同样参数再来」照这个发；positive、negative 是最终发出去的，含固定开头和默认负面词。
-// 用导入的工作流时没有底模到 clip skip 这几项，照工作流里原来的
+// 用导入的工作流时没有底模到 clip skip 这几项，照工作流里原来的。
+// 出完的图上补做的，宽高是原图的。放大、部位重绘开着的才记；部位重绘的 positive、negative 是拼好的，空着是和原图一样
 export type ImageJobParams = {
   family: Family;
   positive: string;
@@ -170,6 +189,8 @@ export type ImageJobParams = {
   sampler?: string;
   scheduler?: string;
   clipSkip?: number;
+  upscale?: UpscaleSettings;
+  details?: DetailPass[];
 };
 
 // 一组里的一张图，对应 ComfyUI 上的一个任务。file 是临时文件夹里的图，相对工作文件夹、用 / 隔开；ms 是出图用了多久；savedPath 是下载到哪
@@ -187,14 +208,15 @@ export type JobImage = {
 };
 
 // 点一次「生图」出的一组，挂在 assistant 消息的 images 里，见 docs/dev-plan.md 5.19。
-// source 是照着哪张图出的（「同样参数再来」「只换种子再来」）：那一组的 id 和那张的种子，种子一样就是同样参数再来。
+// kind 是 refine 的是出完的图上补做放大和部位重绘（5.21），source 是补做的那张。
+// 别的 source 是照着哪张图出的（「同样参数再来」「只换种子再来」）：那一组的 id 和那张的种子，种子一样就是同样参数再来。
 // rev 每改一次加一：推送和请求的回复谁先到不一定，前端拿它丢掉旧的
 export type ImageJob = {
   id: string;
   rev?: number;
   promptIndex: number;
   createdAt: string;
-  kind: 'txt2img';
+  kind: 'txt2img' | 'refine';
   source?: { kind: 'generated'; jobId: string; seed: number };
   target: ComfyTarget;
   params: ImageJobParams;
@@ -223,7 +245,9 @@ export type AutodlInstance = {
 // AutoDL 实例现在怎样，见 docs/dev-plan.md 5.17。
 // unset 是还没填 Token 或没选实例；unknown 是查不到，原因在 error；failed 是程序开机没开成，原因在 error，下次开机前一直留着。
 // raw 是 AutoDL 返回的状态原文；since 是这次开机从什么时候开始等；upSince 是从什么时候开着的；
-// idleLeftMs 是还有多久自动关机，程序这边有图在出（busy）或者没开着是 null；byApp 是这次开机是程序开的
+// idleLeftMs 是还有多久自动关机，程序这边在用它（busyWith 不空）或者没开着是 null；busyWith 是程序这边正在用它做什么：出图、传模型；
+// byApp 是这次开机是程序开的
+export type AutodlBusy = 'images' | 'models';
 export type AutodlState = {
   state: 'unset' | 'unknown' | 'off' | 'booting' | 'running' | 'stopping' | 'failed';
   raw: string | null;
@@ -231,7 +255,7 @@ export type AutodlState = {
   upSince: number | null;
   idleLeftMs: number | null;
   idleMinutes: number;
-  busy: boolean;
+  busyWith: AutodlBusy[];
   byApp: boolean;
   error: string | null;
   instance: AutodlInstance | null;
@@ -259,18 +283,39 @@ export type ComfyStatus =
   | { ok: false; url: string | null; error: string };
 
 // 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的。
-// nodeTypes 是这台装了的全部节点类型，用来查导入的工作流缺不缺插件
+// detectors 是部位重绘用的检测模型，只列 .pt 的（同一个文件夹里放的 SAM 这类不是）。
+// nodeTypes 是这台装了的全部节点类型，用来查缺不缺插件
 export type ComfyOptions = {
   checkpoints: { name: string; family: Family | null; guessed: boolean }[];
   loras: string[];
   samplers: string[];
   schedulers: string[];
   upscaleModels: string[];
+  detectors: string[];
   controlnets: string[];
   ipadapters: string[];
   clipVisions: string[];
   taggers: string[];
   nodeTypes: string[];
+};
+
+// 往 AutoDL 那台传的模型，见 docs/dev-plan.md 5.22。都不存盘，从那台上现读。
+// path 是相对这一类的文件夹，比如 IL/xxx.safetensors；partial 是 .part 结尾的，没传完、没下完
+export type ModelKind = 'checkpoint' | 'lora' | 'upscale' | 'bbox' | 'segm' | 'controlnet' | 'ipadapter' | 'clipVision' | 'vae';
+export type RemoteModelFile = { kind: ModelKind; path: string; bytes: number; modifiedAt: string; partial: boolean };
+export type RemoteModels = { free: number; files: RemoteModelFile[] };
+
+// 在传的和排着的，只在服务的内存里。done、total 是字节，给链接的取不到大小时 total 是 null
+export type ModelTransfer = {
+  id: string;
+  way: 'upload' | 'download';
+  kind: ModelKind;
+  path: string;
+  url?: string;
+  done: number;
+  total: number | null;
+  state: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
+  error?: string;
 };
 
 export type AspectRatio = 'auto' | '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';

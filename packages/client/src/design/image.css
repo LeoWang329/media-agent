@@ -295,7 +295,7 @@ details.think[open] > summary .chev { transform: rotate(180deg); }
 .ib-acts-2 { padding-top: 10px; border-top: 1px solid var(--border); }
 .ib-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 16px 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--fg-softer); }
 .ib-form .hint { flex-basis: 100%; }
-.ib-num { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.ib-num { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .ib-num .input { width: 76px; height: 28px; }
 .ib-params { padding: 4px 16px 12px; border-top: 1px solid var(--border); }
 .ib-prompt { padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -334,6 +334,46 @@ details.think[open] > summary .chev { transform: rotate(180deg); }
 .gc-lora-opt { display: block; width: 100%; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; font-family: var(--font-mono); font-size: 12.5px; overflow-wrap: anywhere; }
 .gc-lora-opt.is-on { background: var(--fg-soft); }
 .gc-lora-opt[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+/* 放大和部位重绘，出图设置和大图里「放大和重绘」共用 */
+.gc-stage { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.gc-stage .seg button { font-family: var(--font-body); }
+.gc-stage .hint { display: block; }
+.gc-up { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; width: 100%; }
+.gc-up > .select { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; }
+.gc-passes { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; width: 100%; }
+.gc-pass { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.gc-pass.is-off { opacity: .6; }
+.gc-pass-top { display: flex; align-items: center; gap: 6px; }
+.gc-pass-top > .select { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; }
+.gc-pass-top > .btn-icon { width: 24px; }
+.gc-pass-n { width: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+.gc-pass-nums { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.gc-pass-nums .select { width: 84px; height: 28px; padding-top: 0; padding-bottom: 0; font-size: 12.5px; }
+.gc-pass > .input { font-size: 12.5px; }
+.icon-flip { transform: rotate(180deg); }
+.gc-preset-pop { width: 340px; }
+.gc-preset-pop .row { gap: 8px; }
+.gc-preset-pop .input { flex: 1; }
+.gc-preset-pop .hint { margin-top: 8px; }
+.ib-acts .btn-secondary.is-on { border-color: var(--accent); color: var(--accent); }
+.ib-refine { align-items: flex-start; }
+.ib-refine .gc-stage, .ib-refine .gc-passes { flex-basis: 100%; }
+.ib-form-k { flex-basis: 100%; font-size: 12px; font-weight: 600; color: var(--muted); }
+.ib-pass { overflow-wrap: anywhere; }
+/* 设置「AutoDL 上的模型」 */
+.mx-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 16px; }
+.mx-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13.5px; }
+.mx-group { display: flex; flex-direction: column; gap: 6px; }
+.mx-kind { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 4px; }
+.mx-name { font-size: 12.5px; overflow-wrap: anywhere; min-width: 0; }
+.mx-bar { flex: 0 1 160px; height: 4px; border-radius: 2px; background: color-mix(in oklch, var(--fg) 12%, transparent); overflow: hidden; }
+.mx-bar i { display: block; height: 100%; background: var(--accent); transition: width .4s linear; }
+.mx-st { font-size: 12.5px; }
+.mx-st.is-error { color: var(--danger); }
+.mx-transfer.is-done .mx-st { color: var(--ok); }
+.mx-error { flex-basis: 100%; margin: 0; }
+.mx-dialog { width: min(520px, calc(100vw - 32px)); }
+
 .gc-more { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; }
 .gc-more > summary { list-style: none; display: flex; align-items: center; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 13px; font-weight: 520; }
 .gc-more > summary::-webkit-details-marker { display: none; }

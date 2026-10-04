@@ -2,41 +2,89 @@ import type { ComfyGraph, FillTarget, ImageJobParams, ImportedWorkflow, Workflow
 
 export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 
-// 内置流程，只用 ComfyUI 自带的节点，见 docs/dev-plan.md 5.18：
-// 底模 → 每个 LoRA 一个、串起来 → clip skip → 正面、负面 → 空白画布 → 采样 → 解码 → 预览（不在 ComfyUI 那台机器上留文件）
-export function builtinGraph(params: ImageJobParams, seed: number): ComfyGraph {
+// 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个
+export const PLUGIN_OF: Record<string, string> = { FaceDetailer: 'ComfyUI-Impact-Pack', UltralyticsDetectorProvider: 'ComfyUI-Impact-Subpack' };
+
+// 放大后的尺寸：取 8 的倍数
+export const scaledSize = (size: { width: number; height: number }, scale: number) => ({
+  width: Math.round((size.width * scale) / 8) * 8,
+  height: Math.round((size.height * scale) / 8) * 8,
+});
+
+// 内置流程，见 docs/dev-plan.md 5.18、5.21：
+// 底模 → 每个 LoRA 一个、串起来 → clip skip → 正面、负面 → 空白画布 → 采样 → 解码 → 放大 → 部位重绘 → 预览（不在 ComfyUI 那台机器上留文件）。
+// 放大、部位重绘开着才有；出完的图上补做的，从 input 那张传上去的图开始，不出新图
+export function builtinGraph(params: ImageJobParams, seed: number, input?: { image: string }): ComfyGraph {
   const graph: ComfyGraph = {};
-  const add = (class_type: string, inputs: Record<string, unknown>) => {
+  const add = (class_type: string, inputs: Record<string, unknown>): Link => {
     const id = String(Object.keys(graph).length + 1);
     graph[id] = { class_type, inputs };
-    return id;
+    return [id, 0];
   };
+  const out = ([id]: Link, index: number): Link => [id, index];
   const checkpoint = add('CheckpointLoaderSimple', { ckpt_name: params.checkpoint });
-  let model = [checkpoint, 0];
-  let clip = [checkpoint, 1];
+  let model = checkpoint;
+  let clip = out(checkpoint, 1);
+  const vae = out(checkpoint, 2);
   for (const lora of params.loras ?? []) {
-    const id = add('LoraLoader', { lora_name: lora.name, strength_model: lora.strength, strength_clip: lora.strength, model, clip });
-    model = [id, 0];
-    clip = [id, 1];
+    const loaded = add('LoraLoader', { lora_name: lora.name, strength_model: lora.strength, strength_clip: lora.strength, model, clip });
+    model = loaded;
+    clip = out(loaded, 1);
   }
   const skip = add('CLIPSetLastLayer', { stop_at_clip_layer: -(params.clipSkip ?? 1), clip });
-  const positive = add('CLIPTextEncode', { text: params.positive, clip: [skip, 0] });
-  const negative = add('CLIPTextEncode', { text: params.negative, clip: [skip, 0] });
-  const latent = add('EmptyLatentImage', { width: params.width, height: params.height, batch_size: 1 });
-  const sampler = add('KSampler', {
-    seed,
-    steps: params.steps,
-    cfg: params.cfg,
-    sampler_name: params.sampler,
-    scheduler: params.scheduler,
-    denoise: 1,
-    model,
-    positive: [positive, 0],
-    negative: [negative, 0],
-    latent_image: [latent, 0],
-  });
-  const decode = add('VAEDecode', { samples: [sampler, 0], vae: [checkpoint, 2] });
-  add('PreviewImage', { images: [decode, 0] });
+  const encode = (text: string) => add('CLIPTextEncode', { text, clip: skip });
+  const positive = encode(params.positive);
+  const negative = encode(params.negative);
+  const sampling = { seed, steps: params.steps, cfg: params.cfg, sampler_name: params.sampler, scheduler: params.scheduler };
+  const sample = (latent: Link, denoise: number) => add('VAEDecode', { samples: add('KSampler', { ...sampling, denoise, model, positive, negative, latent_image: latent }), vae });
+
+  let image = input ? add('LoadImage', { image: input.image }) : sample(add('EmptyLatentImage', { width: params.width, height: params.height, batch_size: 1 }), 1);
+
+  // 放大：放大模型放大后缩到出图尺寸乘倍数；重绘强度大于 0 再用同样的底模、提示词和种子画一遍
+  if (params.upscale) {
+    const { model: name, scale, denoise } = params.upscale;
+    const upscaled = add('ImageUpscaleWithModel', { upscale_model: add('UpscaleModelLoader', { model_name: name }), image });
+    image = add('ImageScale', { image: upscaled, upscale_method: 'lanczos', ...scaledSize(params, scale), crop: 'disabled' });
+    if (denoise > 0) image = sample(add('VAEEncode', { pixels: image, vae }), denoise);
+  }
+
+  // 部位重绘：每道一个检测模型加一个 FaceDetailer，没写提示词的用原图的。segm/ 下的检测模型按轮廓重画，不用 SAM；别的参数照 E02
+  for (const pass of params.details ?? []) {
+    const detector = add('UltralyticsDetectorProvider', { model_name: pass.detector });
+    image = add('FaceDetailer', {
+      image,
+      model,
+      clip: skip,
+      vae,
+      guide_size: pass.guideSize,
+      guide_size_for: true,
+      max_size: 1024,
+      ...sampling,
+      positive: pass.positive ? encode(pass.positive) : positive,
+      negative: pass.negative ? encode(pass.negative) : negative,
+      denoise: pass.denoise,
+      feather: 5,
+      noise_mask: true,
+      force_inpaint: true,
+      bbox_threshold: pass.threshold,
+      bbox_dilation: 10,
+      bbox_crop_factor: 3,
+      sam_detection_hint: 'center-1',
+      sam_dilation: 0,
+      sam_threshold: 0.93,
+      sam_bbox_expansion: 0,
+      sam_mask_hint_threshold: 0.7,
+      sam_mask_hint_use_negative: 'False',
+      drop_size: 10,
+      bbox_detector: detector,
+      wildcard: '',
+      cycle: 1,
+      noise_mask_feather: 20,
+      ...(pass.detector.startsWith('segm/') && { segm_detector_opt: out(detector, 1) }),
+    });
+  }
+
+  add('PreviewImage', { images: image });
   return graph;
 }
 

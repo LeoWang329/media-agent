@@ -1,14 +1,24 @@
 import { checkpointFamily, type ComfyOptions, type Family } from '@media-agent/shared';
-import { objectInfo, type ObjectInfo } from './client';
+import { nodeInfo, objectInfo, type ObjectInfo } from './client';
 
 // object_info 按地址缓存，点「刷新」或换了地址才重读，见 docs/dev-plan.md 5.17
 const cache = new Map<string, Promise<ObjectInfo>>();
+
+// 下拉里列模型的这几种节点，读完整份以后再一种一种要一次：AutoDL 那台的 ComfyUI 把整份缓存着，
+// 只在底模、LoRA 这几类文件夹最外层变了时重做，新放的放大、检测模型和放进子文件夹的都不在里面；一种一种要的不走那个缓存
+const MODEL_NODES = ['CheckpointLoaderSimple', 'LoraLoader', 'UpscaleModelLoader', 'UltralyticsDetectorProvider', 'ControlNetLoader', 'IPAdapterModelLoader', 'CLIPVisionLoader'];
+
+async function readObjectInfo(url: string): Promise<ObjectInfo> {
+  const info = await objectInfo(url);
+  const fresh = await Promise.all(MODEL_NODES.filter((type) => info[type]).map((type) => nodeInfo(url, type)));
+  return Object.assign(info, ...fresh);
+}
 
 export function loadObjectInfo(url: string, refresh = false): Promise<ObjectInfo> {
   if (refresh) cache.delete(url);
   let info = cache.get(url);
   if (!info) {
-    info = objectInfo(url);
+    info = readObjectInfo(url);
     info.catch(() => cache.delete(url));
     cache.set(url, info);
   }
@@ -38,6 +48,8 @@ export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | n
     samplers: comboOptions(info, 'KSampler', 'sampler_name'),
     schedulers: comboOptions(info, 'KSampler', 'scheduler'),
     upscaleModels: comboOptions(info, 'UpscaleModelLoader', 'model_name'),
+    // 检测模型的文件夹里还放着 SAM 这类别的模型，只列 YOLO 的 .pt
+    detectors: comboOptions(info, 'UltralyticsDetectorProvider', 'model_name').filter((name) => name.endsWith('.pt')),
     controlnets: comboOptions(info, 'ControlNetLoader', 'control_net_name'),
     ipadapters: comboOptions(info, 'IPAdapterModelLoader', 'ipadapter_file'),
     clipVisions: comboOptions(info, 'CLIPVisionLoader', 'clip_name'),

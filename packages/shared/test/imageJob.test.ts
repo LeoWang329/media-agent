@@ -104,6 +104,82 @@ describe('builtinGraph', () => {
     expect(graph['4']).toEqual({ class_type: 'CLIPSetLastLayer', inputs: { stop_at_clip_layer: -1, clip: ['3', 1] } });
     expect(graph['8'].inputs.model).toEqual(['3', 0]);
   });
+
+  const nodesOf = (graph: ReturnType<typeof builtinGraph>, type: string) => Object.entries(graph).filter(([, node]) => node.class_type === type);
+
+  it('放大：放大模型放大后缩到出图尺寸乘倍数（取 8 的倍数）；重绘强度 0 不再画', () => {
+    const graph = builtinGraph({ ...params, upscale: { on: true, model: '4x-test.pth', scale: 1.5, denoise: 0 } }, 7);
+    expect(graph['8']).toEqual({ class_type: 'UpscaleModelLoader', inputs: { model_name: '4x-test.pth' } });
+    expect(graph['9']).toEqual({ class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['8', 0], image: ['7', 0] } });
+    expect(graph['10']).toEqual({ class_type: 'ImageScale', inputs: { image: ['9', 0], upscale_method: 'lanczos', width: 1248, height: 1824, crop: 'disabled' } });
+    expect(graph['11']).toEqual({ class_type: 'PreviewImage', inputs: { images: ['10', 0] } });
+    expect(nodesOf(graph, 'KSampler')).toHaveLength(1);
+  });
+
+  it('放大：重绘强度大于 0 再用同样的底模、提示词、种子画一遍', () => {
+    const graph = builtinGraph({ ...params, upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0.35 } }, 7);
+    expect(graph['10'].inputs).toMatchObject({ width: 1664, height: 2432 });
+    expect(graph['11']).toEqual({ class_type: 'VAEEncode', inputs: { pixels: ['10', 0], vae: ['1', 2] } });
+    expect(graph['12']).toEqual({ class_type: 'KSampler', inputs: { ...graph['6'].inputs, denoise: 0.35, latent_image: ['11', 0] } });
+    expect(graph['13']).toEqual({ class_type: 'VAEDecode', inputs: { samples: ['12', 0], vae: ['1', 2] } });
+    expect(graph['14']).toEqual({ class_type: 'PreviewImage', inputs: { images: ['13', 0] } });
+  });
+
+  it('部位重绘：每道一个检测模型加一个 FaceDetailer，一道接一道；没写提示词的用原图的，写了的另编码；segm 的按轮廓', () => {
+    const pass = { on: true, threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+    const graph = builtinGraph(
+      {
+        ...params,
+        details: [
+          { ...pass, detector: 'bbox/face_yolov8m.pt' },
+          { ...pass, detector: 'segm/person_yolov8m-seg.pt', guideSize: 512, positive: 'masterpiece, detailed body', negative: 'lowres, extra arms' },
+        ],
+      },
+      7,
+    );
+    expect(graph['8']).toEqual({ class_type: 'UltralyticsDetectorProvider', inputs: { model_name: 'bbox/face_yolov8m.pt' } });
+    expect(graph['9'].class_type).toBe('FaceDetailer');
+    expect(graph['9'].inputs).toMatchObject({
+      image: ['7', 0],
+      model: ['1', 0],
+      clip: ['2', 0],
+      vae: ['1', 2],
+      positive: ['3', 0],
+      negative: ['4', 0],
+      bbox_detector: ['8', 0],
+      seed: 7,
+      steps: 28,
+      cfg: 5,
+      sampler_name: 'euler_ancestral',
+      scheduler: 'normal',
+      denoise: 0.4,
+      bbox_threshold: 0.3,
+      guide_size: 1024,
+      max_size: 1024,
+      wildcard: '',
+      cycle: 1,
+    });
+    expect(graph['9'].inputs).not.toHaveProperty('segm_detector_opt');
+    expect(graph['9'].inputs).not.toHaveProperty('sam_model_opt');
+    expect(graph['11']).toEqual({ class_type: 'CLIPTextEncode', inputs: { text: 'masterpiece, detailed body', clip: ['2', 0] } });
+    expect(graph['12']).toEqual({ class_type: 'CLIPTextEncode', inputs: { text: 'lowres, extra arms', clip: ['2', 0] } });
+    expect(graph['13'].inputs).toMatchObject({ image: ['9', 0], positive: ['11', 0], negative: ['12', 0], bbox_detector: ['10', 0], segm_detector_opt: ['10', 1], guide_size: 512 });
+    expect(graph['14']).toEqual({ class_type: 'PreviewImage', inputs: { images: ['13', 0] } });
+  });
+
+  it('出完的图上补做：从传上去的那张图开始，不出新图', () => {
+    const graph = builtinGraph(
+      { ...params, upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0 }, details: [{ on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' }] },
+      7,
+      { image: 'media-agent-1234.png' },
+    );
+    expect(graph['5']).toEqual({ class_type: 'LoadImage', inputs: { image: 'media-agent-1234.png' } });
+    expect(nodesOf(graph, 'EmptyLatentImage')).toHaveLength(0);
+    expect(nodesOf(graph, 'KSampler')).toHaveLength(0);
+    expect(graph['7'].inputs.image).toEqual(['5', 0]);
+    expect(graph['10'].inputs).toMatchObject({ image: ['8', 0] });
+    expect(graph['11']).toEqual({ class_type: 'PreviewImage', inputs: { images: ['10', 0] } });
+  });
 });
 
 describe('种子和文件名', () => {

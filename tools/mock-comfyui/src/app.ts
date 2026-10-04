@@ -1,13 +1,17 @@
 import express from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import sharp from 'sharp';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createMockAutodl, MOCK_AUTODL_PATH, type MockAutodl, type MockAutodlOptions } from './autodl';
+import { createMockSsh, type MockSsh } from './ssh';
 
 // 假的 ComfyUI，接口和推送的样子照真的，见 docs/dev-plan.md 9.5。
 // 正面提示词含「慢」的每步走得慢（测叫停），含「报错」的跑到一半出错，含「显存」的报显存不够。
-// 假的 AutoDL 接口也挂在这里，见 ./autodl
+// 出的图多大：有 ImageScale 的按它，不然按空白画布，不然按 LoadImage 那张传上来的图。
+// 假的 AutoDL 接口也挂在这里，见 ./autodl；它上面的 SSH 见 ./ssh，要另外 listen
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 type Task = { id: string; number: number; graph: Graph; clientId: string };
@@ -20,7 +24,7 @@ type HistoryEntry = {
 };
 
 export type MockComfyOptions = { stepMs?: number; slowStepMs?: number; autodl?: MockAutodlOptions };
-export type MockComfy = { server: http.Server; autodl: MockAutodl; close(): Promise<void> };
+export type MockComfy = { server: http.Server; autodl: MockAutodl; ssh: MockSsh; close(): Promise<void> };
 
 const STEPS = 5;
 
@@ -34,7 +38,8 @@ const MODELS = {
   ipadapter: ['ip-adapter-test.safetensors'],
   clipVision: ['clip-vision-test.safetensors'],
   tagger: ['wd-v1-4-moat-tagger-v2'],
-  detector: ['bbox/face_yolov8m.pt'],
+  // 真的 ComfyUI 上，检测模型的文件夹里还放着 SAM 这类别的模型，也会列出来
+  detector: ['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt', 'segm/person_yolov8m-seg.pt', 'segm/sam_vit_b_01ec64.pth'],
 };
 
 // 下拉选项两种写法都有：老的 [[选项…], {…}]，新的 ['COMBO', {options: […]}]
@@ -87,6 +92,25 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   'WD14Tagger|pysssss': node({ model: combo(MODELS.tagger) }, ['STRING'], true),
 };
 
+// 往 AutoDL 那台传的模型也列进下拉，跟真的 ComfyUI 读 extra_model_paths.yaml 一样
+const REMOTE_MODELS: { dir: string; type: string; input: string; prefix?: string }[] = [
+  { dir: '/root/autodl-tmp/models/checkpoints', type: 'CheckpointLoaderSimple', input: 'ckpt_name' },
+  { dir: '/root/autodl-tmp/models/loras', type: 'LoraLoader', input: 'lora_name' },
+  { dir: '/root/autodl-tmp/models/upscale_models', type: 'UpscaleModelLoader', input: 'model_name' },
+  { dir: '/root/ComfyUI/models/ultralytics/bbox', type: 'UltralyticsDetectorProvider', input: 'model_name', prefix: 'bbox/' },
+  { dir: '/root/ComfyUI/models/ultralytics/segm', type: 'UltralyticsDetectorProvider', input: 'model_name', prefix: 'segm/' },
+  { dir: '/root/autodl-tmp/models/controlnet', type: 'ControlNetLoader', input: 'control_net_name' },
+  { dir: '/root/autodl-tmp/models/ipadapter', type: 'IPAdapterModelLoader', input: 'ipadapter_file' },
+  { dir: '/root/autodl-tmp/models/clip_vision', type: 'CLIPVisionLoader', input: 'clip_name' },
+];
+
+function filesUnder(dir: string, prefix = ''): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) return filesUnder(path.join(dir, entry.name), `${prefix}${entry.name}/`);
+    return entry.isFile() && !entry.name.endsWith('.part') ? [`${prefix}${entry.name}`] : [];
+  });
+}
+
 function comboOptions(spec: unknown): unknown[] | null {
   if (!Array.isArray(spec)) return null;
   if (Array.isArray(spec[0])) return spec[0];
@@ -98,20 +122,21 @@ const findNode = (graph: Graph, type: string) => Object.keys(graph).find((id) =>
 const linked = (graph: Graph, value: unknown) => (Array.isArray(value) ? graph[String(value[0])] : undefined);
 const escapeXml = (text: string) => text.replace(/[<>&"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
-// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里
-function validate(graph: Graph): object | null {
+// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里；LoadImage 的图要是传上来过的
+function validate(graph: Graph, info: typeof OBJECT_INFO, uploaded: Map<string, Buffer>, hidden: Set<string>): object | null {
   for (const [id, item] of Object.entries(graph)) {
-    if (!OBJECT_INFO[item.class_type]) {
+    if (!info[item.class_type] || hidden.has(item.class_type)) {
       return {
         error: { type: 'invalid_prompt', message: `Cannot execute because node ${item.class_type} does not exist.`, details: `Node ID '#${id}'`, extra_info: {} },
         node_errors: {},
       };
     }
   }
-  const outputs = Object.keys(graph).filter((id) => OBJECT_INFO[graph[id].class_type].output_node);
+  const outputs = Object.keys(graph).filter((id) => info[graph[id].class_type].output_node);
   const nodeErrors: Record<string, object> = {};
   for (const [id, item] of Object.entries(graph)) {
-    const errors = Object.entries(OBJECT_INFO[item.class_type].input.required).flatMap(([name, spec]) => {
+    const specs = { ...info[item.class_type].input.required, ...(item.class_type === 'LoadImage' && { image: combo([...uploaded.keys()]) }) };
+    const errors = Object.entries(specs).flatMap(([name, spec]) => {
       const options = comboOptions(spec);
       const value = item.inputs[name];
       if (!options || Array.isArray(value) || options.includes(value)) return [];
@@ -145,7 +170,14 @@ async function drawImage(width: number, height: number, seed: number, positive: 
 export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autodlOptions }: MockComfyOptions = {}): MockComfy {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
-  const autodl = createMockAutodl(autodlOptions);
+  const ssh = createMockSsh();
+  const autodl = createMockAutodl({
+    ...autodlOptions,
+    sshCommand: () => {
+      const address = ssh.server.address();
+      return `ssh -p ${address && typeof address === 'object' ? address.port : 10000} root@127.0.0.1`;
+    },
+  });
   app.use(MOCK_AUTODL_PATH, autodl.router);
   const server = http.createServer(app);
   const wss = new WebSocketServer({ noServer: true });
@@ -153,6 +185,11 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   const queue: Task[] = [];
   const history = new Map<string, HistoryEntry>();
   const images = new Map<string, Buffer>();
+  const uploads = new Map<string, Buffer>();
+  // 测试用：假装没装的节点类型，object_info 里不列，发来的任务也不收
+  const hidden = new Set<string>();
+  // 照 AutoDL 那台的 ComfyUI：整份 object_info 缓存着，底模、LoRA 文件夹最外层变了才重做
+  let whole: { sign: string; info: typeof OBJECT_INFO } | null = null;
   const prompts: unknown[] = [];
   let current: Run | null = null;
   let counter = 0;
@@ -161,6 +198,20 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     for (const [ws, id] of clients) if (id === clientId) ws.send(JSON.stringify({ type, data }));
   };
   const remaining = () => queue.length + (current ? 1 : 0);
+
+  // 静态的节点列表，加上往假的 AutoDL 上传的模型
+  function objectInfo(): typeof OBJECT_INFO {
+    const info = { ...OBJECT_INFO };
+    for (const { dir, type, input, prefix } of REMOTE_MODELS) {
+      const local = ssh.local(dir);
+      const names = fs.existsSync(local) ? filesUnder(local, prefix) : [];
+      if (!names.length) continue;
+      const spec = info[type].input.required[input] as unknown[];
+      const options = [...(comboOptions(spec) as string[]), ...names];
+      info[type] = { ...info[type], input: { required: { ...info[type].input.required, [input]: spec[0] === 'COMBO' ? comboV3(options) : combo(options) } } };
+    }
+    return info;
+  }
   const broadcastStatus = () => {
     for (const ws of clients.keys()) ws.send(JSON.stringify({ type: 'status', data: { status: { exec_info: { queue_remaining: remaining() } } } }));
   };
@@ -178,10 +229,9 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     if (current || !queue.length) return;
     const task = queue.shift()!;
     const { graph } = task;
-    const samplerId = findNode(graph, 'KSampler') ?? Object.keys(graph)[0];
+    const samplerId = findNode(graph, 'KSampler') ?? findNode(graph, 'FaceDetailer') ?? Object.keys(graph)[0];
     const sampler = graph[samplerId];
     const positive = String(linked(graph, sampler.inputs.positive)?.inputs.text ?? '');
-    const latent = linked(graph, sampler.inputs.latent_image)?.inputs ?? {};
     const seed = Number(sampler.inputs.seed ?? 0);
     const wait = positive.includes('慢') ? slowStepMs : stepMs;
     const failure = positive.includes('显存')
@@ -226,7 +276,8 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
         run.timer = setTimeout(tick, wait);
         return;
       }
-      const data = await drawImage(Number(latent.width ?? 512), Number(latent.height ?? 512), seed, positive);
+      const size = await outputSize(graph);
+      const data = await drawImage(size.width, size.height, seed, positive);
       if (current !== run) return;
       // 有存图节点的按真的放进 output，不然是预览用的 temp
       const saveId = findNode(graph, 'SaveImage');
@@ -246,6 +297,20 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     run.timer = setTimeout(tick, wait);
   }
 
+  async function outputSize(graph: Graph): Promise<{ width: number; height: number }> {
+    const scale = findNode(graph, 'ImageScale');
+    const latent = findNode(graph, 'EmptyLatentImage');
+    const load = findNode(graph, 'LoadImage');
+    const from = scale ?? latent;
+    if (from) return { width: Number(graph[from].inputs.width), height: Number(graph[from].inputs.height) };
+    const upload = load && uploads.get(String(graph[load].inputs.image));
+    if (upload) {
+      const { width = 512, height = 512 } = await sharp(upload).metadata();
+      return { width, height };
+    }
+    return { width: 512, height: 512 };
+  }
+
   app.get('/system_stats', (_req, res) => {
     res.json({
       system: { os: 'nt', ram_total: 68719476736, ram_free: 34359738368, comfyui_version: '0.3.60', python_version: '3.12.10', pytorch_version: '2.8.0+cu128', embedded_python: true, argv: ['main.py'] },
@@ -254,13 +319,31 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   });
 
   app.get('/object_info', (_req, res) => {
-    res.json(OBJECT_INFO);
+    const sign = REMOTE_MODELS.filter(({ type }) => type === 'CheckpointLoaderSimple' || type === 'LoraLoader')
+      .map(({ dir }) => (fs.existsSync(ssh.local(dir)) ? fs.statSync(ssh.local(dir)).mtimeMs : 0))
+      .join(',');
+    if (whole?.sign !== sign) whole = { sign, info: objectInfo() };
+    res.json(Object.fromEntries(Object.entries(whole.info).filter(([type]) => !hidden.has(type))));
+  });
+
+  // 只要一种节点的，不缓存
+  app.get('/object_info/:type', (req, res) => {
+    const info = objectInfo();
+    const type = req.params.type;
+    res.json(info[type] && !hidden.has(type) ? { [type]: info[type] } : {});
+  });
+
+  // 测试用：假装没装这几种节点，测缺插件；传空的就都装回来
+  app.post('/_hide-nodes', (req, res) => {
+    hidden.clear();
+    for (const type of req.body?.types ?? []) hidden.add(String(type));
+    res.status(204).end();
   });
 
   app.post('/prompt', (req, res) => {
     prompts.push(req.body);
     const graph = req.body?.prompt as Graph;
-    const problem = validate(graph ?? {});
+    const problem = validate(graph ?? {}, objectInfo(), uploads, hidden);
     if (problem) {
       res.status(400).json(problem);
       return;
@@ -317,6 +400,23 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     res.type('image/png').send(data);
   });
 
+  // 收图，和真的一样是 multipart：image 是文件，overwrite 为真时同名的换掉
+  app.post('/upload/image', express.raw({ type: 'multipart/form-data', limit: '50mb' }), async (req, res) => {
+    const form = await new Response(req.body as Buffer, { headers: { 'content-type': String(req.headers['content-type']) } }).formData();
+    const file = form.get('image');
+    if (!(file instanceof File)) {
+      res.status(400).end();
+      return;
+    }
+    uploads.set(file.name, Buffer.from(await file.arrayBuffer()));
+    res.json({ name: file.name, subfolder: '', type: 'input' });
+  });
+
+  // 测试用：传上来的图，名字、大小、sha256
+  app.get('/_uploads', (_req, res) => {
+    res.json([...uploads].map(([name, data]) => ({ name, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') })));
+  });
+
   // 测试用：收到的每个 /prompt 请求体
   app.get('/_last-prompts', (_req, res) => {
     res.json(prompts);
@@ -325,6 +425,39 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   // 测试用：假的 AutoDL 实例现在的状态、收到过的开机关机请求
   app.get('/_autodl', (_req, res) => {
     res.json({ instance: autodl.instance, calls: autodl.calls });
+  });
+
+  // 测试用：假的 SSH 收到的命令、那台还剩多少空间；能改剩多少
+  app.get('/_ssh', (_req, res) => {
+    res.json({ commands: ssh.commands, free: ssh.state.free });
+  });
+  app.post('/_ssh', (req, res) => {
+    if (typeof req.body?.free === 'number') ssh.state.free = req.body.free;
+    res.status(204).end();
+  });
+
+  // 测试用：给链接下载的文件。bytes 是多大，ms 是花多久慢慢给（测停），status 不是 200 的直接回这个
+  app.get('/_files/:name', async (req, res) => {
+    const status = Number(req.query.status ?? 200);
+    if (status !== 200) {
+      res.status(status).end();
+      return;
+    }
+    const bytes = Number(req.query.bytes ?? 100_000);
+    const ms = Number(req.query.ms ?? 0);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', String(bytes));
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const pieces = ms ? 10 : 1;
+    for (let i = 0; i < pieces && !res.destroyed; i += 1) {
+      const size = i === pieces - 1 ? bytes - Math.floor(bytes / pieces) * i : Math.floor(bytes / pieces);
+      res.write(Buffer.alloc(size, i));
+      if (ms) await new Promise((resolve) => setTimeout(resolve, ms / pieces));
+    }
+    res.end();
   });
 
   server.on('upgrade', (req, socket, head) => {
@@ -346,8 +479,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   return {
     server,
     autodl,
+    ssh,
     async close() {
       autodl.close();
+      await ssh.close();
       clearTimeout(current?.timer);
       current = null;
       queue.length = 0;

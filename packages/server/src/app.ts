@@ -3,6 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { createAutodl, type Autodl, type AutodlOptions } from './comfy/autodl';
 import { createImageJobs, type ImageJobs } from './comfy/jobs';
+import { createModelTransfers } from './comfy/models';
 import { maskConfig, readConfig, requireWorkFolder, updateConfig } from './config';
 import { HttpError } from './httpError';
 import { testConnection } from './llm/testConnection';
@@ -11,7 +12,9 @@ import { assetRoutes } from './routes/assets';
 import { canvasRoutes } from './routes/canvases';
 import { comfyRoutes } from './routes/comfy';
 import { fragmentRoutes } from './routes/fragments';
+import { presetRoutes } from './routes/presets';
 import { imageRoutes } from './routes/images';
+import { modelRoutes } from './routes/models';
 import { promptRoutes } from './routes/prompts';
 import { tagRoutes } from './routes/tags';
 import { workflowRoutes } from './routes/workflows';
@@ -27,19 +30,22 @@ export type AppOptions = {
   tagSources?: TagSources;
   // AutoDL 的接口地址和几个等待时间，测试换成 mock-comfyui 里假的
   autodl?: AutodlOptions;
+  // 往 AutoDL 传模型时隔多久看一次下了多少，测试调小
+  models?: { pollMs?: number };
 };
 
 // 出图任务和 AutoDL 挂在 app.locals 上：服务启动后接着取没出完的图，退出时关 AutoDL，测试收尾时断开
 export const imageJobsOf = (app: express.Express) => app.locals.imageJobs as ImageJobs;
 export const autodlOf = (app: express.Express) => app.locals.autodl as Autodl;
 
-export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOURCES, autodl: autodlOptions }: AppOptions): express.Express {
+export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOURCES, autodl: autodlOptions, models: modelOptions }: AppOptions): express.Express {
   const app = express();
   // 导入的工作流整份放在请求里，大的有好几百 KB
   app.use(express.json({ limit: '20mb' }));
   const api = express.Router();
   const autodl = createAutodl(configDir, autodlOptions);
   const imageJobs = createImageJobs(configDir, autodl);
+  const models = createModelTransfers(autodl, modelOptions);
   app.locals.autodl = autodl;
   app.locals.imageJobs = imageJobs;
 
@@ -86,7 +92,9 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   api.use(promptRoutes(configDir));
   api.use(tagRoutes(configDir, tagSources));
   api.use(fragmentRoutes(configDir));
+  api.use(presetRoutes(configDir));
   api.use(comfyRoutes(configDir, autodl));
+  api.use(modelRoutes(models));
   api.use(workflowRoutes(configDir));
   api.use(imageRoutes(configDir, imageJobs));
 
@@ -111,6 +119,8 @@ export function startServer(options: AppOptions & { port: number }): Promise<{ s
   return new Promise((resolve, reject) => {
     const app = createApp(options);
     const server = http.createServer(app);
+    // 往 AutoDL 传一个几 GB 的底模要好一阵，不按 Node 默认的 5 分钟掐断请求
+    server.requestTimeout = 0;
     server.once('error', reject);
     server.listen(options.port, '127.0.0.1', () => {
       imageJobsOf(app)

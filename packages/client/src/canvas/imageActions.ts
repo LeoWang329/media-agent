@@ -1,4 +1,4 @@
-import { imageErrorKind, isLiveImage, type GeneratedRef, type ImageJob, type ImageJobEvent, type JobImage } from '@media-agent/shared';
+import { imageErrorKind, isLiveImage, type DetailPass, type GeneratedRef, type ImageJob, type ImageJobEvent, type JobImage, type UpscaleSettings } from '@media-agent/shared';
 import { create } from 'zustand';
 import { api } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
@@ -108,6 +108,9 @@ export const generate = (place: ImagePlace, promptIndex: number) => start(place,
 // 同样参数再来（同一个种子）、只换种子再来，都只出一张
 export const again = (at: ImageAt, sameSeed: boolean) => start(at, { again: { jobId: at.jobId, index: at.index, sameSeed } });
 
+// 出完的图上补做放大和部位重绘，见 docs/dev-plan.md 5.21
+export const refine = (at: ImageAt, upscale: UpscaleSettings, details: DetailPass[]) => start(at, { refine: { jobId: at.jobId, index: at.index, upscale, details } });
+
 export async function stopJob(place: ImagePlace, job: ImageJob) {
   try {
     putJob(place, await trackWrite(api<ImageJob>(`${jobsUrl(place)}/${job.id}/stop`, { method: 'POST' })));
@@ -169,9 +172,15 @@ export function shortError(error: string): string {
   ];
 }
 
-// 一组的叫法：照着哪张再来的写清楚
+// 一组的叫法：照着哪张再来的、补做的是哪张，写清楚
 export function jobLabel(job: ImageJob, jobs: ImageJob[]): string {
   const source = job.source;
+  if (job.kind === 'refine') {
+    const from = source && jobs.find((j) => j.id === source.jobId);
+    if (!from) return '放大和重绘';
+    const at = from.images.findIndex((image) => image.seed === source.seed);
+    return `放大和重绘 · 来自 ${clock(from.createdAt)} 那组${at >= 0 ? `第 ${at + 1} 张` : ''}`;
+  }
   if (!source) return '生图';
   if (job.images[0]?.seed === source.seed) return `同样参数再来 · 种子 ${source.seed}`;
   const from = jobs.find((j) => j.id === source.jobId);

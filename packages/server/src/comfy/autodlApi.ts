@@ -1,7 +1,7 @@
 import type { AutodlInstance } from '@media-agent/shared';
 
 // 调 AutoDL Art 的开发者接口：列实例、查状态、取访问地址、开机关机，见 docs/dev-plan.md 5.17。
-// 出错时 message 直接给用户看，带上 AutoDL 的原话。快照里还有 root 密码、SSH 这些，只取要用的几项，不存不打印
+// 出错时 message 直接给用户看，带上 AutoDL 的原话。快照里的 root 密码、SSH 地址只在传模型时现取，不存不打印
 
 export const AUTODL_API = 'https://www.autodl.art/api/v1/adl_dev/dev/instance/pro';
 
@@ -24,7 +24,9 @@ type ListItem = {
   stopped_at?: Time;
   cg_application_info?: { application_name?: string };
 };
-type Snapshot = { payg_price?: number; snapshot_gpu_alias_name?: string; service_6006_domain?: string };
+type Snapshot = { payg_price?: number; snapshot_gpu_alias_name?: string; service_6006_domain?: string; ssh_command?: string; root_password?: string };
+
+export type SshAccess = { host: string; port: number; username: string; password: string };
 
 async function call<T>({ api, token }: AutodlAccess, method: 'GET' | 'POST', action: string, body: Record<string, string | number>): Promise<T> {
   const query = method === 'GET' ? `?${new URLSearchParams(Object.entries(body).map(([k, v]): [string, string] => [k, String(v)]))}` : '';
@@ -103,6 +105,14 @@ export async function comfyAddress(access: AutodlAccess, uuid: string): Promise<
   const domain = (await snapshot(access, uuid))?.service_6006_domain;
   if (!domain) throw new AutodlError('AutoDL 没给这个实例 6006 端口的访问地址。ComfyUI 要跑在实例的 6006 端口上');
   return `${new URL(access.api).protocol}//${domain}`;
+}
+
+// 传模型用：地址、端口、用户从 ssh_command（ssh -p 12345 root@host）里拆，密码是 root_password
+export async function sshAccess(access: AutodlAccess, uuid: string): Promise<SshAccess> {
+  const shot = await snapshot(access, uuid);
+  const match = /-p\s+(\d+)\s+([^@\s]+)@(\S+)/.exec(shot?.ssh_command ?? '');
+  if (!match || !shot?.root_password) throw new AutodlError('AutoDL 没给这个实例的 SSH 地址和密码，传不了模型');
+  return { port: Number(match[1]), username: match[2], host: match[3], password: shot.root_password };
 }
 
 export async function powerOn(access: AutodlAccess, uuid: string): Promise<void> {

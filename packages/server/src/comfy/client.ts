@@ -42,6 +42,9 @@ export const systemStats = (url: string) => json<SystemStats>(url, '/system_stat
 // 装的插件多时 object_info 有好几 MB
 export const objectInfo = (url: string) => json<ObjectInfo>(url, '/object_info', 120_000);
 
+// 只要一种节点的
+export const nodeInfo = (url: string, type: string) => json<ObjectInfo>(url, `/object_info/${encodeURIComponent(type)}`);
+
 // 发一个任务，返回 prompt_id；ComfyUI 不收时写出是哪个节点哪一项
 export async function queuePrompt(url: string, graph: ComfyGraph, clientId: string): Promise<string> {
   const res = await call(url, '/prompt', {
@@ -89,6 +92,17 @@ export async function viewImage(url: string, ref: ImageRef): Promise<Buffer> {
   const res = await call(url, `/view?${query}`, {}, 120_000);
   if (!res.ok) throw new ComfyError(`取图失败：ComfyUI 返回 ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
+}
+
+// 传一张图给 ComfyUI（放进它的 input 文件夹，同名的换掉），返回 LoadImage 要填的名字
+export async function uploadImage(url: string, data: Uint8Array, name: string): Promise<string> {
+  const form = new FormData();
+  form.append('image', new Blob([new Uint8Array(data)], { type: 'image/png' }), name);
+  form.append('overwrite', 'true');
+  const res = await call(url, '/upload/image', { method: 'POST', body: form }, 120_000);
+  if (!res.ok) throw new ComfyError(`传图给 ComfyUI 失败：${res.status} ${(await res.text()).slice(0, 300)}`);
+  const body = (await res.json()) as { name: string; subfolder?: string };
+  return body.subfolder ? `${body.subfolder}/${body.name}` : body.name;
 }
 
 // 队列里正在跑的和排着的，按排队先后

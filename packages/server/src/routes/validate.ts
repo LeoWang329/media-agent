@@ -1,11 +1,15 @@
 import {
+  GUIDE_SIZES,
   IMAGE_SIZES,
   TRANSLATE_LANGUAGES,
+  UPSCALE_SCALES,
   type AspectRatio,
   type CanvasNodeLayout,
+  type DetailPass,
   type ImageRating,
   type ImageSettings,
   type TranslateLanguage,
+  type UpscaleSettings,
 } from '@media-agent/shared';
 import { HttpError } from '../httpError';
 
@@ -132,5 +136,43 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
     next.rating = fields.rating as ImageRating;
   }
   if (fields.negativeExtra !== undefined) next.negativeExtra = text(fields.negativeExtra, '额外的负面词');
+  if (fields.upscale !== undefined) next.upscale = upscaleSettings(fields.upscale);
+  if (fields.details !== undefined) next.details = detailPasses(fields.details);
   return next;
+}
+
+function between(value: unknown, what: string, min: number, max: number): number {
+  const n = finiteNumber(value, what);
+  if (n < min || n > max) throw new HttpError(400, `${what}要在 ${min} 到 ${max} 之间`);
+  return n;
+}
+
+function oneOf(value: unknown, what: string, choices: number[]): number {
+  if (!choices.includes(value as number)) throw new HttpError(400, `${what}只能是 ${choices.join('、')}`);
+  return value as number;
+}
+
+// 放大：开关、放大模型、倍数、重绘强度，见 docs/dev-plan.md 5.21
+export function upscaleSettings(value: unknown): UpscaleSettings {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, '放大的设置格式不对');
+  const { on, model, scale, denoise } = value as Record<string, unknown>;
+  return { on: bool(on, '放大开关'), model: text(model, '放大模型'), scale: oneOf(scale, '放大倍数', UPSCALE_SCALES), denoise: between(denoise, '放大的重绘强度', 0, 1) };
+}
+
+// 部位重绘的几道，见 docs/dev-plan.md 5.21
+export function detailPasses(value: unknown): DetailPass[] {
+  if (!Array.isArray(value)) throw new HttpError(400, '部位重绘的设置格式不对');
+  return value.map((item) => {
+    if (typeof item !== 'object' || item === null) throw new HttpError(400, '部位重绘的设置格式不对');
+    const { on, detector, threshold, denoise, guideSize, positive, negative } = item as Record<string, unknown>;
+    return {
+      on: bool(on, '部位重绘开关'),
+      detector: text(detector, '检测模型'),
+      threshold: between(threshold, '检测阈值', 0, 1),
+      denoise: between(denoise, '部位重绘的重绘强度', 0.01, 1),
+      guideSize: oneOf(guideSize, '重画尺寸', GUIDE_SIZES),
+      positive: text(positive, '这道的正面'),
+      negative: text(negative, '这道的负面'),
+    };
+  });
 }

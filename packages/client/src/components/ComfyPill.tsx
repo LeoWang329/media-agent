@@ -1,4 +1,4 @@
-import type { AutodlInstance, ComfyStatus } from '@media-agent/shared';
+import type { AutodlInstance, AutodlState, ComfyStatus } from '@media-agent/shared';
 import { useEffect, useState, type MouseEvent } from 'react';
 import { Link } from 'react-router';
 import { idleMinutesLeft, useComfyStore, watchImageJobs, type AutodlNow } from '../store/comfyStore';
@@ -30,6 +30,9 @@ export function useNow(ticking: boolean): number {
 }
 
 export const secondsSince = (since: number | null, now: number) => Math.max(0, Math.round((now - (since ?? now)) / 1000));
+
+// 程序这边正在用 AutoDL 做什么，比如「出图、传模型」
+const busyText = (autodl: AutodlState) => autodl.busyWith.map((what) => ({ images: '出图', models: '传模型' })[what]).join('、');
 
 // 出图用哪台 ComfyUI、现在什么状态，画布、首页、设置三页都挂着。AutoDL 开着就在扣钱，开着时用醒目的样子，
 // 用局域网那台时 AutoDL 也开着，另外标出来。点开切换、开机关机、重新读底模列表
@@ -117,7 +120,7 @@ function pillLabel(target: 'lan' | 'autodl', status: ComfyStatus | null, autodl:
     case 'failed':
       return { cls: 'is-down', dot: 'dot-danger', text: 'AutoDL 开机失败' };
     case 'running':
-      return { cls: 'is-running', dot: 'dot-warn', text: 'AutoDL 运行中', sub: autodl.busy ? '正在出图' : `${idleMinutesLeft(autodl) ?? autodl.idleMinutes} 分钟后自动关机` };
+      return { cls: 'is-running', dot: 'dot-warn', text: 'AutoDL 运行中', sub: autodl.busyWith.length ? `正在${busyText(autodl)}` : `${idleMinutesLeft(autodl) ?? autodl.idleMinutes} 分钟后自动关机` };
   }
 }
 
@@ -237,7 +240,7 @@ export function PowerButton({ autodl, small, askOff }: { autodl: AutodlNow; smal
 
 // AutoDL 的状态：顶上点开的面板里说得短，设置里多说一句关机时花多少钱
 export function AutodlStateView({ autodl, where }: { autodl: AutodlNow | null; where: 'panel' | 'settings' }) {
-  const now = useNow(autodl?.state === 'booting');
+  const now = useNow(autodl?.state === 'booting' || autodl?.state === 'running');
   if (!autodl) {
     return (
       <span className="meta">
@@ -309,8 +312,8 @@ export function AutodlStateView({ autodl, where }: { autodl: AutodlNow | null; w
                 开了 <span className="mono">{up}</span> 分钟 ·{' '}
               </>
             )}
-            {autodl.busy ? (
-              `正在出图，出完空闲 ${autodl.idleMinutes} 分钟后关机`
+            {autodl.busyWith.length ? (
+              `正在${busyText(autodl)}，忙完空闲 ${autodl.idleMinutes} 分钟后关机`
             ) : (
               <>
                 <span className="mono">{left}</span> 分钟后自动关机

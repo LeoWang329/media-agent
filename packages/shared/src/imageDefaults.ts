@@ -1,5 +1,5 @@
 import { splitTags, tagKey } from './tags';
-import type { AutodlSettings, CardImageInfo, ChatNode, Family, FamilyDefaults, ImageSettings, PromptMeta } from './types';
+import type { AutodlSettings, CardImageInfo, ChatNode, DetailPass, Family, FamilyDefaults, ImageSettings, PromptMeta, UpscaleSettings } from './types';
 
 export const FAMILIES: Family[] = ['IL', 'Pony'];
 
@@ -34,10 +34,6 @@ export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {
     sampler: 'euler_ancestral',
     scheduler: 'normal',
     clipSkip: 2,
-    upscaleModel: null,
-    poseModel: null,
-    styleModel: null,
-    clipVision: null,
   },
   Pony: {
     prefix: 'score_9, score_8_up, score_7_up, source_anime',
@@ -48,10 +44,6 @@ export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {
     sampler: 'euler_ancestral',
     scheduler: 'normal',
     clipSkip: 2,
-    upscaleModel: null,
-    poseModel: null,
-    styleModel: null,
-    clipVision: null,
   },
 };
 
@@ -63,7 +55,21 @@ export function familyWords(defaults: FamilyDefaults): Map<string, string> {
   return words;
 }
 
-// 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张；
+// 放大：打开时重绘强度默认 0.35，2 倍；部位重绘新加一道的默认值，见 docs/dev-plan.md 5.21
+export const DEFAULT_UPSCALE: UpscaleSettings = { on: false, model: '', scale: 2, denoise: 0.35 };
+export const UPSCALE_SCALES = [1.5, 2];
+export const GUIDE_SIZES = [512, 768, 1024];
+export const newDetailPass = (detectors: string[]): DetailPass => ({
+  on: true,
+  detector: detectors.find((name) => /face/i.test(name)) ?? detectors[0] ?? '',
+  threshold: 0.3,
+  denoise: 0.4,
+  guideSize: 1024,
+  positive: '',
+  negative: '',
+});
+
+// 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张，放大和部位重绘不开；
 // 底模空着，出图时用这台 ComfyUI 上这个系列的第一个，见 docs/dev-plan.md 5.19
 export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
   return {
@@ -79,8 +85,13 @@ export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
     seed: null,
     rating: 'none',
     negativeExtra: '',
+    upscale: DEFAULT_UPSCALE,
+    details: [],
   };
 }
+
+// 节点的出图设置：改过的用节点自己的；没改过的项（比如放大、部位重绘是后来加的）用这个系列的默认值
+export const imageSettingsOf = (image: Partial<ImageSettings> | undefined, defaults: FamilyDefaults): ImageSettings => ({ ...defaultImageSettings(defaults), ...image });
 
 // 底模属于哪个系列，null 是两个系列都不是：设置里标过的照标的；没标过的按文件名猜，
 // 名字里有 pony 的当 Pony，有 illustrious、noob、wai 或者单独一个 IL（IL-xxx、xxx_IL）的当 IL，别的都不是

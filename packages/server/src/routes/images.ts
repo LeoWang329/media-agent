@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { thumbnail } from '../assets/thumbs';
 import { copyToFolder, imageFile } from '../comfy/files';
-import type { ImageJobs, JobPlace } from '../comfy/jobs';
+import type { ImageJobs, JobPlace, Refine } from '../comfy/jobs';
 import { readConfig, requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
 import { openExternal } from '../native/openExternal';
@@ -28,11 +28,12 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
   });
   const imageIndex = (req: Request) => v.index(Number(req.params.index), '图片');
 
-  // again 是「同样参数再来」「只换种子再来」，照着那一张出一张
+  // again 是「同样参数再来」「只换种子再来」，照着那一张出一张；refine 是出完的图上补做放大和部位重绘
   router.post(base, async (req, res) => {
     const again = req.body?.again === undefined ? undefined : againOf(req.body.again);
-    const promptIndex = again ? 0 : v.index(req.body?.promptIndex, '提示词框');
-    res.status(201).json(await jobs.create(await place(req), promptIndex, again));
+    const refine = req.body?.refine === undefined ? undefined : refineOf(req.body.refine);
+    const promptIndex = again || refine ? 0 : v.index(req.body?.promptIndex, '提示词框');
+    res.status(201).json(await jobs.create(await place(req), promptIndex, { again, refine }));
   });
 
   router.post(`${base}/:jobId/stop`, async (req, res) => {
@@ -151,6 +152,16 @@ async function findImage(place: JobPlace, jobId: string, index: number): Promise
 function againOf(value: unknown): { jobId: string; index: number; sameSeed: boolean } {
   const fields = (value ?? {}) as Record<string, unknown>;
   return { jobId: v.nonEmptyText(fields.jobId, '照着再来的那组图'), index: v.index(fields.index, '图片'), sameSeed: v.bool(fields.sameSeed, '同一个种子') };
+}
+
+function refineOf(value: unknown): Refine {
+  const fields = (value ?? {}) as Record<string, unknown>;
+  return {
+    jobId: v.nonEmptyText(fields.jobId, '要补做的那组图'),
+    index: v.index(fields.index, '图片'),
+    upscale: v.upscaleSettings(fields.upscale),
+    details: v.detailPasses(fields.details),
+  };
 }
 
 function downloadItems(value: unknown) {

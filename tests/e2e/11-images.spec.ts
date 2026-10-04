@@ -427,6 +427,157 @@ test('写标签：不问 AI 写成一个框，标着「自己写的」，能直�
   await expect(panel(page).getByTestId('message-assistant').nth(1).locator('.tg-name')).toHaveText(['blonde hair']);
 });
 
+// 节点里存的出图设置
+async function nodeImageOf(page: Page) {
+  const canvasId = new URL(page.url()).pathname.split('/').at(-1)!;
+  const nodeId = (await cardTitled(page, (await drawerTitle(page).textContent())!).getAttribute('data-id'))!;
+  return ((await (await page.request.get(`/api/canvases/${canvasId}/nodes/${nodeId}`)).json()) as { image: Record<string, unknown> }).image;
+}
+
+// 发给 ComfyUI 的流程里，一个节点某个输入连着的那个节点
+const linkedNode = (graph: Graph, link: unknown) => graph[String((link as [string, number])[0])];
+
+test('10.3 第 11 条：出图设置里打开放大 2 倍、加两道部位重绘（脸、手，手这道写了正面）→ 生图，新图是原来的 2 倍 → mock 收到放大和两个 FaceDetailer → 大图参数里写着 → mock 去掉 FaceDetailer 再生图，说缺 Impact Pack', async ({ page }) => {
+  await useMockComfy(page);
+  await newCanvasWithNode(page, '放大重绘');
+  await useIl(page);
+  await setCount(page, 1);
+  await send(page, '写一个');
+
+  const settings = page.getByRole('dialog', { name: '出图设置' });
+  await panel(page).locator('#btnGenCfg').click();
+  const upscale = settings.locator('[data-stage="upscale"]');
+  await upscale.getByRole('button', { name: '放大', exact: true }).click();
+  await upscale.getByLabel('放大模型').selectOption('4x-test.pth');
+  await expect(upscale).toContainText('放大到 1664×2432');
+  const passes = settings.locator('[data-stage="details"]');
+  await passes.getByRole('button', { name: '加一道' }).click();
+  const face = passes.locator('[data-pass="0"]');
+  // 新加的一道先选名字带 face 的；同一个文件夹里的 SAM 不列
+  await expect(face.getByLabel('检测模型')).toHaveValue('bbox/face_yolov8m.pt');
+  await expect(face.getByLabel('检测模型').locator('option')).toHaveText(['bbox/face_yolov8m', 'bbox/hand_yolov8s', 'segm/person_yolov8m-seg']);
+  await passes.getByRole('button', { name: '加一道' }).click();
+  const hand = passes.locator('[data-pass="1"]');
+  await hand.getByLabel('检测模型').selectOption('bbox/hand_yolov8s.pt');
+  await hand.getByLabel('这道的正面').fill('detailed hands');
+  await hand.getByLabel('这道的正面').press('Enter');
+  await settings.getByRole('button', { name: '好了' }).click();
+  await expect.poll(async () => ((await nodeImageOf(page)).details as { positive: string }[])?.[1]?.positive).toBe('detailed hands');
+
+  const sentBefore = (await comfyPrompts(page)).length;
+  await box(page).locator('[data-act="gen"]').click();
+  await expect(box(page).locator('.ig-cell.is-done img')).toHaveCount(1, { timeout: 15_000 });
+  await expect(box(page).locator('.ig-head').last()).toContainText('1664×2432');
+  const [body] = (await comfyPrompts(page)).slice(sentBefore);
+  expect(graphNode(body.prompt, 'ImageUpscaleWithModel')).toBeTruthy();
+  expect(graphNode(body.prompt, 'ImageScale').inputs).toMatchObject({ width: 1664, height: 2432 });
+  const detailers = Object.values(body.prompt).filter((n) => n.class_type === 'FaceDetailer');
+  expect(detailers.map((n) => linkedNode(body.prompt, n.inputs.bbox_detector).inputs.model_name)).toEqual(['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt']);
+  expect(linkedNode(body.prompt, detailers[1].inputs.positive).inputs.text).toBe('masterpiece, best quality, detailed hands');
+  expect(linkedNode(body.prompt, detailers[1].inputs.image)).toBe(detailers[0]);
+
+  await cells(page).first().click();
+  await expect(viewer(page).locator('.ib-kv', { hasText: '尺寸' })).toContainText('1664×2432');
+  await expect(viewer(page).locator('.ib-kv', { hasText: '放大' })).toContainText('4x-test 2× · 重绘 0.35');
+  const detail = viewer(page).locator('.ib-kv', { hasText: '部位重绘' });
+  await expect(detail).toContainText('bbox/face_yolov8m');
+  await expect(detail).toContainText('bbox/hand_yolov8s');
+  await expect(detail).toContainText('自己写了正面');
+  await page.keyboard.press('Escape');
+
+  // 这台 ComfyUI 去掉 FaceDetailer（读一次新的节点列表）：一张都不发，说要装 Impact Pack
+  await page.request.post(`${COMFY_URL}/_hide-nodes`, { data: { types: ['FaceDetailer'] } });
+  try {
+    await page.request.get('/api/comfy/options?refresh=1');
+    const before = (await comfyPrompts(page)).length;
+    await box(page).locator('[data-act="gen"]').click();
+    await expect(toasts(page).filter({ hasText: '这组没出成：缺插件' })).toBeVisible({ timeout: 15_000 });
+    const jobs = (await jobsOf(page, await placeOf(page))) as unknown as { images: { error?: string }[] }[];
+    expect(jobs.at(-1)!.images[0].error).toBe('这台 ComfyUI 缺插件：object_info 里没有 FaceDetailer，要装 ComfyUI-Impact-Pack');
+    expect(await comfyPrompts(page)).toHaveLength(before);
+  } finally {
+    await page.request.post(`${COMFY_URL}/_hide-nodes`, { data: { types: [] } });
+    await page.request.get('/api/comfy/options?refresh=1');
+  }
+});
+
+test('10.3 第 12 条：大图里点「放大和重绘」→ 关掉放大、只留脸那道 → 开始 → 框下面多一组，标着从哪张来，mock 收到传上去的图，流程从 LoadImage 开始 → 存成预设、另一个节点套用 → 设置里改名、删除', async ({ page }) => {
+  await useMockComfy(page);
+  await newCanvasWithNode(page, '补做');
+  await useIl(page);
+  await setCount(page, 1);
+  await send(page, '写一个');
+  const place = await placeOf(page);
+  const face = { on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+  const image = { upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0.35 }, details: [face, { ...face, detector: 'bbox/hand_yolov8s.pt' }] };
+  expect((await page.request.patch(`/api/canvases/${place.canvasId}/nodes/${place.nodeId}`, { data: { image } })).ok()).toBe(true);
+  // 先离开画布页再回来，页面重新读节点（只改 # 后面的部分不会重新加载）
+  await page.goto('/');
+  await page.goto(`/canvas/${place.canvasId}#node=${place.nodeId}`);
+  await box(page).locator('[data-act="gen"]').click();
+  await expect(box(page).locator('.ig-cell.is-done img')).toHaveCount(1, { timeout: 15_000 });
+  const [first] = await jobsOf(page, place);
+
+  await cells(page).first().click();
+  await viewer(page).locator('#ibRefine').click();
+  const form = viewer(page).locator('.ib-refine');
+  // 先拿的是节点现在的设置
+  await expect(form.locator('[data-stage="upscale"]').getByRole('button', { name: '放大', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await form.locator('[data-stage="upscale"]').getByRole('button', { name: '不放大' }).click();
+  await form.locator('[data-pass="1"]').getByLabel('第 2 道开着').uncheck();
+  const sentBefore = (await comfyPrompts(page)).length;
+  await form.getByRole('button', { name: '开始' }).click();
+  await expect(viewer(page)).toHaveCount(0);
+  await expect(box(page).locator('.ig-job')).toHaveCount(2);
+  await expect(box(page).locator('.ig-kind').last()).toHaveText(/^放大和重绘 · 来自 \d\d:\d\d 那组第 1 张$/);
+  await expect(box(page).locator('.ig-job').last().locator('.ig-cell.is-done img')).toHaveCount(1, { timeout: 15_000 });
+
+  const uploads = (await (await page.request.get(`${COMFY_URL}/_uploads`)).json()) as { name: string }[];
+  const [body] = (await comfyPrompts(page)).slice(sentBefore);
+  expect(graphNode(body.prompt, 'LoadImage').inputs.image).toBe(uploads.at(-1)!.name);
+  expect(Object.values(body.prompt).filter((n) => n.class_type === 'FaceDetailer')).toHaveLength(1);
+  expect(Object.values(body.prompt).some((n) => n.class_type === 'EmptyLatentImage' || n.class_type === 'ImageUpscaleWithModel')).toBe(false);
+  // 节点的设置没被大图里的改动改掉
+  expect((await nodeImageOf(page)).upscale).toMatchObject({ on: true });
+  expect(((await jobsOf(page, place)) as unknown as { kind: string; source: { jobId: string } }[]).at(-1)).toMatchObject({ kind: 'refine', source: { jobId: first.id } });
+
+  // 存成预设，另一个节点套用：放大和部位重绘带过去，张数不变
+  const settings = page.getByRole('dialog', { name: '出图设置' });
+  await panel(page).locator('#btnGenCfg').click();
+  await settings.locator('#gcSavePreset').click();
+  const pop = page.getByRole('dialog', { name: '存成预设' });
+  await pop.getByLabel('预设的名字').fill('测试预设');
+  await pop.getByRole('button', { name: '存', exact: true }).click();
+  await expect(toasts(page).filter({ hasText: '存成了预设「测试预设」' })).toBeVisible();
+  await settings.getByRole('button', { name: '好了' }).click();
+
+  await newCanvasWithNode(page, '套预设');
+  await useIl(page);
+  await setCount(page, 2);
+  await panel(page).locator('#btnGenCfg').click();
+  await settings.locator('#gcPreset').selectOption({ label: '测试预设' });
+  await expect(toasts(page).filter({ hasText: '套上了「测试预设」。张数和种子没动' })).toBeVisible();
+  await expect(settings.locator('[data-stage="upscale"]').getByRole('button', { name: '放大', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(settings.locator('[data-pass]')).toHaveCount(2);
+  await settings.getByRole('button', { name: '好了' }).click();
+  await expect.poll(async () => (await nodeImageOf(page)).details).toEqual(image.details);
+  expect(await nodeImageOf(page)).toMatchObject({ count: 2, upscale: image.upscale });
+
+  await page.goto('/settings#presets');
+  const row = page.locator('[data-preset]').filter({ hasText: '测试预设' });
+  await expect(row).toContainText('放大 2×');
+  await expect(row).toContainText('部位重绘 2 道');
+  const id = await row.getAttribute('data-preset');
+  const item = page.locator(`[data-preset="${id}"]`);
+  await item.locator('[data-pa="rename"]').click();
+  await item.locator('input').fill('E02 测试');
+  await item.locator('input').press('Enter');
+  await expect(item.locator('.sx-wf-name')).toHaveText('E02 测试');
+  await item.locator('[data-pa="del"]').click();
+  await page.getByRole('dialog', { name: '删除预设「E02 测试」？' }).getByRole('button', { name: '删除' }).click();
+  await expect(item).toHaveCount(0);
+});
+
 test('10.3 第 10 条：设置里填 AutoDL 的 Token（mock 的）、选实例 → 出图设置切到 AutoDL → 生图 → 显示「正在开机」→ 出完图 → 手动关机，状态变成已关机', async ({ page }) => {
   await useMockComfy(page);
   await page.goto('/settings#comfy');

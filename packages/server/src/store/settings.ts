@@ -127,10 +127,6 @@ function parseDefaults(value: unknown, current: Record<Family, FamilyDefaults>):
       }
       next[key] = n;
     };
-    const model = (key: 'upscaleModel' | 'poseModel' | 'styleModel' | 'clipVision') => {
-      if (item[key] !== null && typeof item[key] !== 'string') throw new HttpError(400, `${family} 的 ${key} 要是文字或者不选`);
-      next[key] = item[key] as string | null;
-    };
     if ('prefix' in item) text('prefix');
     if ('negative' in item) text('negative');
     if ('sampler' in item) text('sampler');
@@ -145,7 +141,6 @@ function parseDefaults(value: unknown, current: Record<Family, FamilyDefaults>):
       }
       next.rating = { general: String(rating.general).trim(), sensitive: String(rating.sensitive).trim(), explicit: String(rating.explicit).trim() };
     }
-    for (const key of ['upscaleModel', 'poseModel', 'styleModel', 'clipVision'] as const) if (key in item) model(key);
     result[family] = next;
   }
   return result;

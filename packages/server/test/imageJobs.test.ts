@@ -1,6 +1,7 @@
 import {
   BUILTIN_WORKFLOW,
   builtinGraph,
+  defaultImageSettings,
   FAMILY_DEFAULTS,
   importedGraph,
   type CanvasDetail,
@@ -12,12 +13,14 @@ import {
   type HomeData,
   type ImageJob,
   type ImageJobEvent,
+  type ImagePreset,
   type ImageTempInfo,
   type ImageWhere,
   type ImportedWorkflow,
   type Message,
   type SharedSettings,
 } from '@media-agent/shared';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -472,6 +475,8 @@ describe('出图设置', () => {
       seed: null,
       rating: 'none',
       negativeExtra: '',
+      upscale: { on: false, model: '', scale: 2, denoise: 0.35 },
+      details: [],
     });
     expect((await t.call('PATCH', nodeUrl(), { image: { width: 1000, height: 1000 } })).status).toBe(400);
     expect((await t.call('PATCH', nodeUrl(), { image: { count: 9 } })).status).toBe(400);
@@ -479,6 +484,105 @@ describe('出图设置', () => {
 
     const fork = await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: replyId });
     expect(fork.image).toMatchObject({ width: 1216, height: 832, count: 2 });
+  });
+});
+
+describe('放大、部位重绘、出完的图上补做、预设', () => {
+  const face = { on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+  const hideNodes = (types: string[]) => fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types }) });
+
+  it('检测模型只列 .pt 的：同一个文件夹里的 SAM 不列', async () => {
+    const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
+    expect(options.detectors).toEqual(['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt', 'segm/person_yolov8m-seg.pt']);
+  });
+
+  it('出图时放大、部位重绘：只记开着的，部位重绘写了的提示词拼上固定开头和默认负面词；出的图是放大后的尺寸', async () => {
+    const messageId = await prepare('1girl, smile', {
+      upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0 },
+      details: [face, { ...face, detector: 'bbox/hand_yolov8s.pt', positive: 'detailed hands', negative: 'extra fingers' }, { ...face, on: false, detector: 'segm/person_yolov8m-seg.pt' }],
+    });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params.upscale).toEqual({ on: true, model: '4x-test.pth', scale: 2, denoise: 0 });
+    expect(job.params.details).toEqual([
+      face,
+      { ...face, detector: 'bbox/hand_yolov8s.pt', positive: 'masterpiece, best quality, detailed hands', negative: `${FAMILY_DEFAULTS.IL.negative}, extra fingers` },
+    ]);
+    const done = await until(messageId, job.id, settled);
+    expect(done.images[0]).toMatchObject({ status: 'done', width: 1664, height: 2432 });
+    expect((await lastPrompts()).map((body) => body.prompt)).toEqual([builtinGraph(job.params, 100)]);
+  });
+
+  it('放大没选模型、开着的部位重绘没选检测模型，不让出', async () => {
+    const messageId = await prepare('1girl', { upscale: { on: true, model: '', scale: 2, denoise: 0.35 } });
+    expect(await t.call('POST', imagesUrl(messageId), { promptIndex: 0 })).toEqual({ status: 400, body: { error: '放大还没选放大模型，在出图设置里选一个' } });
+    await t.ok('PATCH', nodeUrl(), { image: { upscale: { on: false, model: '', scale: 2, denoise: 0.35 }, details: [face, { ...face, detector: '' }] } });
+    expect(await t.call('POST', imagesUrl(messageId), { promptIndex: 0 })).toEqual({ status: 400, body: { error: '部位重绘第 2 道还没选检测模型' } });
+    await t.ok('PATCH', nodeUrl(), { image: { details: [face, { ...face, on: false, detector: '' }] } });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params.details).toEqual([face]);
+    await until(messageId, job.id, settled);
+  });
+
+  it('这台 ComfyUI 没装 Impact Pack：开了部位重绘的一张都不发，说要装哪个插件', async () => {
+    await hideNodes(['FaceDetailer']);
+    const messageId = await prepare('1girl', { details: [face] });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const done = await until(messageId, job.id, settled);
+    expect(done.images[0]).toMatchObject({ status: 'failed', error: '这台 ComfyUI 缺插件：object_info 里没有 FaceDetailer，要装 ComfyUI-Impact-Pack' });
+    expect(await lastPrompts()).toEqual([]);
+  });
+
+  it('出完的图上补做：传上去的是那张图，流程从 LoadImage 开始，挂在同一个框下；补做出的图再来，还是补做原来那张', async () => {
+    const messageId = await prepare('1girl, smile');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const original = (await until(messageId, first.id, settled)).images[0];
+    const refine = { jobId: first.id, index: 0, upscale: { on: true, model: '4x-test.pth', scale: 1.5, denoise: 0.3 }, details: [face] };
+    expect(await t.call('POST', imagesUrl(messageId), { refine: { ...refine, upscale: { ...refine.upscale, on: false }, details: [] } })).toEqual({
+      status: 400,
+      body: { error: '放大和部位重绘至少开一样' },
+    });
+
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { refine });
+    expect(job).toMatchObject({ kind: 'refine', promptIndex: 0, source: { kind: 'generated', jobId: first.id, seed: 100 }, images: [{ seed: 100, status: 'queued' }] });
+    expect(job.params).toMatchObject({ positive: first.params.positive, negative: first.params.negative, checkpoint: 'il-test.safetensors', width: 832, height: 1216, upscale: refine.upscale, details: [face] });
+    const done = await until(messageId, job.id, settled);
+    expect(done.images[0]).toMatchObject({ status: 'done', width: 1248, height: 1824 });
+
+    const sha = createHash('sha256')
+      .update(await fs.readFile(path.join(t.work, original.file!)))
+      .digest('hex');
+    const uploads = (await (await fetch(`${comfyUrl}/_uploads`)).json()) as { name: string; bytes: number; sha256: string }[];
+    expect(uploads).toEqual([{ name: `media-agent-${sha.slice(0, 16)}.png`, bytes: expect.any(Number), sha256: sha }]);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(builtinGraph(job.params, 100, { image: uploads[0].name }));
+
+    const again = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: job.id, index: 0, sameSeed: true } });
+    expect(again).toMatchObject({ kind: 'refine', source: { kind: 'generated', jobId: first.id, seed: 100 }, params: job.params });
+    await until(messageId, again.id, settled);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(builtinGraph(job.params, 100, { image: uploads[0].name }));
+
+    // 原图的临时文件清掉了又没下载过：补做不了
+    await fs.rm(path.join(t.work, original.file!));
+    expect(await t.call('POST', imagesUrl(messageId), { refine })).toEqual({ status: 409, body: { error: '这张图的临时文件清掉了，也没下载过，没法补做' } });
+  });
+
+  it('预设：按系列存，同一个系列名字不能重；不存张数和种子；改名、换设置、删除', async () => {
+    const settings = { ...defaultImageSettings(FAMILY_DEFAULTS.IL), checkpoint: 'il-test.safetensors', count: 3, seed: 5, upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0 }, details: [face] };
+    const { count: _count, seed: _seed, ...stored } = settings;
+    const created = await t.ok<ImagePreset>('POST', '/image-presets', { name: 'E02', family: 'IL', settings });
+    expect(created).toMatchObject({ name: 'E02', family: 'IL', settings: stored });
+    expect(created.settings).not.toHaveProperty('count');
+    expect(created.settings).not.toHaveProperty('seed');
+    expect(await t.call('POST', '/image-presets', { name: 'E02', family: 'IL', settings })).toEqual({ status: 409, body: { error: 'IL 系列已经有叫「E02」的预设' } });
+    expect((await t.call('POST', '/image-presets', { name: 'E02', family: 'Pony', settings })).status).toBe(201);
+    expect((await t.call('POST', '/image-presets', { name: '尺寸不对', family: 'IL', settings: { ...settings, width: 1000 } })).status).toBe(400);
+    expect((await t.call('POST', '/image-presets', { name: '倍数不对', family: 'IL', settings: { ...settings, upscale: { ...settings.upscale, scale: 3 } } })).status).toBe(400);
+
+    expect((await t.ok<ImagePreset>('PATCH', `/image-presets/${created.id}`, { name: 'E02 新' })).name).toBe('E02 新');
+    expect((await t.ok<ImagePreset>('PATCH', `/image-presets/${created.id}`, { settings: { steps: 20 } })).settings).toMatchObject({ steps: 20, checkpoint: 'il-test.safetensors', details: [face] });
+    expect(await t.ok<ImagePreset[]>('GET', '/image-presets')).toHaveLength(2);
+    await t.ok('DELETE', `/image-presets/${created.id}`);
+    expect((await t.ok<ImagePreset[]>('GET', '/image-presets')).map((preset) => preset.family)).toEqual(['Pony']);
+    expect(JSON.parse(await fs.readFile(path.join(t.work, 'image-presets.json'), 'utf8'))).toHaveLength(1);
   });
 });
 

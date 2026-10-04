@@ -1,4 +1,4 @@
-import { imageErrorKind, isLiveImage, type ChatNode, type ComfyTarget, type ImageJob, type JobImage, type Message } from '@media-agent/shared';
+import { imageErrorKind, isLiveImage, scaledSize, type ChatNode, type ComfyTarget, type ImageJob, type JobImage, type Message } from '@media-agent/shared';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { secondsSince, useNow } from '../components/ComfyPill';
@@ -6,7 +6,7 @@ import { imageKey, useComfyStore, waitingBoot } from '../store/comfyStore';
 import { clock } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { generate, imageSrc, jobLabel, shortError, stopJob, usePicks, type ImageAt } from './imageActions';
-import { imageSize } from './imageNode';
+import { imageSize, sizeText } from './imageNode';
 import { useOverlays } from './overlays';
 
 // 框下面挂着的出图记录：一次生图一组，按时间排，新的在下面；只显示最近 3 组
@@ -122,9 +122,7 @@ function Job({ node, message, job, jobs, ro }: { node: ChatNode; message: Messag
           <span>{job.images.length} 张</span>
           <span>{job.target === 'autodl' ? 'AutoDL' : '局域网'}</span>
           {job.params.workflow.id && <span>工作流「{job.params.workflow.name}」</span>}
-          <span className="mono">
-            {job.params.width}×{job.params.height}
-          </span>
+          <span className="mono">{sizeText(job.params.upscale ? scaledSize(job.params, job.params.upscale.scale) : job.params)}</span>
         </span>
         <span className="grow" />
         <span className="ig-state">

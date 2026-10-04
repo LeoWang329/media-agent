@@ -24,6 +24,7 @@
 | 大模型 | 直接用 fetch 调 OpenAI 兼容接口（`/v1/chat/completions`，stream） | 不依赖某家 SDK |
 | 连 ComfyUI（第三批） | Node 自带的 fetch 和 WebSocket | Node 24 都内置了，不加依赖 |
 | 标签词库（第三批） | 服务启动时读进内存，搜索时逐个比对 | 12 万个标签，比一遍十几毫秒，用不着搜索引擎 |
+| 往 AutoDL 传模型（第三批） | ssh2 | 纯 JS 的 SSH，在那台上执行命令，传文件就是把文件灌进那台上的 `cat`；测试里用它起一个假的 SSH 服务 |
 
 端口：服务 `127.0.0.1:3711`，只监听本机。开发时 Vite 在 5173，代理 `/api` 到 3711。正式运行 `npm start` 由服务端托管打包好的前端，并自动打开浏览器。
 
@@ -173,17 +174,16 @@ type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
 type ThinkingStyle = 'none' | 'reasoning-effort' | 'enable-thinking' | 'thinking-type' | 'model-switch';  // 见 5.12
 // ModelConfig 加两个字段：thinkingStyle: ThinkingStyle；thinkingModel: string（model-switch 时开思考用的模型名）
 // Message 加三个字段（只有 assistant 消息有）：reasoning?: string（思考原文）；thinkingMs?: number；images?: ImageJob[]（生图节点出的图）
-// ChatNode 加：image?: ImageSettings（生图节点才有，见 5.14）
+// ChatNode 加：kind: 'video' | 'image'（建的时候定，之后不能改，见 5.23）；image?: ImageSettings（生图节点才有，见 5.14）
 // 本机 config.json 加：autodlToken: string | null；comfyTarget: 'lan' | 'autodl'；lastDownloadFolder: string | null；comfyClientId: string（连 ComfyUI 用的固定身份，见 5.19）
 
 type Family = 'IL' | 'Pony';
 
-type FamilyDefaults = {                 // 一个系列的默认值，见 5.18
+type FamilyDefaults = {                 // 一个系列的默认值，见 5.18。用哪个放大、检测、ControlNet 模型不在这里，由预设管（5.21）
   prefix: string;                       // 固定开头，比如 masterpiece, best quality
   negative: string;                     // 默认负面词
   rating: { general: string; sensitive: string; explicit: string };  // 三档评级在这个系列里怎么写
   steps: number; cfg: number; sampler: string; scheduler: string; clipSkip: number;
-  upscaleModel: string | null; poseModel: string | null; styleModel: string | null; clipVision: string | null;  // 见 5.21
 };
 
 type SharedSettings = {                 // 工作文件夹 settings.json
@@ -204,22 +204,56 @@ type ImageSettings = {
   seed: number | null;                  // null 是每次随机
   rating: 'none' | 'general' | 'sensitive' | 'explicit';
   negativeExtra: string;                // 接在系列默认负面词后面
+  upscale: UpscaleSettings;             // 放大，见 5.21
+  details: DetailPass[];                // 部位重绘，按顺序做，见 5.21
+  // P15 加：start（文生图或图生图）、controls（ControlNet 列表），见 5.21
 };
 
-type ImageJob = {                       // 点一次「生图」（或放大、修脸、局部重绘）出的一组
+type UpscaleSettings = { on: boolean; model: string; scale: 1.5 | 2; denoise: number };  // denoise 0 是只放大不重画
+type DetailPass = {                     // 部位重绘的一道
+  on: boolean;
+  detector: string;                     // 检测模型，bbox/ 下的重画整个框，segm/ 下的只重画轮廓里面
+  threshold: number; denoise: number;
+  guideSize: 512 | 768 | 1024;          // 检测到的地方放大到多大再画
+  positive: string; negative: string;   // 写了就换掉框里的标签、额外的负面词；空着用原图的
+};
+type ImagePreset = {                    // 预设，工作文件夹 image-presets.json，见 5.21
+  id: string; name: string; family: Family;
+  settings: Omit<ImageSettings, 'count' | 'seed'>;  // P15 起参考图也不存
+  createdAt: string; updatedAt: string;
+};
+
+// 往 AutoDL 那台传的模型，见 5.22。都不存盘，从那台上现读
+type ModelKind = 'checkpoint' | 'lora' | 'upscale' | 'bbox' | 'segm' | 'controlnet' | 'ipadapter' | 'clipVision' | 'vae';
+type RemoteModelFile = {
+  kind: ModelKind;
+  path: string;                         // 相对这一类的文件夹，比如 IL/xxx.safetensors
+  bytes: number; modifiedAt: string;
+  partial: boolean;                     // .part 结尾的，没传完、没下完
+};
+type ModelTransfer = {                  // 在传的和排着的，只在内存里
+  id: string; way: 'upload' | 'download';
+  kind: ModelKind; path: string; url?: string;
+  done: number; total: number | null;   // 字节；给链接的取不到大小时 total 是 null
+  state: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
+  error?: string;
+};
+
+type ImageJob = {                       // 点一次「生图」（或出完的图上补做、局部重绘）出的一组
   id: string; promptIndex: number; createdAt: string;
   rev?: number;                         // 每改一次加一：推送和请求的回复谁先到不一定，前端拿它丢掉旧的
-  kind: 'txt2img' | 'img2img' | 'pose' | 'style' | 'upscale' | 'facefix' | 'inpaint';
-  source?: { kind: 'generated'; jobId: string; seed: number } | { kind: 'slot'; imageId: string };  // 从哪张图来：那一组的 id 和那张的种子（删掉一张后后面的往前补位，所以不记第几张）
+  kind: 'txt2img' | 'refine' | 'inpaint';  // refine 是出完的图上补做放大和部位重绘
+  source?: { kind: 'generated'; jobId: string; seed: number };  // 从哪张图来：那一组的 id 和那张的种子（删掉一张后后面的往前补位，所以不记第几张）
   target: 'lan' | 'autodl';
   params: {                             // 发出去的全部参数，「同样参数再来」照这个发
     family: Family;
     positive: string; negative: string; // 最终发给 ComfyUI 的，含固定开头和默认负面词
     workflow: { id: string | null; name: string; hash: string };
-    width: number; height: number;
+    width: number; height: number;      // 补做的是原图的尺寸
     checkpoint?: string; loras?: { name: string; strength: number }[];       // 导入的工作流没有这几项
     steps?: number; cfg?: number; sampler?: string; scheduler?: string; clipSkip?: number;
-    denoise?: number; strength?: number; scale?: number; model?: string;     // 放大、修脸、局部重绘、参考图用的
+    upscale?: UpscaleSettings;          // 开着的才记
+    details?: DetailPass[];             // 开着的才记，positive、negative 是拼好的最终提示词，空着是和原图一样
     mask?: string;                      // 局部重绘涂好的那张 PNG，相对工作文件夹的路径
   };
   images: {                             // 每张图是 ComfyUI 上的一个任务
@@ -409,7 +443,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 ### 5.14 生图节点（第三批）
 
-- 节点选的系统提示词决定它是生图节点还是视频节点。系统提示词文件开头可以有一段用 `---` 上下围起来的说明，有这段、写着「用途: 生图」的是生图提示词，「底模」是 IL 或 Pony：
+- 节点建的时候定是生图节点还是视频节点（5.23），生图节点只能选生图用的系统提示词。系统提示词文件开头可以有一段用 `---` 上下围起来的说明，有这段、写着「用途: 生图」的是生图提示词，「底模」是 IL 或 Pony：
 
   ```
   ---
@@ -428,11 +462,11 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 生图节点的固定格式要求用 `docs/prompts/format-requirement-image.md`（P9 写）：和视频的一样用 `<title>` 和 `<prompt label="…">`；框里只放英文标签，英文逗号隔开，不写别的；标题概括这张图。设置页两份都能看。
 - 和视频节点不一样的地方：
   - 面板上时长和比例的位置换成尺寸和张数。尺寸九档：1024×1024；竖的 896×1152、832×1216、768×1344、640×1536；横的是这四个宽高对调，默认 832×1216。张数 1 到 8，默认 4。
-  - 出图设置存在 `node.image`。节点第一次变成生图节点时，按它的系列取默认值；底模下拉只列标成这个系列的底模（5.17）。LoRA 可以挂几个，各带强度；选 LoRA 时能按名字搜，空格隔开的几个词都对得上才列出来，不分大小写。
+  - 出图设置存在 `node.image`，没改过的项按节点系列的默认值；底模下拉只列标成这个系列的底模（5.17）。LoRA 可以挂几个，各带强度；选 LoRA 时能按名字搜，空格隔开的几个词都对得上才列出来，不分大小写。
   - 输入框旁边有「写标签」：打开一个空的标签编辑窗（5.15），打中文英文都有联想，也能整串粘贴。「存成框」不问模型，存成一个框，回复那一栏写「自己写的」，角落写「自己写的，没有调用 AI」；这个框和模型写的一样能生图、编辑、打星、岔出。
   - 写标签的窗里还有「让 AI 优化」，旁边能写一句要求：先把写的存成框，再在它后面像平时一样发一条消息给模型，内容是「优化上面这个框里我自己写的标签：」加要求，没写要求就用「保持原意，改成标准写法，补上缺的，去掉重复和冲突的」。模型带着系统提示词和前面的对话回一个新框，自己写的那个留着。
   - 发给模型的对话里，自己写的框当成用户说的话：「我自己写了一个框：」加框的原文。
-  - 槽位照旧：图照样发给模型看，也是参考图生图的来源（5.21）。5.4 的说明不写时长比例。
+  - 槽位照旧：图照样发给模型看，也是 ControlNet、图生图参考图的来源（5.21）。5.4 的说明不写时长比例。
   - 提示词框上的按钮：复制、生图、打星、编辑（打开标签编辑窗，5.15）、沿此方向 fork。没有翻译（标签下面已经显示中文）和上传清单（那是往视频平台传图用的）。
   - 卡片上（画布和首页）：出过图的，缩略图换成最近出的图；没出过的照旧显示槽位里的图。时长比例那行换成尺寸和系列。
 - 中途换系统提示词，从视频换成生图或者反过来，已有的消息不动，面板控件跟着换。
@@ -467,7 +501,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 两种来源，接法一样，都是 ComfyUI 自带的接口：局域网那台在设置里填地址（比如 `http://192.168.1.20:8188`），存 `settings.json`；AutoDL Art 上租的实例见下面。
 - 出图用哪台，在出图设置里选，记在本机 `config.json`（两台电脑可能不在同一个网络里），所有节点共用。
 - 测试连接：`GET /system_stats`，显示 ComfyUI 版本、显卡和显存。
-- 选项从 `GET /object_info` 读：底模（`CheckpointLoaderSimple` 的 `ckpt_name`）、LoRA（`LoraLoader` 的 `lora_name`）、采样器和调度器（`KSampler`）、放大模型（`UpscaleModelLoader`）、ControlNet 模型（`ControlNetLoader`）、IP-Adapter 模型（`IPAdapterModelLoader`，装了插件才有）、CLIP Vision 模型（`CLIPVisionLoader`）、反推模型（`WD14Tagger|pysssss` 的 `model`）。打开出图设置时读；同一台缓存起来，点「刷新」或换了地址才重读。
+- 选项从 `GET /object_info` 读：底模（`CheckpointLoaderSimple` 的 `ckpt_name`）、LoRA（`LoraLoader` 的 `lora_name`）、采样器和调度器（`KSampler`）、放大模型（`UpscaleModelLoader`）、检测模型（`UltralyticsDetectorProvider` 的 `model_name`，装了插件才有）、ControlNet 模型（`ControlNetLoader`）、提取方式（`AIO_Preprocessor` 的 `preprocessor`，装了插件才有）、IP-Adapter 模型（`IPAdapterModelLoader`，装了插件才有）、CLIP Vision 模型（`CLIPVisionLoader`）、反推模型（`WD14Tagger|pysssss` 的 `model`）。打开出图设置时读；同一台缓存起来，点「刷新」或换了地址才重读。列模型的那几种节点（底模、LoRA、放大、检测、ControlNet、IP-Adapter、CLIP Vision）读完整份以后再一种一种要一次（`GET /object_info/<节点类型>`）：AutoDL 那台的 ComfyUI 改过，整份缓存着，只在底模、LoRA 这几类文件夹最外层变了时重做，新放的放大、检测模型和放进子文件夹的不在里面。
 - 底模属于哪个系列：设置里列出读到的底模，每个选 IL、Pony 或都不是，存 `settings.json` 的 `checkpoints`（都不是存 null）。没标过的按文件名猜，不分大小写：名字里有 pony 的当 Pony；有 illustrious、noob、wai，或者单独一个 IL（比如 IL-xxx、xxx_IL）的当 IL；别的两个都不是。节点的底模下拉只列这个系列的，都不是的哪里都不列。
 - AutoDL：
   - 开发者 Token 只存本机 `config.json`，和模型密钥一样不进工作文件夹；实例 uuid 和空闲多久关机（默认 15 分钟）存 `settings.json`。
@@ -501,7 +535,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 程序自动找往哪填：顺着 `KSampler`（或 `KSamplerAdvanced`）的 `positive`、`negative` 连线找到两个 `CLIPTextEncode` 的 `text`，中间隔着 ControlNet、合并条件这类节点也顺着找过去；`KSampler` 的 `seed`（`KSamplerAdvanced` 是 `noise_seed`）；`EmptyLatentImage` 的 `width`、`height`。找不到或者有好几个候选的，导入窗口里列出节点（节点号、类型、`_meta.title`）让用户选，有候选的先选上第一个。正面一定要有，其他几项可以不填。
   - 存到工作文件夹 `workflows/<id>.json`，名字不能重。设置里能改名、重新指定往哪填、删除（挪进 `.trash`，用它的节点出图时换回内置流程）。
   - 出图时只改这几个值，其他照原样；张数和种子照内置流程的做法。系列固定开头和默认负面词照样加，填的是整个 `text`，工作流里原来写的会被换掉。
-  - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、修脸、局部重绘、参考图只用内置流程。
+  - 选了导入的工作流，出图设置里底模、LoRA、步数这些不显示，照工作流里的。放大、部位重绘、ControlNet、图生图、局部重绘只用内置流程。
 - 发任务前对照 `/object_info`：工作流里有这台 ComfyUI 上没有的节点类型，直接说缺哪几个，不发。节点列表是缓存的，说缺之前先重读一次，刚装好插件的不用手动刷新。内置流程用到插件节点时（5.21）也一样。
 
 ### 5.19 出图任务（第三批）
@@ -529,23 +563,74 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 节点里删一张图：从 `ImageJob` 里去掉这一项，临时文件直接删，不进 `.trash`；下载过的那份不动。一组里一张不剩了整组去掉。还没出完的不能删，先叫停。
 - 出的图属于出图的那个节点和那条回复：岔出去的节点、手动改提示词生成的新版本，都不带原来出的图。
 
-### 5.21 放大、修脸、局部重绘、参考图、反推（第三批）
+### 5.21 放大、部位重绘、预设、ControlNet、图生图、局部重绘、反推（第三批）
 
-- 都是再发一个任务，结果和普通出图一样挂在框下，`kind` 记是哪种，`source` 记从哪张图来。只用内置流程。
-- 放大：在一张出的图上点。只要自带节点和一个放大模型：`LoadImage`（先用 `/upload/image` 把图传上去）→ `UpscaleModelLoader` + `ImageUpscaleWithModel` → `ImageScale` 缩到原图的 1.5 倍或 2 倍 → `VAEEncode` → `KSampler`（同样的提示词和种子，`denoise` 默认 0.35）→ `VAEDecode` → `PreviewImage`。倍数和 denoise 发之前能改。
-- 修脸：在一张出的图上点。要装 Impact Pack 和 Impact Subpack 两个插件，加一个人脸检测模型（比如 `face_yolov8m.pt`）：`LoadImage` → `UltralyticsDetectorProvider` + `FaceDetailer`（底模、提示词、种子同原图，`denoise` 默认 0.4）→ `PreviewImage`。
-- 局部重绘：在一张出的图上点，大图窗口进涂抹模式。用画笔涂要重画的地方，笔刷能调大小，能擦、能清空；再填这块要画成什么（默认是原图框里的标签，正面、负面照普通出图加固定开头和负面词）和重绘强度（`denoise` 默认 1；调到 0.5 到 0.8 保留原来的轮廓、只改细节）。
+为什么这么定见访谈记录已定第 25 到 28 条。都只用内置流程。
+
+- 内置流程按顺序是这几段，没开的不拼：起图（文生图，P15 起能选图生图）→ ControlNet（P15）→ 采样 → 解码 → 放大 → 部位重绘 → `PreviewImage`。用到插件节点的，发任务前照 5.18 对照 `/object_info`，缺了说缺哪个节点、要装哪个插件，一张都不发。
+- 放大，像 WebUI 的高清修复。出图设置里一段：开关、放大模型（`UpscaleModelLoader` 的列表）、倍数（1.5 或 2）、重绘强度（0 到 1，打开时默认 0.35）。
+  - 流程：`UpscaleModelLoader` + `ImageUpscaleWithModel` → `ImageScale`（lanczos）缩到出图尺寸乘倍数，取 8 的倍数 → 重绘强度大于 0 时接 `VAEEncode` → `KSampler`（底模、提示词、种子、步数这些同原图，`denoise` 是重绘强度）→ `VAEDecode`。强度是 0 就只放大不重画，E02 就是这样。
+  - 只用自带节点，加一个放大模型。
+- 部位重绘，像 WebUI 的 ADetailer。出图设置里一个列表，能加几道、删掉、上下挪，按顺序做。每道：开关、检测模型（`UltralyticsDetectorProvider` 的列表，比如 `bbox/face_yolov8m.pt` 找脸、`bbox/hand_yolov8s.pt` 找手、`segm/person_yolov8m-seg.pt` 找人）、检测阈值（默认 0.3）、重绘强度（默认 0.4）、重画尺寸（检测到的地方放大到多大再画：512、768、1024，默认 1024）、正面、负面。新加一道时检测模型先选列表里第一个名字带 face 的。
+  - 每道一个 `UltralyticsDetectorProvider` + `FaceDetailer`。`FaceDetailer` 名字叫修脸，换个检测模型什么部位都能修。底模、LoRA、种子、步数、CFG、采样器、调度器同原图。`bbox/` 下的检测模型重画整个框；`segm/` 下的另接 `segm_detector_opt`，只重画轮廓里面。不用 SAM。其余参数照 E02：`bbox_dilation` 10、`bbox_crop_factor` 3、`feather` 5、`noise_mask_feather` 20、`max_size` 1024、`drop_size` 10。
+  - 这道写了正面，就换掉框里的标签；写了负面，就换掉额外的负面词；系列固定开头、评级词、默认负面词照样加（5.18）。没写的用原图的。
+  - 画面里检测到几个就重画几个；一个都没检测到，这道什么都不做。
+  - 要装 Impact Pack 和 Impact Subpack，检测模型放进 ComfyUI 的 `models/ultralytics/bbox` 或 `segm`。
+- 出完的图上补做：大图窗口里点「放大和重绘」，弹出的窗里是节点现在的放大和各道部位重绘，能关掉、能改，点「开始」再发一个任务，`kind` 是 `refine`，`source` 记从哪张图来，出的图挂在同一个框下面。
+  - 流程：先用 `/upload/image` 把那张图传上去，`LoadImage` → 放大 → 部位重绘 → `PreviewImage`。放大和部位重绘至少开一样。底模、LoRA、提示词、种子这些用原图那一组记的；原图是导入的工作流出的，用节点现在的出图设置。
+  - 原图的临时文件清掉了、也没下载过，按钮不能点。
+  - 补做出的图上「同样参数再来」「只换种子再来」，是把原图重新传上去再补做一次；原图删了的提示没法再来。
+- 预设：出图设置整套存成一个名字，存在工作文件夹 `image-presets.json`，两台机器共用。
+  - 存张数、种子以外的全部出图设置（P15 起参考图也不存）；按系列分开，套用时只列这个节点那个系列的。
+  - 出图设置顶上「预设」：选一个就套上，节点留自己的一份，套完再改不影响预设；「存成预设」起名字，名字重了问要不要换掉原来的。
+  - 设置里「预设」一节：列出全部，能改名、删除。
+  - P12 做好后把 E02-文生图-SDXL 存成「E02」：底模、两个 LoRA、20 步、CFG 4、euler_ancestral、karras；尺寸取九档里最近的 832×1216；放大开，`4x_foolhardy_Remacri.pth`、2 倍、重绘强度 0；部位重绘两道，检测模型都是 `bbox/face_yolov8m.pt`，第一道阈值 0.2、强度 0.5、重画尺寸 1024，第二道阈值 0.5、强度 0.5、重画尺寸 512。E02 的负面词里跟它那张图内容有关的（衣服、人数、体液、发色眼睛这些）不带，通用的（画质、手脚、文字、塑料感这些）去掉和 IL 默认负面词重复的，写进额外的负面词。
+- ControlNet（P15），像 WebUI。出图设置里一个列表，能加几个，每个：开关、类型、参考图、提取方式、模型、强度（默认 1）、起止（默认 0 到 1）。
+  - 类型：姿势、深度、线稿、边缘、其他、画风。类型决定下拉里列哪些：提取方式从 comfyui_controlnet_aux 插件的 `AIO_Preprocessor` 列表里按名字挑（姿势是 DWPreprocessor、OpenposePreprocessor，深度是 DepthAnythingV2、MiDaS、Zoe 这类，线稿是各种 LineArt，边缘是 Canny、HED、PiDiNet 这类），另有「不提取，直接用这张」；模型从 `ControlNetLoader` 的列表里挑名字对得上的，加上名字带 union 的，一个都对不上时全列。「其他」全列。
+  - 参考图从节点槽位里的图或这个节点出过的图里选一张，发之前用 `/upload/image` 传上去。
+  - 流程：`LoadImage` → `AIO_Preprocessor`（分辨率取出图尺寸的短边）→ `ControlNetLoader`（名字带 union 的再接 `SetUnionControlNetType`，类型照选的）→ `ControlNetApplyAdvanced`（强度、`start_percent`、`end_percent`），几个串起来接在正负面后面。放大时重画那一遍也用加了 ControlNet 的正负面；部位重绘不用。
+  - 画风就是原来的画风参考，WebUI 里它也在 ControlNet 里：`IPAdapterModelLoader` + `CLIPVisionLoader` + `IPAdapterAdvanced`（`weight_type` 用 style transfer），接在底模后面，模型从这两个节点的列表里选。
+  - 出图设置的说明里写推荐的模型：IL 用 Illustrious-XL 或 NoobAI-XL 出的 ControlNet，Pony 用通用 SDXL 的（比如 xinsir 出的 union，一个文件管好几种）；画风 IL 用 NoobAI 的 IP-Adapter，Pony 用 `ip-adapter-plus_sdxl_vit-h`。
+- 图生图（P15）：出图设置里起图选「文生图」或「图生图」；图生图选一张参考图（来源同 ControlNet）和重绘强度（默认 0.6）：`LoadImage` → `ImageScale` 缩放裁切成出图尺寸 → `VAEEncode` → `KSampler`。只用自带节点。
+- 局部重绘（P16）：在一张出的图上点，大图窗口进涂抹模式。用画笔涂要重画的地方，笔刷能调大小，能擦、能清空；再填这块要画成什么（默认是原图框里的标签，正面、负面照普通出图加固定开头和负面词）和重绘强度（`denoise` 默认 1；调到 0.5 到 0.8 保留原来的轮廓、只改细节）。
   - 发的时候程序把原图涂过的地方改成透明（只改透明度，颜色照留），存成 PNG 放进临时文件夹，用 `/upload/image` 传上去，`LoadImage` 把透明的地方当遮罩。
   - 流程照 AutoDL 实例上修好的 E05：`LoadImage` → `InpaintCropImproved`（只裁出遮罩附近一块：周边多带 1.5 倍，遮罩外扩 8 像素，缩放到 1024×1024）→ `InpaintModelConditioning`（普通底模也能用）→ `KSampler`（底模、LoRA、步数这些同原图，原图是导入的工作流出的就用节点现在的出图设置；种子随机）→ `VAEDecode` → `InpaintStitchImproved`（缩回去拼回原图，边缘羽化 32 像素，遮罩附近以外保持原图像素）→ `PreviewImage`。
   - 要装 ComfyUI-Inpaint-CropAndStitch 插件。节点名和参数名，开工前对照 E05 的 JSON 核对。
   - 「同样参数再来」「只换种子再来」重新上传存下的那张 PNG，不用再涂。
-- 参考图生图：点「生图」时选方式和参考图，参考图从节点的槽位里选一张：
-  - 图生图：`LoadImage` → `VAEEncode` → `KSampler`（`denoise` 默认 0.6）。只用自带节点。
-  - 姿势参考：要 comfyui_controlnet_aux 插件（用 `DWPreprocessor` 提取姿势）和 openpose 的 ControlNet 模型，接 `ControlNetLoader` + `ControlNetApplyAdvanced`（强度默认 0.8）。IL 用 Illustrious-XL ControlNet Openpose；NoobAI 一路的底模用 NoobAI-XL ControlNet-OPENPOSE；Pony 没有专门的，用通用 SDXL 的 openpose，比如 xinsir 出的，效果差一些。
-  - 画风参考：要 ComfyUI_IPAdapter_plus 插件、IP-Adapter 模型和配套的 CLIP Vision 模型，接 `IPAdapterModelLoader` + `CLIPVisionLoader` + `IPAdapterAdvanced`（`weight_type` 用 style transfer，强度默认 0.8）。IL 和 NoobAI 一路用 NoobAI 的 IP-Adapter；Pony 用通用 SDXL 的 `ip-adapter-plus_sdxl_vit-h`。
-- 程序不写死模型文件名：设置里按系列选默认用哪个放大模型、ControlNet、IP-Adapter、CLIP Vision，从 `/object_info` 读到的列表里选；上面推荐的写进设置页的说明。
-- 反推：在标签编辑窗里「从图反推」（5.15）。要装 ComfyUI-WD14-Tagger 插件：`LoadImage` → `WD14Tagger|pysssss`（`threshold` 0.35，`character_threshold` 0.85，模型用设置里选的），从 `/history` 的输出里拿标签串，按 5.15 拆开、校验。
-- 缺插件或缺模型：发任务前对照 `/object_info`，直接说「这台 ComfyUI 上没有某某节点，要装某某插件」，不发。
+- 程序不写死模型文件名，都从 `/object_info` 读到的列表里选，常用的组合存成预设。
+- 反推（P15）：在标签编辑窗里「从图反推」（5.15）。要装 ComfyUI-WD14-Tagger 插件：`LoadImage` → `WD14Tagger|pysssss`（`threshold` 0.35，`character_threshold` 0.85，模型用设置里选的），从 `/history` 的输出里拿标签串，按 5.15 拆开、校验。
+
+### 5.22 往 AutoDL 那台传模型（第三批）
+
+为什么这么定见访谈记录已定第 29 到 31 条。只管 AutoDL 那台；局域网那台直接往它的文件夹里拷。
+
+- 那台现有的模型是 AutoDL 公共模型库链接过来的，只读。自己传的放进下面这些文件夹，那台镜像的 `extra_model_paths.yaml` 里配好了，ComfyUI 会读。程序只列、只删这些文件夹里的普通文件，链接过来的不列。
+  - 底模 `/root/autodl-tmp/models/checkpoints`，LoRA `…/loras`，放大 `…/upscale_models`，ControlNet `…/controlnet`，IP-Adapter `…/ipadapter`，CLIP Vision `…/clip_vision`，VAE `…/vae`。
+  - 检测：找框的 `/root/ComfyUI/models/ultralytics/bbox`，找轮廓的 `/root/ComfyUI/models/ultralytics/segm`。
+  - 文件夹不在先建。传的时候能写一个子文件夹（比如 `IL`），不写放最外层。子文件夹和文件名不许带 `..`、`/` 开头，不对返回 400。
+- 怎么连：经 SSH。地址、端口、用户从实例快照（5.17 的 `…/pro/snapshot`）的 `ssh_command` 里拆，密码是快照的 `root_password`；每次用时现查，不存、不写日志、不发给前端。实例关着时跟出图一样先开机（5.17）。传的时候、下的时候、排着的时候都算忙，不算空闲，不会被自动关机；顶上的 AutoDL 状态写「正在传模型」。
+- 从这台电脑传：点「从电脑传…」，用浏览器的选文件窗口选一个，选类型，填子文件夹；文件名默认用原名，能改。点「传」时先问一次服务同名的有没有、空间够不够（关着的这时开机），过了才排上。排队在页面上，一次发一个；前端把文件一边读一边发给本机服务，服务一边收一边灌进那台上的 `cat > 文件`，收完了比一下那台上的大小对不对。传完前这个页面不能关，界面上写着。
+- 给链接让那台下：点「给链接下…」，填链接，选类型，填子文件夹；文件名取链接最后一段（去掉 `?` 后面的），能改。`huggingface.co` 的链接换成 `hf-mirror.com` 再下。在那台上用 curl 下（跟着跳转），先取大小；进度每秒看一次已经下了多少。下不了时带 curl 的原话。说明里写着：那台连不上 Civitai 和 HuggingFace 本站，Civitai 上的先下到电脑再传。
+- 两种共同的：
+  - 从电脑传的一个一个来，给链接的也一个一个来，两种互不等。有进度，能停。
+  - 先写成 `<名字>.part`，完了再改成真名字；停了、断了、出错了，删掉半截的。服务退出时没传完的留在那台上，列表里标「没传完」，能删。
+  - 开始前看那台还剩多少空间（`df /root/autodl-tmp`），不够就不开始，说还差多少；给链接的取不到大小时不查。
+  - 同名的已经有了，问要不要换掉。
+  - 传完、下完、删了，重读一次 `/object_info`，出图设置里马上能选。底模照 5.17 按名字分系列。
+- 列表：设置「生图」下面一节「AutoDL 上的模型」。顶上写那台还剩多少空间；下面按类型列出自己传的：名字、多大、什么时候传的（文件的修改时间）；能删，删前问一句。在传的和排着的列在最上面，有进度、能停。实例关着时列不出来，写「开机后才看得到」；「从电脑传」「给链接下」照样能点，点了先开机。
+
+### 5.23 生图节点和视频节点分开（第三批）
+
+为什么这么定见访谈记录已定第 32 到 34 条。
+
+- 节点多一项类型 `kind`，是 `video` 或 `image`，建的时候定，之后不能改。面板、发给模型的说明、出图、卡片上标的字都看它，不再看系统提示词是哪种用途；生图节点的系列（IL 或 Pony）照旧看它选的系统提示词。
+- 新建：工具栏的「新建节点」点开一个小菜单，两项「视频节点」「生图节点」。视频节点用新节点默认的那套系统提示词（`ref2va`）；生图节点用 `il`，`il` 删了用排在最前的生图提示词；一套生图提示词都没有时，「生图节点」点不了，旁边写「设置里还没有生图用的系统提示词」。
+- 系统提示词的下拉只列这一种的。同一种之间照旧能换：生图节点在 `il` 和 `pony` 之间换，系列跟着换。服务端收到另一种的系统提示词返回 400。
+- 岔出来的节点和原节点同一种。
+- 节点用的系统提示词后来删了，或者说明段改了、用途变成了另一种：类型不变，下拉里照旧显示它，写着用不了，换一套同种的。
+- 已有的节点按现在用的系统提示词归类：生图提示词的算生图节点，别的（包括提示词已经删了的）算视频节点。读的时候补上，下次存的时候写进文件。
+- 卡片：视频节点标「视频」，生图节点照旧标「生图 · IL」这样带系列。生图节点的卡片边框用紫色，选中时照旧是选中的样子。紫色是新加的，明暗两套都要。首页最近动过的节点卡片不改。
+- 设置的系统提示词列表里，两组的说明改成「写视频提示词 · 视频节点用」「写生图标签 · 生图节点用」。
 
 ## 6. 界面
 
@@ -570,10 +655,10 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 画布：
 
-- 节点卡片（约 260px 宽）：标题（双击改）、9 格小缩略图（空格显示为虚线框）、概述（当前路径最新一条 assistant 的第一个框；有多个框时右上角显示「3 个方向」）、右上角星标、折叠时下方显示「▸ 已收起 N 个」。
+- 节点卡片（约 260px 宽）：标题（双击改）、9 格小缩略图（空格显示为虚线框）、概述（当前路径最新一条 assistant 的第一个框；有多个框时右上角显示「3 个方向」）、右上角星标、折叠时下方显示「▸ 已收起 N 个」；标着「视频」或「生图 · 系列」，生图节点边框是紫色（5.23）。
 - 点卡片选中并在右侧打开；连线从父指向子。
 - 卡片右键菜单：fork 到新节点（等于从最后一条消息 fork）、折叠/展开、删除（弹确认，写明会一起删多少个子节点）、重命名。
-- 工具栏：「新建节点」（空节点放在画布空白处）、「自动排整齐」（dagre 从左到右，和 fork 新节点放在原节点右侧一致）、缩放归位。
+- 工具栏：「新建节点」（点开选视频节点或生图节点，5.23；空节点放在画布空白处）、「自动排整齐」（dagre 从左到右，和 fork 新节点放在原节点右侧一致）、缩放归位。
 - 拖动节点后保存位置。
 
 右侧面板从上到下：
@@ -582,7 +667,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 2. 消息列表。用户消息靠右：上方灰字 `systemNote`，气泡内文字，下方带编号的小缩略图。assistant 消息靠左：框外文字按 Markdown 渲染；每个提示词框是一个组件，标签在框顶，内容用等宽以外的可读字体、保留换行；框底一排按钮：复制、翻译（见 5.11）、星标、编辑、上传清单、沿此方向 fork。消息悬停出操作：用户消息「编辑」「从这里 fork」；assistant 消息「重新生成」「从这里 fork」；有兄弟版本时显示 `‹ 1/2 ›`。失败的消息显示错误和「重试」。
 3. 槽位区：一行 9 格，填了的显示缩略图和编号，悬停显示删除；支持 5.1 里的拖拽。右边是时长（4–15 下拉）和比例下拉。点有图的格子出菜单，第一项「放大看」：弹窗显示画布里存的那张图，先整张放进窗口，点图切换原始大小，点图外面的空白或 Esc 关掉。
 4. 输入框：Enter 发送，Shift+Enter 换行；发送中显示「停止」。第二批换成 Tiptap 编辑器，输入 @ 弹出选图窗口，选中的图在框里显示成带缩略图的小标签。
-5. 生图节点（第三批，规则见 5.12 到 5.21）：槽位区右边是尺寸、张数和出图设置；提示词框里的标签显示成带中文的小块，框下面挂着出的图，每次生图一组，排队、进度、失败、叫停都显示在这里；点一张看大图和全部参数，能下载、打星、删除、在资源管理器里显示、同样参数再来、只换种子再来、放大、修脸、局部重绘（在大图上涂要重画的地方）。回复上面是思考（5.12）。画布上一直看得到现在用哪台 ComfyUI 和它的状态，用 AutoDL 时还有开机中、运行中、多久后自动关机。
+5. 生图节点（第三批，规则见 5.12 到 5.21）：槽位区右边是尺寸、张数和出图设置；提示词框里的标签显示成带中文的小块，框下面挂着出的图，每次生图一组，排队、进度、失败、叫停都显示在这里；点一张看大图和全部参数，能下载、打星、删除、在资源管理器里显示、同样参数再来、只换种子再来、放大和重绘（5.21）、局部重绘（在大图上涂要重画的地方）。回复上面是思考（5.12）。画布上一直看得到现在用哪台 ComfyUI 和它的状态，用 AutoDL 时还有开机中、运行中、多久后自动关机。
 
 ### 6.3 资产库（左栏）
 
@@ -604,8 +689,10 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 模型配置加「思考写法」和「开思考用的模型名」；思考一节：总档位和三个用途（5.12）。
   - 系统提示词列表标出生图用的和系列；自带的 `il`、`pony` 排在视频的三套后面；生图的固定格式要求也能看（5.14）。
   - ComfyUI：局域网地址和测试连接；AutoDL 的 Token、实例、开机关机、空闲多久自动关机（5.17）。
-  - 底模和默认值：读到的底模各属哪个系列，两个系列各自的默认值和默认模型，反推用哪个模型（5.17、5.18、5.21）。
+  - 底模和默认值：读到的底模各属哪个系列，两个系列各自的默认值，反推用哪个模型（5.17、5.18、5.21）。
   - 工作流：导入、改名、重新指定往哪填、删除（5.18）。
+  - 预设：改名、删除（5.21）。
+  - AutoDL 上的模型：那台还剩多少空间，自己传的列表，从电脑传、给链接下、删（5.22）。
   - 词库：哪天的、多少个标签、多少个有中文、多少条别名，「更新词库」、进度和停止（5.13）。
   - 片段库（5.16）。
   - 出的图：临时文件夹的路径，能在资源管理器里打开（5.20）。
@@ -627,7 +714,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            GET      /canvases/:id                    canvas.json + 每个节点的摘要（标题、slots、概述、星、折叠）
            PATCH    /canvases/:id                    {title} 或 {nodes:[{id,x,y,collapsed}]}
            DELETE   /canvases/:id                    移到 .trash
-节点       POST     /canvases/:id/nodes              新建空节点 {x,y}
+节点       POST     /canvases/:id/nodes              新建空节点 {x,y,kind?}，kind 不给就是 video（5.23）
            GET      /canvases/:id/nodes/:nid         完整节点
            PATCH    /canvases/:id/nodes/:nid         {title, modelConfigId, systemPromptName, slots, duration, aspectRatio, draft, activeChildOf}
            DELETE   /canvases/:id/nodes/:nid         连同子节点移到 .trash
@@ -667,17 +754,27 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            POST     /tags/convert                    {canvasId, nodeId, text} → 标签（让模型转，5.15）
 片段       GET/POST /fragments
            PATCH/DELETE /fragments/:id
+预设       GET/POST /image-presets                    POST {name, family, settings}，名字重了 409
+           PATCH/DELETE /image-presets/:id            PATCH {name?, settings?}
 ComfyUI    GET      /comfy/status?target=lan|autodl  局域网那台连不连得上、版本、显卡；target=autodl 回 AutoDL 实例的状态、多久后自动关机
            GET      /comfy/options?target=&refresh=1 底模、LoRA、采样器、各种模型、有哪些节点类型；不带 target 用这台电脑出图用的那台。AutoDL 关着时给读过的
            GET      /comfy/autodl/instances          用本机 Token 列实例
            POST     /comfy/autodl/power              {on} 开机或关机
+           GET      /comfy/autodl/models             {free, files: RemoteModelFile[]}，那台关着时 409
+           POST     /comfy/autodl/models/check       {kind, folder, name, size, replace?} 从电脑传之前问：同名的有了 409，空间不够 400；关着的先开机
+           POST     /comfy/autodl/models/upload      请求体就是文件本身，?id=&kind=&folder=&name=&size=&replace=1；边收边传，传完才返回
+           POST     /comfy/autodl/models/download    {kind, url, folder?, name?, replace?}
+           GET      /comfy/autodl/models/transfers   ModelTransfer[]
+           POST     /comfy/autodl/models/transfers/:id/stop
+           DELETE   /comfy/autodl/models             {kind, path}
 工作流     GET      /workflows
            POST     /workflows                       {name, file, graph, fill} → 存好的工作流。往哪填在导入窗口里就认好、挑好了，点「导入」才发
            PATCH    /workflows/:id                   {name, fill}
            DELETE   /workflows/:id
-出图       POST     /canvases/:id/nodes/:nid/messages/:mid/images   {promptIndex, kind, source?, reference?, again?} → ImageJob
-                    reference 是参考图 {imageId, strength}；again 是「同样参数再来」「只换种子再来」{jobId, index, sameSeed}
-                    inpaint 是局部重绘 {mask, tags, denoise}，mask 是和原图一样大的黑白 PNG（白的是要重画的地方），base64
+出图       POST     /canvases/:id/nodes/:nid/messages/:mid/images   {promptIndex, again?, refine?, inpaint?} → ImageJob
+                    again 是「同样参数再来」「只换种子再来」{jobId, index, sameSeed}
+                    refine 是出完的图上补做放大和部位重绘 {jobId, index, upscale, details}（5.21）
+                    inpaint 是局部重绘 {jobId, index, mask, tags, denoise}，mask 是和原图一样大的黑白 PNG（白的是要重画的地方），base64
            POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/stop
            DELETE   /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index          删一张
            POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/star     {on}
@@ -762,7 +859,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 ### P9 词库和标签
 
-做：5.13 词库（复制、读取、搜索、校验、更新）；5.14 生图节点（系统提示词开头的说明段；自带的 `il`、`pony` 和生图的固定格式要求，写好先给用户看；面板换成尺寸和张数；框上的按钮）；5.15 标签显示、拼提示词、标签编辑窗、让模型转标签（`to-tags.md` 也写好给用户看；从图反推留到 P12）；5.16 片段库；设置里的词库、片段库两节。这一步还不能出图，标签复制出去能在别处用。
+做：5.13 词库（复制、读取、搜索、校验、更新）；5.14 生图节点（系统提示词开头的说明段；自带的 `il`、`pony` 和生图的固定格式要求，写好先给用户看；面板换成尺寸和张数；框上的按钮）；5.15 标签显示、拼提示词、标签编辑窗、让模型转标签（`to-tags.md` 也写好给用户看；从图反推留到 P15）；5.16 片段库；设置里的词库、片段库两节。这一步还不能出图，标签复制出去能在别处用。
 
 完成标准：10.3 第 2、3、4 条。
 
@@ -780,13 +877,43 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 完成标准：10.3 第 9、10 条；用户做 11.3 第 4 条。
 
-### P12 放大、修脸、局部重绘、参考图、反推
+### P12 放大、部位重绘、预设
 
-开工前：用户在局域网那台和 AutoDL 实例上装好 5.21 要的插件和模型（程序的缺节点提示能帮着查漏）。涂遮罩的界面原型里还没有，等设计补上再开工。
+开工前：AutoDL 实例上 Impact Pack、Impact Subpack、放大模型、脸和全身的检测模型都有了；手的检测模型 `hand_yolov8s.pt` 要放进去才能测手。界面原型里没有的部分（部位重绘的列表、预设）照原型里出图设置的样子做，不等设计。
 
-做：5.21 全部；设置里按系列选默认模型、反推模型。
+做：5.21 的放大、部位重绘、出完的图上补做、预设，做好后存「E02」那套；设置里去掉按系列选的默认模型（改由预设管）；mock-comfyui 照 9.5 补上。
 
-完成标准：10.3 第 11 到 14 条；用户做 11.3 第 5 条。
+完成标准：10.3 第 11、12 条；在 AutoDL 上用「E02」出一组，看放大和修脸都做了。
+
+### P13 往 AutoDL 传模型
+
+开工前：测真实例时会往那台写文件、删文件，先问用户。
+
+做：5.22 全部；mock-comfyui 照 9.5 加假的 SSH 服务。
+
+完成标准：10.3 第 16 条；在 AutoDL 上从电脑传一个 LoRA、给链接下 `hand_yolov8s.pt`，出图设置里都能选，用手那道部位重绘出一张。
+
+### P14 生图节点和视频节点分开
+
+做：5.23 全部；用到「换系统提示词变成生图节点」的测试改成直接建生图节点。
+
+完成标准：10.3 第 17 条。
+
+### P15 ControlNet、图生图、反推
+
+开工前：用户在 AutoDL 实例上放好 IL 能用的 ControlNet 模型（姿势、深度至少各一个，或者一个 union 模型），用 P13 的「AutoDL 上的模型」传上去。
+
+做：5.21 的 ControlNet（含画风）、图生图、反推。
+
+完成标准：10.3 第 13、14 条。
+
+### P16 局部重绘
+
+开工前：涂抹的界面原型补上。
+
+做：5.21 的局部重绘。
+
+完成标准：10.3 第 15 条；用户做 11.3 第 5 条。
 
 ## 9. 测试
 
@@ -820,7 +947,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
   - `tags`：拆标签、权重、括号转义、颜文字、拼回去。
   - 词库的搜索排序和校验：用一份几十行的小词库，覆盖开头和中间、中文名和常用叫法、别名、不认识给候选、已废弃。
   - 系统提示词开头说明段的解析。
-  - 内置流程拼出的 JSON：IL 和 Pony 的 clip skip、LoRA 串联、放大、修脸、三种参考图。
+  - 内置流程拼出的 JSON：IL 和 Pony 的 clip skip、LoRA 串联、放大（重画和不重画）、部位重绘（框和轮廓、自己写的提示词）、出完的图上补做；P15 加 ControlNet（union 的类型）、画风、图生图。
   - 导入工作流自动找填值位置：一个 KSampler、KSamplerAdvanced、两个候选、普通格式文件。
   - 种子依次加 1；临时文件名和下载文件名。
 
@@ -840,7 +967,11 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
   - 出图任务对 mock-comfyui 的全过程：排队、进度、完成，文件出现在 `image-temp/当天/`；叫停排队的和正在跑的；几种失败的说法；服务重启后接着取图。
   - 下载：复制过去，文件夹不在资产库时 `inLibrary` 为假。
   - AutoDL：出图时自动开机，空闲到点自动关机，到点时 ComfyUI 上还有任务不关（用假时钟）。
-  - 缺节点时不发任务。
+  - 缺节点时不发任务，内置流程开了部位重绘而这台没装 Impact Pack 时也一样。
+  - 出完的图上补做：传上去的是那张图，拼出的流程从 `LoadImage` 开始，出的图挂在同一个框下；补做出的图再来时重新传原图。
+  - 预设：增删改，名字重了 409。
+  - 节点类型：新建生图节点用 `il`；生图节点换成视频用的系统提示词返回 400；没有类型的老节点按提示词归类；岔出来的和原节点同一种。
+  - 往 AutoDL 传模型（对 mock 的假 SSH 服务）：从电脑传先写成 `.part` 再改名；停了删掉半截的；空间不够不开始；同名不带换掉的 409；给链接下，`huggingface.co` 换成 `hf-mirror.com`；删除；路径带 `..` 返回 400；快照里的密码不出现在任何返回里。
 
 ### 9.4 端到端（Playwright，对 mock-llm）
 
@@ -850,12 +981,14 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 `tools/mock-comfyui`，Express 加 WebSocket，监听 3798，接口的样子照真的 ComfyUI：
 
-- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，三个 LoRA（两个放在子文件夹 `IL/` 里，测按名字搜），常用的采样器和调度器，放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`DWPreprocessor`、`IPAdapterAdvanced`、`InpaintCropImproved`、`InpaintStitchImproved`）默认都有，测试能通过接口去掉某几个，测缺节点。
+- `/system_stats`、`/object_info`：两个底模 `il-test.safetensors`、`pony-test.safetensors`，三个 LoRA（两个放在子文件夹 `IL/` 里，测按名字搜），常用的采样器和调度器，三个检测模型（`bbox/face_yolov8m.pt`、`bbox/hand_yolov8s.pt`、`segm/person_yolov8m-seg.pt`）和一个 SAM 模型 `segm/sam_vit_b_01ec64.pth`（真的 ComfyUI 上也和检测模型列在一起，检测模型的下拉里不该有它），放大模型、ControlNet、IP-Adapter、CLIP Vision、反推模型各一个。插件节点（`FaceDetailer`、`UltralyticsDetectorProvider`、`WD14Tagger|pysssss`、`AIO_Preprocessor`、`IPAdapterAdvanced`、`InpaintCropImproved`、`InpaintStitchImproved`）默认都有，测试能通过接口去掉某几个，测缺节点。整份 `/object_info` 照 AutoDL 那台缓存，底模、LoRA 文件夹最外层变了才重做；`/object_info/<节点类型>` 不缓存。
+- 出的图多大：有 `ImageScale` 的按它的宽高，不然有空白画布的按画布，不然按 `LoadImage` 那张传上来的图。
 - `/prompt`：检查底模文件名和节点类型，不对就返回 `node_errors`；收下后排队，一个一个跑，每个 5 步、共 1.5 秒，WebSocket 按真的格式发 `executing`、`progress`、`execution_success`。
 - 正面提示词含「慢」→ 每个跑 6 秒，测叫停；含「报错」→ `execution_error`；含「显存」→ 错误里写 `CUDA out of memory`。
 - `/history`、`/view`：图是按尺寸现画的 PNG，上面写着种子和正面提示词的前 40 个字；`/upload/image` 收图；`/queue` 能删；`/interrupt` 停当前的。
 - `WD14Tagger|pysssss` 的输出固定是 `1girl, solo, smile`。
 - AutoDL 的几个接口（list、status、snapshot、power_on、power_off）：一个实例，开机 2 秒后变运行中，6006 的访问地址指回 mock 自己。
+- 假的 SSH 服务（ssh2 的 Server）：快照里的 `ssh_command`、`root_password` 指向它。那台的文件落到 mock 的临时文件夹；能执行的命令只认程序发的几种（`cat >` 收文件、看剩余空间、取大小、列文件、建文件夹、改名、删、curl 下载），curl 下 127.0.0.1 的地址真去取，`hf-mirror.com` 给一个假文件，Civitai 和 HuggingFace 本站连不上。
 - 收到的每个 `/prompt` 请求体和 `/upload/image` 的文件都记下来，测试用 `GET /_last-prompts`、`GET /_uploads` 取，断言程序拼的 JSON 和传上去的图。
 
 ## 10. 端到端用例
@@ -901,10 +1034,13 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 8. 给生图框打星 → 首页打过星的提示词里显示它出过的图，点「再出图」→ 回到画布，这个框下面多一组。
 9. 导入一个 API 格式的工作流 → 自动认出正面、负面、种子、尺寸 → 选它出图 → mock 收到的 JSON 里这几处换了，其他没动；导入普通格式的文件，提示用「导出（API）」；工作流里有 mock 上没有的节点 → 出图时提示缺哪个。
 10. 设置里填 AutoDL 的 Token（mock 的）、选实例 → 出图设置切到 AutoDL → 生图 → 显示「正在开机」→ 出完图 → 手动关机，状态变成已关机。
-11. 在一张出的图上放大 2 倍 → 新图宽高是原来的 2 倍，参数里记着从哪张来；让 mock 去掉 `FaceDetailer` 后点修脸 → 提示缺 Impact Pack。
-12. 槽位放一张图，生图时选姿势参考和这张图 → mock 收到的 JSON 里有上传的图、`DWPreprocessor` 和 `ControlNetApplyAdvanced`；选图生图 → `KSampler` 的 denoise 是 0.6。
-13. 标签编辑窗里「从图反推」选槽位 1 号 → 末尾多了 1girl、solo、smile 三个小块，下面有中文。
-14. 在一张出的图上点局部重绘 → 在左上角涂一块，重绘强度改成 0.8 → 开始重绘 → 框下面多一组，参数里记着从哪张来 → mock 收到的 PNG 涂过的地方透明、别处不透明，JSON 里有 `InpaintCropImproved`、`InpaintModelConditioning`、`InpaintStitchImproved`，`KSampler` 的 denoise 是 0.8 → 点「只换种子再来」，不用再涂，mock 又收到同一张 PNG。让 mock 去掉 `InpaintCropImproved` 后再点 → 提示缺 ComfyUI-Inpaint-CropAndStitch。
+11. 出图设置里打开放大（2 倍）、加两道部位重绘（脸、手，手这道正面写 `detailed hands`）→ 生图 → 新图宽高是原来的 2 倍 → mock 收到的 JSON 里有 `ImageUpscaleWithModel` 和两个 `FaceDetailer`，检测模型一个脸一个手，手那道的正面以固定开头开头、以 `detailed hands` 结尾 → 大图参数里写着放大和两道部位重绘 → 让 mock 去掉 `FaceDetailer` 再生图 → 提示缺 Impact Pack。
+12. 大图里点「放大和重绘」→ 关掉放大、只留脸那道 → 开始 → 框下面多一组，标着从哪张来 → mock 收到传上去的图，JSON 从 `LoadImage` 开始、有一个 `FaceDetailer`。出图设置里存成预设「测试预设」→ 另一个节点套用它 → 放大和部位重绘带过来了，张数没变 → 设置里改名、删除。
+13. （P15）槽位放一张图，加一个深度的 ControlNet → mock 收到上传的图、`AIO_Preprocessor` 是深度那种、`ControlNetApplyAdvanced`；起图选图生图 → `KSampler` 的 denoise 是 0.6；加一个画风 → 有 `IPAdapterAdvanced`。
+14. （P15）标签编辑窗里「从图反推」选槽位 1 号 → 末尾多了 1girl、solo、smile 三个小块，下面有中文。
+15. （P16）在一张出的图上点局部重绘 → 在左上角涂一块，重绘强度改成 0.8 → 开始重绘 → 框下面多一组，参数里记着从哪张来 → mock 收到的 PNG 涂过的地方透明、别处不透明，JSON 里有 `InpaintCropImproved`、`InpaintModelConditioning`、`InpaintStitchImproved`，`KSampler` 的 denoise 是 0.8 → 点「只换种子再来」，不用再涂，mock 又收到同一张 PNG。让 mock 去掉 `InpaintCropImproved` 后再点 → 提示缺 ComfyUI-Inpaint-CropAndStitch。
+16. （P13）设置「AutoDL 上的模型」→ 从电脑传一个小文件当 LoRA，子文件夹填 `IL` → 进度走完，列表里有它、大小对 → 出图设置的 LoRA 下拉里搜得到 → 同名再传一次，问要不要换掉 → 给一个链接（指向 mock）当放大模型下 → 列表里有它 → 删掉那个 LoRA，列表和下拉里都没了。
+17. （P14）「新建节点」点开选「生图节点」→ 卡片标「生图 · IL」、边框是紫色，系统提示词下拉只有生图用的 → 换成 `pony`，卡片变成「生图 · Pony」→ 再新建一个视频节点 → 卡片标「视频」，下拉只有视频用的 → 从生图节点的框岔出新节点，新节点还是生图节点。
 
 ## 11. 手动验收（用户用真模型做）
 
@@ -931,8 +1067,9 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 2. 用中文聊出 IL 和 Pony 的标签提示词，大部分标签认识；在标签编辑窗里改几处、插一个片段。
 3. 局域网 ComfyUI：内置流程 IL、Pony 各出一组，Pony 不糊；下载几张进资产库，放进视频节点的槽位写视频提示词。
 4. 导入一个自己的工作流出一组。AutoDL：实例关着时点生图，自动开机出图；空闲到点自动关机，到 AutoDL 控制台确认关了；开着时退出程序，实例被关掉。
-5. 放大、修脸、局部重绘、三种参考图、反推各跑一次，结果对得上。
+5. 放大、部位重绘（脸、手、全身）、出完的图上补做、预设、ControlNet（姿势、深度）、画风、图生图、局部重绘、反推各跑一次，结果对得上。
 6. 另一台机器打开同一个工作文件夹：生图节点、出过的图、片段库、词库、导入的工作流都在。
+7. 往 AutoDL 那台从电脑传一个 LoRA，给 hf-mirror 的链接下一个 `hand_yolov8s.pt`，出图设置里都能选，用手那道部位重绘出一张；删掉一个。
 
 ## 12. 给实现 agent 的约定
 

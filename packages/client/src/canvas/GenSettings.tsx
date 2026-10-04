@@ -1,19 +1,24 @@
-import { missingNodeTypes, type ChatNode, type ComfyTarget, type Family, type ImageRating, type ImageSettings } from '@media-agent/shared';
+import { missingNodeTypes, PLUGIN_OF, type ChatNode, type ComfyTarget, type Family, type ImagePreset, type ImageRating, type ImageSettings } from '@media-agent/shared';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { api } from '../api';
 import { LanState } from '../components/ComfyPill';
 import { useCanvasStore } from '../store/canvasStore';
 import { useComfyStore, type AutodlNow } from '../store/comfyStore';
+import { usePresetStore } from '../store/presetStore';
 import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { anyNumber, CommitInput, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
+import { confirmBox } from '../ui/confirm';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
+import { trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
 import { effectiveCheckpoint, useImageSettings, usePromptInfo } from './imageNode';
 import { useOverlays } from './overlays';
+import { DetailPassList, UpscaleFields } from './StageFields';
 
 // 出图设置：每个节点各存一份，常动的放上面，很少动的收起来。改一项存一项，见 docs/dev-plan.md 5.14。
-// 选了导入的工作流，底模、LoRA、步数这些照工作流里的，不显示
+// 选了导入的工作流，底模、LoRA、步数、放大、部位重绘这些照工作流里的，不显示。整套能存成预设、套用预设，见 5.21
 
 export const RATING_LABELS: Record<ImageRating, string> = { none: '不加', general: '全年龄', sensitive: '擦边', explicit: '成人' };
 const RATINGS = Object.keys(RATING_LABELS) as ImageRating[];
@@ -39,6 +44,11 @@ function GenSettings({ node }: { node: ChatNode }) {
   const workflows = useWorkflowStore((s) => s.list);
   const workflow = useNodeWorkflow(image.workflowId);
   const missing = workflow && options ? missingNodeTypes(workflow.graph, options.nodeTypes) : [];
+  const presets = usePresetStore((s) => s.list);
+  const mine = presets?.filter((preset) => preset.family === family) ?? [];
+  // 开了部位重绘，这台 ComfyUI 上却没装要用的插件
+  const detailerMissing =
+    options && image.details.some((pass) => pass.on) ? Object.keys(PLUGIN_OF).filter((type) => !options.nodeTypes.includes(type)) : [];
 
   useEffect(() => {
     void useComfyStore.getState().loadTarget();
@@ -49,6 +59,10 @@ function GenSettings({ node }: { node: ChatNode }) {
       .getState()
       .load()
       .catch((err: Error) => toast(`读不到导入的工作流：${err.message}`, { tone: 'danger', ms: 4500 }));
+    usePresetStore
+      .getState()
+      .load()
+      .catch((err: Error) => toast(`读不到预设：${err.message}`, { tone: 'danger', ms: 4500 }));
   }, []);
 
   const save = (patch: Partial<ImageSettings>) => void useCanvasStore.getState().patchNode(node.id, { image: patch });
@@ -59,14 +73,22 @@ function GenSettings({ node }: { node: ChatNode }) {
     void useComfyStore.getState().loadOptions();
   };
 
-  const mine = options?.checkpoints.filter((c) => c.family === family).map((c) => c.name) ?? [];
-  const others = (options?.checkpoints.length ?? 0) - mine.length;
+  const familyCheckpoints = options?.checkpoints.filter((c) => c.family === family).map((c) => c.name) ?? [];
+  const others = (options?.checkpoints.length ?? 0) - familyCheckpoints.length;
   const checkpoint = effectiveCheckpoint(image, family, options);
   // 节点选的底模这台 ComfyUI 上没有：也列出来，标明
-  const checkpointList = checkpoint && !mine.includes(checkpoint) ? [checkpoint, ...mine] : mine;
+  const checkpointList = checkpoint && !familyCheckpoints.includes(checkpoint) ? [checkpoint, ...familyCheckpoints] : familyCheckpoints;
   const loras = options?.loras ?? [];
   const pick = (list: string[], value: string) => (value && !list.includes(value) ? [value, ...list] : list);
   const ratingWord = image.rating === 'none' ? '（不加）' : defaults.rating[image.rating];
+
+  // 套用预设：张数和种子留着节点自己的
+  const apply = (id: string) => {
+    const preset = mine.find((p) => p.id === id);
+    if (!preset) return;
+    save({ ...preset.settings });
+    toast(`套上了「${preset.name}」。张数和种子没动`);
+  };
 
   return (
     <Dialog className="gc-dialog" label="出图设置" odId="dialog-generation-settings" onClose={close}>
@@ -106,6 +128,22 @@ function GenSettings({ node }: { node: ChatNode }) {
           </span>
         </div>
         <div className="gc-sec">
+          <h4>
+            预设<span className="meta">整套出图设置存个名字，换着用</span>
+          </h4>
+          <div className="row">
+            <select className="select" id="gcPreset" aria-label="套用预设" value="" disabled={!mine.length} onChange={(e) => apply(e.target.value)}>
+              <option value="">{presets === null ? '正在读预设…' : mine.length ? '套用一个预设…' : `还没有 ${family} 系列的预设`}</option>
+              {mine.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+            <SavePreset family={family} image={image} />
+          </div>
+        </div>
+        <div className="gc-sec">
           <h4>工作流</h4>
           <select className="select" id="gcWf" aria-label="工作流" value={workflow?.id ?? ''} onChange={(e) => save({ workflowId: e.target.value || null })}>
             <option value="">内置基础流程</option>
@@ -142,7 +180,7 @@ function GenSettings({ node }: { node: ChatNode }) {
                 {checkpointList.map((name) => (
                   <option key={name} value={name}>
                     {name}
-                    {options && !mine.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
+                    {options && !familyCheckpoints.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
                   </option>
                 ))}
               </select>
@@ -152,7 +190,7 @@ function GenSettings({ node }: { node: ChatNode }) {
                   {optionsError}
                 </p>
               )}
-              {options && !mine.length && (
+              {options && !familyCheckpoints.length && (
                 <p className="hint">
                   <Icon name="info" className="icon-sm" />
                   这台 ComfyUI 上没有标成 {family} 的底模，去设置「底模和默认值」里看看底模各标成了哪个系列。
@@ -198,6 +236,30 @@ function GenSettings({ node }: { node: ChatNode }) {
                   挂一个 LoRA
                 </button>
               </div>
+            </div>
+            <div className="gc-sec">
+              <h4>
+                放大<span className="meta">像 WebUI 的高清修复，出图时自动做</span>
+              </h4>
+              <UpscaleFields value={image.upscale} models={options?.upscaleModels ?? []} size={image} onChange={(upscale) => save({ upscale })} />
+            </div>
+            <div className="gc-sec">
+              <h4>
+                部位重绘<span className="meta">像 WebUI 的 ADetailer，找到脸、手这些地方再重画</span>
+              </h4>
+              <DetailPassList passes={image.details} detectors={options?.detectors ?? []} onChange={(details) => save({ details })} />
+              <p className="hint">
+                <Icon name="info" className="icon-sm" />
+                <span>
+                  按顺序做。检测模型名字里 face 是脸、hand 是手、person 是人；bbox 下的重画整个框，segm 下的只重画轮廓里面。这道写了正面就换掉框里的标签，写了负面就换掉额外的负面词，系列固定开头和默认负面词照加。
+                  {detailerMissing.length > 0 && (
+                    <b className="gc-warn">
+                      {' '}
+                      这台 ComfyUI 上没有 {detailerMissing.join('、')}，要装 {[...new Set(detailerMissing.map((type) => PLUGIN_OF[type]))].join('、')}，出图前会拦下来。
+                    </b>
+                  )}
+                </span>
+              </p>
             </div>
           </>
         )}
@@ -300,6 +362,62 @@ function GenSettings({ node }: { node: ChatNode }) {
         </button>
       </div>
     </Dialog>
+  );
+}
+
+// 存成预设：起个名字；这个系列已经有同名的，问要不要换掉
+function SavePreset({ family, image }: { family: Family; image: ImageSettings }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const [name, setName] = useState('');
+
+  const save = async () => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    const { count: _count, seed: _seed, ...settings } = image;
+    const existing = usePresetStore.getState().list?.find((p) => p.family === family && p.name === trimmedName);
+    try {
+      if (existing) {
+        const ok = await confirmBox({ title: `换掉「${trimmedName}」？`, body: `${family} 系列已经有叫「${trimmedName}」的预设，换成现在这套出图设置。`, ok: '换掉' });
+        if (!ok) return;
+        usePresetStore.getState().put(await trackWrite(api<ImagePreset>(`/image-presets/${existing.id}`, { method: 'PATCH', body: { settings } })));
+      } else {
+        usePresetStore.getState().put(await trackWrite(api<ImagePreset>('/image-presets', { method: 'POST', body: { name: trimmedName, family, settings } })));
+      }
+      setAnchor(null);
+      setName('');
+      toast(`存成了预设「${trimmedName}」`);
+    } catch (err) {
+      toast((err as Error).message, { tone: 'danger', ms: 4500 });
+    }
+  };
+
+  return (
+    <>
+      <button type="button" className="btn btn-secondary btn-sm" id="gcSavePreset" onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
+        <Icon name="plus" />
+        存成预设…
+      </button>
+      {anchor && (
+        <Popover anchor={anchor} className="gc-preset-pop" odId="popover-save-preset" label="存成预设" onClose={() => setAnchor(null)}>
+          <div className="row">
+            <input
+              className="input"
+              data-autofocus
+              aria-label="预设的名字"
+              placeholder="起个名字，比如 E02"
+              maxLength={40}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void save()}
+            />
+            <button type="button" className="btn btn-primary btn-sm" disabled={!name.trim()} onClick={() => void save()}>
+              存
+            </button>
+          </div>
+          <p className="hint">存张数、种子以外的全部出图设置，{family} 系列的节点能套用。</p>
+        </Popover>
+      )}
+    </>
   );
 }
 

@@ -25,7 +25,7 @@ export const urlOf = (server: Server) => `http://127.0.0.1:${(server.address() a
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 起一个用临时目录的服务，设好工作文件夹和指向 mock-llm 的模型配置
-export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'autodl'> = {}) {
+export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'autodl' | 'models'> = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
   const work = path.join(tmp, 'work');
   const configDir = path.join(tmp, 'config');

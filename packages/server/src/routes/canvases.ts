@@ -310,7 +310,8 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase
   if (body.duration !== undefined) next.duration = v.duration(body.duration);
   if (body.aspectRatio !== undefined) next.aspectRatio = v.aspectRatio(body.aspectRatio);
   if (body.draft !== undefined) next.draft = v.text(body.draft, '输入框内容');
-  if (body.image !== undefined) next.image = v.imageSettings(body.image, node.image ?? imageBase!);
+  // 节点存的出图设置里没有的项（后来加的）用系列的默认值补上
+  if (body.image !== undefined) next.image = v.imageSettings(body.image, { ...imageBase!, ...node.image });
   if (body.activeChildOf !== undefined) {
     const entries = Object.entries((body.activeChildOf ?? {}) as Record<string, unknown>);
     next.activeChildOf = { ...node.activeChildOf };
