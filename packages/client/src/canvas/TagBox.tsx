@@ -7,6 +7,8 @@ import { copyText } from '../ui/copy';
 import { Icon, type IconName } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
 import { toast } from '../ui/toast';
+import { generate } from './imageActions';
+import { ImageJobs } from './ImageJobs';
 import { useOverlays } from './overlays';
 
 type Props = {
@@ -24,7 +26,7 @@ type Props = {
 
 const BUSY = '正在生成，先叫停或等它写完';
 
-// 生图节点的提示词框：一串标签，每个是一个小块；不认识的点开挑一个换掉
+// 生图节点的提示词框：一串标签，每个是一个小块；不认识的点开挑一个换掉。框下面挂着出的图
 export function TagBox({ node, message, index, label, text, family, ro, writing, incomplete, busy }: Props) {
   const items = useMemo(() => splitTags(text), [text]);
   // 正在写的时候最后一个可能只写了一半，先不校验
@@ -69,6 +71,18 @@ export function TagBox({ node, message, index, label, text, family, ro, writing,
         <span className={`pb-label${label ? '' : ' is-plain'}`}>{label || '提示词'}</span>
         <div className="pb-actions">
           {act('copy', '复制', 'copy', () => void copy())}
+          {editable && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              data-act="gen"
+              title="按节点的出图设置出图"
+              onClick={() => void generate({ nodeId: node.id, messageId: message.id }, index)}
+            >
+              <Icon name="sparkles" />
+              <span className="lbl">生图</span>
+            </button>
+          )}
           {!ro &&
             !incomplete &&
             act(
@@ -145,6 +159,7 @@ export function TagBox({ node, message, index, label, text, family, ro, writing,
           )}
         </div>
       )}
+      {!writing && !incomplete && <ImageJobs node={node} message={message} promptIndex={index} ro={ro} />}
       {picked && (
         <Popover
           anchor={unknown!.anchor}

@@ -36,7 +36,8 @@ async function post(url: string, path: string, body: unknown): Promise<Response>
   return res;
 }
 
-export const systemStats = (url: string) => json<SystemStats>(url, '/system_stats');
+// 测试连接和顶上的状态用，等久了界面上一直转圈，10 秒没回来就算连不上
+export const systemStats = (url: string) => json<SystemStats>(url, '/system_stats', 10_000);
 
 // 装的插件多时 object_info 有好几 MB
 export const objectInfo = (url: string) => json<ObjectInfo>(url, '/object_info', 120_000);

@@ -20,6 +20,12 @@ export type ZoomTarget = { imageId: string; title: string };
 // 标签编辑窗：生图节点哪条回复的第几个提示词框
 export type TagsTarget = { nodeId: string; messageId: string; promptIndex: number; label?: string };
 
+// 出的一张图：哪条回复、哪一组、第几张
+export type ImageTarget = { nodeId: string; messageId: string; jobId: string; index: number };
+
+// 下载窗口：要下的几张，文件名用节点标题加种子
+export type DownloadTarget = { nodeId: string; title: string; items: (ImageTarget & { seed: number })[] };
+
 type Overlays = {
   assets: { mode: AssetsMode; slot?: number } | null;
   upload: UploadTarget | null;
@@ -28,11 +34,26 @@ type Overlays = {
   translate: TranslateTarget | null;
   zoom: ZoomTarget | null;
   tags: TagsTarget | null;
+  genSettings: string | null; // 出图设置：哪个节点的
+  viewer: ImageTarget | null; // 看大图和参数
+  download: DownloadTarget | null;
   // 引用图片的小窗贴着哪儿弹；images：手动改提示词时只能挑这条回复带的图
   refpick: { left: number; top: number; images?: string[] } | null;
 };
 
-export const CLOSED_OVERLAYS = { assets: null, upload: null, collage: false, sys: null, translate: null, zoom: null, tags: null, refpick: null } satisfies Overlays;
+export const CLOSED_OVERLAYS = {
+  assets: null,
+  upload: null,
+  collage: false,
+  sys: null,
+  translate: null,
+  zoom: null,
+  tags: null,
+  genSettings: null,
+  viewer: null,
+  download: null,
+  refpick: null,
+} satisfies Overlays;
 
 export const useOverlays = create<Overlays>(() => CLOSED_OVERLAYS);
 

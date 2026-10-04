@@ -7,6 +7,7 @@ import {
   defaultImageSettings,
   downloadFileName,
   FAMILY_DEFAULTS,
+  imageErrorKind,
   IMAGE_SIZES,
   jobSeeds,
   negativePrompt,
@@ -124,14 +125,32 @@ describe('出图设置的默认值', () => {
     expect(IMAGE_SIZES).toContainEqual({ width: 1216, height: 832 });
   });
 
-  it('参数取系列的默认值；尺寸 832×1216、4 张、种子随机、底模等用户选', () => {
+  it('参数取系列的默认值；尺寸 832×1216、4 张、种子随机、底模没选（出图时用这台 ComfyUI 上这个系列的第一个）', () => {
     expect(defaultImageSettings(FAMILY_DEFAULTS.Pony)).toMatchObject({ width: 832, height: 1216, count: 4, steps: 25, cfg: 7, seed: null, checkpoint: '', rating: 'none' });
   });
 
-  it('底模属于哪个系列：标过的照标的，没标过的名字里有 pony 的当 Pony', () => {
+  it('底模属于哪个系列：标过的照标的；没标过的按名字猜，看不出是 IL 或 Pony 的两个都不是', () => {
     expect(checkpointFamily('ponyDiffusionV6.safetensors', {})).toEqual({ family: 'Pony', guessed: true });
-    expect(checkpointFamily('waiNSFW.safetensors', {})).toEqual({ family: 'IL', guessed: true });
+    for (const name of ['SDXL/waiIllustriousSDXL_v150.safetensors', 'Illustrious/oneObsession_v7.safetensors', 'JANKUV5TrainedNoobai_v50.safetensors', 'SDXL/IL-Gembyte_20Emerald.safetensors', 'il-test.safetensors', 'waiNSFW.safetensors']) {
+      expect(checkpointFamily(name, {})).toEqual({ family: 'IL', guessed: true });
+    }
+    for (const name of ['flux1-dev-fp8.safetensors', 'SDXL/sd_xl_base_1.0.safetensors', 'Amina-12steps-liuli-AIO-0_1.safetensors', 'pencil-sketch.safetensors', 'toString']) {
+      expect(checkpointFamily(name, {})).toEqual({ family: null, guessed: true });
+    }
     expect(checkpointFamily('ponyDiffusionV6.safetensors', { 'ponyDiffusionV6.safetensors': 'IL' })).toEqual({ family: 'IL', guessed: false });
-    expect(checkpointFamily('toString', {})).toEqual({ family: 'IL', guessed: true });
+    expect(checkpointFamily('SDXL/waiIllustriousSDXL_v150.safetensors', { 'SDXL/waiIllustriousSDXL_v150.safetensors': null })).toEqual({ family: null, guessed: false });
+    expect(checkpointFamily('flux1-dev-fp8.safetensors', { 'flux1-dev-fp8.safetensors': 'IL' })).toEqual({ family: 'IL', guessed: false });
+  });
+});
+
+describe('出图失败是哪一种', () => {
+  it('按服务端写的原因分：连不上、底模文件不在、ComfyUI 不收、显存不够、程序重启时没出完、别的', () => {
+    expect(imageErrorKind('连不上 ComfyUI（http://192.168.1.20:8188）：地址不对，或者 ComfyUI 没开。原话：fetch failed')).toBe('down');
+    expect(imageErrorKind('连不上 ComfyUI 的进度推送（http://192.168.1.20:8188/ws）：地址不对，或者 ComfyUI 没开')).toBe('down');
+    expect(imageErrorKind("ComfyUI 不收这个任务：CheckpointLoaderSimple（1 号节点）ckpt_name: 'gone.safetensors' not in ['a.safetensors']")).toBe('checkpoint');
+    expect(imageErrorKind("ComfyUI 不收这个任务：LoraLoader（2 号节点）lora_name: 'x' not in []")).toBe('rejected');
+    expect(imageErrorKind('显存不够：CUDA out of memory')).toBe('memory');
+    expect(imageErrorKind('程序重启时这张还没出完')).toBe('restart');
+    expect(imageErrorKind('出图出错（KSampler）：坏了')).toBe('other');
   });
 });

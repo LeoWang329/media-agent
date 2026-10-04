@@ -12,12 +12,13 @@ type Props = {
   label: string;
   odId?: string;
   onClose: () => void;
+  onBackdrop?: () => void; // 点到弹窗外面的遮罩上
   children: ReactNode;
 };
 
 // 系统自带的模态弹窗：挂上就打开，按 Esc 或点「关闭」都走 onClose，由外面决定卸载。
 // 打开时焦点放在带 data-autofocus 的元素上（React 的 autoFocus 跑在打开之前，不算数）
-export function Dialog({ className, style, label, odId, onClose, children }: Props) {
+export function Dialog({ className, style, label, odId, onClose, onBackdrop, children }: Props) {
   const ref = useRef<HTMLDialogElement>(null);
   const latestClose = useRef(onClose);
   latestClose.current = onClose;
@@ -40,7 +41,14 @@ export function Dialog({ className, style, label, odId, onClose, children }: Pro
   }, []);
 
   return (
-    <dialog ref={ref} className={className ? `dialog ${className}` : 'dialog'} style={style} aria-label={label} data-od-id={odId}>
+    <dialog
+      ref={ref}
+      className={className ? `dialog ${className}` : 'dialog'}
+      style={style}
+      aria-label={label}
+      data-od-id={odId}
+      onClick={onBackdrop && ((e) => e.target === e.currentTarget && onBackdrop())}
+    >
       {children}
     </dialog>
   );

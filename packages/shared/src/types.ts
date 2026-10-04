@@ -24,11 +24,11 @@ export type ModelConfig = {
 // 生图底模的系列
 export type Family = 'IL' | 'Pony';
 
-// 工作文件夹 settings.json，两台机器共用：思考档位、局域网 ComfyUI 地址、底模属于哪个系列（底模文件名 → 系列）、各系列的默认出图参数
+// 工作文件夹 settings.json，两台机器共用：思考档位、局域网 ComfyUI 地址、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
 export type SharedSettings = {
   thinking: ThinkingSettings;
   comfy: { lanUrl: string | null };
-  checkpoints: Record<string, Family>;
+  checkpoints: Record<string, Family | null>;
   defaults: Record<Family, FamilyDefaults>;
 };
 
@@ -158,12 +158,16 @@ export type JobImage = {
   error?: string;
 };
 
-// 点一次「生图」出的一组，挂在 assistant 消息的 images 里，见 docs/dev-plan.md 5.19
+// 点一次「生图」出的一组，挂在 assistant 消息的 images 里，见 docs/dev-plan.md 5.19。
+// source 是照着哪张图出的（「同样参数再来」「只换种子再来」）：那一组的 id 和那张的种子，种子一样就是同样参数再来。
+// rev 每改一次加一：推送和请求的回复谁先到不一定，前端拿它丢掉旧的
 export type ImageJob = {
   id: string;
+  rev?: number;
   promptIndex: number;
   createdAt: string;
   kind: 'txt2img';
+  source?: { kind: 'generated'; jobId: string; seed: number };
   target: 'lan';
   params: ImageJobParams;
   images: JobImage[];
@@ -175,14 +179,30 @@ export type ImageJobEvent =
   | { type: 'progress'; jobId: string; index: number; step: number; total: number }
   | { type: 'queue'; jobId: string; index: number; position: number };
 
+// 出完的一张图在哪：哪条回复、哪一组、第几张。卡片和首页拿它拼缩略图的地址
+export type GeneratedRef = { messageId: string; jobId: string; index: number; seed: number; starred: boolean };
+
+// 卡片上生图节点出图的情况：最近出的几张；正在出的几组一共出完几张、一共几张；最近一组是不是全失败了
+export type CardGenerated = { images: GeneratedRef[]; live: { done: number; total: number } | null; failed: boolean };
+
+// 一张出的图的文件现在在哪：临时文件夹里的、下载的那份，不在了是 null
+export type ImageWhere = { temp: string | null; saved: string | null };
+
+// 设置里「出的图」：临时文件夹、按日期分的子文件夹各有几张多大、上次下载到哪
+export type ImageTempInfo = {
+  path: string;
+  days: { name: string; count: number; bytes: number }[];
+  lastDownload: { folder: string; inLibrary: boolean } | null;
+};
+
 // 测试连接的结果：ComfyUI 版本、显卡、显存（字节）
 export type ComfyStatus =
   | { ok: true; url: string; version: string; gpu: string; vramTotal: number; vramFree: number }
   | { ok: false; url: string | null; error: string };
 
-// 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列，guessed 是没在设置里标过、按文件名猜的
+// 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的
 export type ComfyOptions = {
-  checkpoints: { name: string; family: Family; guessed: boolean }[];
+  checkpoints: { name: string; family: Family | null; guessed: boolean }[];
   loras: string[];
   samplers: string[];
   schedulers: string[];
@@ -321,6 +341,7 @@ export type HomeNode = {
   duration: number;
   aspectRatio: AspectRatio;
   image: CardImageInfo;
+  generated: CardGenerated | null; // 出过图才有
   starred: boolean;
   generating: boolean;
   error: string | null;
@@ -341,8 +362,8 @@ export type StarredPrompt = {
   duration: number;
   aspectRatio: AspectRatio;
   translations: { language: TranslateLanguage; text: string }[];
-  // 生图的框：写这条回复时用的生图提示词是哪个系列；视频的框是 null
-  image: { family: Family | null } | null;
+  // 生图的框：写这条回复时用的生图提示词是哪个系列，节点现在的尺寸，这个框出过的图（打过星的在前，再按新的在前）；视频的框是 null
+  image: { family: Family | null; width: number; height: number; generated: GeneratedRef[] } | null;
   createdAt: string;
 };
 
@@ -361,6 +382,7 @@ export type NodeSummary = CanvasNodeLayout & {
   duration: number;
   aspectRatio: AspectRatio;
   image: CardImageInfo;
+  generated: CardGenerated | null; // 出过图才有
   summary: string;
   directionCount: number;
   starred: boolean;

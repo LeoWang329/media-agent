@@ -5,11 +5,12 @@ import { imageThumbUrl, SLOT_DRAG_TYPE } from '../api';
 import { docPictures, docToDraft, docToText } from '../editor/document';
 import { usePictureEditor } from '../editor/usePictureEditor';
 import { MAX_SLOTS, useCanvasStore } from '../store/canvasStore';
+import { useComfyStore } from '../store/comfyStore';
 import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
-import { imageSize, promptUse, SIZE_GROUPS, sizeText, usePromptInfo } from './imageNode';
+import { effectiveCheckpoint, imageSize, promptUse, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
 
@@ -115,13 +116,23 @@ function VideoParams({ node }: { node: ChatNode }) {
   );
 }
 
-// 生图节点：尺寸和张数，改了存进节点的出图设置
+// 生图节点：尺寸和张数，改了存进节点的出图设置；旁边是出图设置，按钮上写着用哪个底模
 function ImageParams({ node }: { node: ChatNode }) {
   const image = imageSize(node);
+  const family = usePromptInfo(node.systemPromptName)?.family ?? 'IL';
+  const settings = useImageSettings(node, family);
+  const options = useComfyStore((s) => s.options);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const setCount = (count: number) => void patchNode(node.id, { image: { count } });
+  const checkpoint = effectiveCheckpoint(settings, family, options);
+
+  useEffect(() => {
+    void useComfyStore.getState().loadOptions();
+  }, []);
+
+  // 套一层不占位的 span（原型也这样），出图设置按钮就不算槽位区右边那几个小图标按钮
   return (
-    <>
+    <span className="params" data-od-id="image-params">
       <div className="param">
         <span className="meta">尺寸</span>
         <select
@@ -159,7 +170,24 @@ function ImageParams({ node }: { node: ChatNode }) {
           </button>
         </div>
       </div>
-    </>
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm gen-cfg-btn"
+        id="btnGenCfg"
+        data-od-id="btn-generation-settings"
+        title="出图设置：用哪台 ComfyUI、底模、LoRA、种子……每个节点各存一份"
+        onClick={() => useOverlays.setState({ genSettings: node.id })}
+      >
+        <Icon name="sliders" />
+        出图设置
+        {checkpoint && (
+          <span className="lbl">
+            {shortCheckpoint(checkpoint)}
+            {settings.loras.length > 0 && ` + ${settings.loras.length} 个 LoRA`}
+          </span>
+        )}
+      </button>
+    </span>
   );
 }
 

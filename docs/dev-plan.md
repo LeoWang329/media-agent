@@ -188,7 +188,7 @@ type FamilyDefaults = {                 // 一个系列的默认值，见 5.18
 type SharedSettings = {                 // 工作文件夹 settings.json
   thinking: { level: ThinkingLevel; chat: ThinkingLevel | 'follow'; translate: ThinkingLevel | 'follow'; tagging: ThinkingLevel | 'follow' };
   comfy: { lanUrl: string | null; autodl: { instanceUuid: string; idleMinutes: number } | null };
-  checkpoints: Record<string, Family>;  // 底模文件名 → 系列
+  checkpoints: Record<string, Family | null>;  // 底模文件名 → 系列，null 是两个都不是
   defaults: Record<Family, FamilyDefaults>;
   taggerModel: string | null;           // 反推用的模型
 };
@@ -197,7 +197,8 @@ type ImageSettings = {
   width: number; height: number;        // 九档之一，见 5.14
   count: number;                        // 一次出几张，1–8，默认 4
   workflowId: string | null;            // null 是内置流程，否则是导入的工作流
-  checkpoint: string; loras: { name: string; strength: number }[];
+  checkpoint: string;                   // 空着：出图时用这台 ComfyUI 上这个系列的第一个，记进这一组的参数
+  loras: { name: string; strength: number }[];
   steps: number; cfg: number; sampler: string; scheduler: string;
   seed: number | null;                  // null 是每次随机
   rating: 'none' | 'general' | 'sensitive' | 'explicit';
@@ -206,8 +207,9 @@ type ImageSettings = {
 
 type ImageJob = {                       // 点一次「生图」（或放大、修脸、局部重绘）出的一组
   id: string; promptIndex: number; createdAt: string;
+  rev?: number;                         // 每改一次加一：推送和请求的回复谁先到不一定，前端拿它丢掉旧的
   kind: 'txt2img' | 'img2img' | 'pose' | 'style' | 'upscale' | 'facefix' | 'inpaint';
-  source?: { kind: 'generated'; jobId: string; index: number } | { kind: 'slot'; imageId: string };  // 从哪张图来
+  source?: { kind: 'generated'; jobId: string; seed: number } | { kind: 'slot'; imageId: string };  // 从哪张图来：那一组的 id 和那张的种子（删掉一张后后面的往前补位，所以不记第几张）
   target: 'lan' | 'autodl';
   params: {                             // 发出去的全部参数，「同样参数再来」照这个发
     family: Family;
@@ -460,7 +462,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 出图用哪台，在出图设置里选，记在本机 `config.json`（两台电脑可能不在同一个网络里），所有节点共用。
 - 测试连接：`GET /system_stats`，显示 ComfyUI 版本、显卡和显存。
 - 选项从 `GET /object_info` 读：底模（`CheckpointLoaderSimple` 的 `ckpt_name`）、LoRA（`LoraLoader` 的 `lora_name`）、采样器和调度器（`KSampler`）、放大模型（`UpscaleModelLoader`）、ControlNet 模型（`ControlNetLoader`）、IP-Adapter 模型（`IPAdapterModelLoader`，装了插件才有）、CLIP Vision 模型（`CLIPVisionLoader`）、反推模型（`WD14Tagger|pysssss` 的 `model`）。打开出图设置时读；同一台缓存起来，点「刷新」或换了地址才重读。
-- 底模属于哪个系列：设置里列出读到的底模，每个选 IL 或 Pony，存 `settings.json` 的 `checkpoints`。没标过的按文件名猜：名字里有 pony（不分大小写）的当 Pony，其他当 IL。
+- 底模属于哪个系列：设置里列出读到的底模，每个选 IL、Pony 或都不是，存 `settings.json` 的 `checkpoints`（都不是存 null）。没标过的按文件名猜，不分大小写：名字里有 pony 的当 Pony；有 illustrious、noob、wai，或者单独一个 IL（比如 IL-xxx、xxx_IL）的当 IL；别的两个都不是。节点的底模下拉只列这个系列的，都不是的哪里都不列。
 - AutoDL：
   - 开发者 Token 只存本机 `config.json`，和模型密钥一样不进工作文件夹；实例 uuid 和空闲多久关机（默认 15 分钟）存 `settings.json`。
   - 填了 Token 后列出账号下的实例（`POST https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/list`，请求头 `Authorization: <Token>`），选一个。
@@ -476,7 +478,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 内置流程：程序自己拼 ComfyUI 的 API 格式 JSON，只用 ComfyUI 自带的节点。`CheckpointLoaderSimple` → 每个 LoRA 一个 `LoraLoader`，串起来 → `CLIPSetLastLayer`（`stop_at_clip_layer` 是 clip skip 取负）→ 正面、负面两个 `CLIPTextEncode` → `EmptyLatentImage`（尺寸，`batch_size` 1）→ `KSampler`（种子、步数、CFG、采样器、调度器，`denoise` 1）→ `VAEDecode` → `PreviewImage`。用 `PreviewImage` 是为了不在 ComfyUI 那台机器上留文件，它的临时目录在 ComfyUI 重启时会清掉。
 - 正面 = 系列固定开头 + 评级词（选了才加）+ 框里的标签（5.15 拼出来的那串）；负面 = 系列默认负面词 + 节点的额外负面词。
 - 出几张就发几个任务，种子依次加 1；种子是随机时，第一个随机取。每张的种子都记下，图上能「同样参数再来」（同一个种子）和「只换种子再来」。
-- 各系列的默认值存 `settings.json`，设置里能改。初始值按两个系列常见的用法填，P10 时对照官方说明再核对一遍：
+- 各系列的默认值存 `settings.json`，设置里能改。初始值按两个系列常见的用法填，P10 对照官方说明核对过（结果见 `docs/reports/P10.md`）：
 
 | | IL | Pony |
 | --- | --- | --- |
@@ -674,6 +676,10 @@ ComfyUI    GET      /comfy/status?target=lan|autodl  连不连得上、版本、
            POST     /images/download                 {items: [{canvasId, nodeId, messageId, jobId, index}], folder} → {paths, inLibrary}
            GET      /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/file    出的图；临时文件清掉了用下载的那份，都不在返回 404（显示「已清理」）
            GET      /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/thumb   缩略图，找图的办法同上
+           GET      /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/where   {temp, saved}：临时文件夹里的、下载的那份各在不在，大图旁边显示
+           POST     /canvases/:id/nodes/:nid/messages/:mid/images/:jobId/:index/reveal  在资源管理器里显示
+           GET      /image-temp                      临时文件夹在哪、按日期分的子文件夹各有几张多大、上次下载到哪（在不在资产库里）
+           POST     /image-temp/open                 在资源管理器里打开临时文件夹，还没有就先建
            POST     /images/tagger                   {canvasId, imageId} 或 {canvasId, nodeId, messageId, jobId, index} → 反推出的标签
            GET      /image-jobs/events               SSE，见下面
 ```

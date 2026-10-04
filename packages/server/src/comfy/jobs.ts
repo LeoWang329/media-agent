@@ -1,9 +1,11 @@
 import {
   BUILTIN_WORKFLOW,
   builtinGraph,
+  checkpointFamily,
   composeChecked,
   defaultImageSettings,
   familyWords,
+  isLiveImage as isLive,
   jobSeeds,
   negativePrompt,
   parsePromptMeta,
@@ -31,6 +33,7 @@ import { loadLibrary } from '../tags/library';
 import { checkTag } from '../tags/search';
 import * as comfy from './client';
 import { saveTemp } from './files';
+import { comfyCheckpoints, loadObjectInfo } from './options';
 
 // 一组图挂在哪条回复下
 export type JobPlace = { work: string; canvasId: string; nodeId: string; messageId: string };
@@ -45,6 +48,7 @@ type Tracked = JobPlace & {
   startedAt?: number;
   finishing?: boolean;
   position?: number;
+  progress?: { step: number; total: number };
 };
 
 type ComfyMessage = { type: string; data?: Record<string, unknown> };
@@ -55,7 +59,6 @@ const HISTORY_TRIES = 10;
 const HISTORY_WAIT_MS = 300;
 
 const randomSeed = () => randomInt(0, 2 ** 32);
-const isLive = (image: JobImage) => image.status === 'queued' || image.status === 'running';
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 节点用的系统提示词开头写着「用途: 生图」才是生图节点，系列看「底模」
@@ -135,7 +138,7 @@ export function createImageJobs(configDir: string) {
       const message = node.messages[place.messageId];
       const job = message?.images?.find((j) => j.id === jobId);
       if (!message || !job) throw new HttpError(404, '找不到这一组图');
-      changed = change(job);
+      changed = { ...change(job), rev: (job.rev ?? 0) + 1 };
       const images = message.images!.flatMap((j) => (j.id !== jobId ? [j] : changed.images.length ? [changed] : []));
       return { ...node, messages: { ...node.messages, [message.id]: { ...message, images } } };
     });
@@ -163,13 +166,18 @@ export function createImageJobs(configDir: string) {
     const message = node.messages[place.messageId];
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
 
-    let source: { promptIndex: number; params: ImageJobParams; seeds: number[] };
+    let source: { promptIndex: number; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
     if (again) {
-      // 「同样参数再来」用同一个种子，「只换种子再来」随机一个，都只出一张
+      // 「同样参数再来」用同一个种子，「只换种子再来」随机一个，都只出一张；记下照着哪张出的
       const job = message.images?.find((j) => j.id === again.jobId);
       const image = job?.images[again.index];
       if (!job || !image) throw new HttpError(404, '找不到要照着再来的那张图');
-      source = { promptIndex: job.promptIndex, params: job.params, seeds: [again.sameSeed ? image.seed : randomSeed()] };
+      source = {
+        promptIndex: job.promptIndex,
+        params: job.params,
+        seeds: [again.sameSeed ? image.seed : randomSeed()],
+        from: { kind: 'generated', jobId: job.id, seed: image.seed },
+      };
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
@@ -181,6 +189,7 @@ export function createImageJobs(configDir: string) {
       promptIndex: source.promptIndex,
       createdAt: new Date().toISOString(),
       kind: 'txt2img',
+      ...(source.from && { source: source.from }),
       target: 'lan',
       params: source.params,
       images: source.seeds.map((seed) => ({ seed, status: 'queued' })),
@@ -200,6 +209,7 @@ export function createImageJobs(configDir: string) {
     submitting.set(url, (submitting.get(url) ?? 0) + 1);
     try {
       await connect(url);
+      await chooseCheckpoint(place, jobId, url);
       const id = await (clientId ??= comfyClientId(configDir));
       for (let more = true; more; ) {
         more = await withLock(`image-job:${jobId}`, async () => {
@@ -220,12 +230,24 @@ export function createImageJobs(configDir: string) {
       }
       void refreshQueue(url);
     } catch (err) {
-      // 连不上：没发出去的都算失败
+      // 连不上、这台 ComfyUI 上没有这个系列的底模：没发出去的都算失败
       await changeImages(place, jobId, (image) => image.status === 'queued' && !image.promptId, { status: 'failed', error: (err as Error).message }).catch(() => {});
     } finally {
       submitting.set(url, submitting.get(url)! - 1);
       closeIfIdle(url);
     }
+  }
+
+  // 节点还没选过底模：用这台 ComfyUI 上这个系列的第一个，记进这一组的参数
+  async function chooseCheckpoint(place: JobPlace, jobId: string, url: string): Promise<void> {
+    const { params } = await readJob(place, jobId);
+    if (params.checkpoint) return;
+    const marked = (await readSettings(place.work)).checkpoints;
+    const info = await loadObjectInfo(url);
+    const names = comfyCheckpoints(info);
+    const name = names.find((n) => checkpointFamily(n, marked).family === params.family);
+    if (!name) throw new comfy.ComfyError(`这台 ComfyUI 上没有 ${params.family} 系列的底模。去设置「底模和默认值」里看看底模各标成了哪个系列`);
+    await changeJob(place, jobId, (job) => ({ ...job, params: { ...job.params, checkpoint: name } }));
   }
 
   function track(t: Tracked): void {
@@ -316,7 +338,8 @@ export function createImageJobs(configDir: string) {
       t.startedAt = Date.now();
       void changeTracked(t, { status: 'running' }, (image) => image.status === 'queued');
     } else if (type === 'progress') {
-      emit({ type: 'progress', jobId: t.jobId, index: t.index, step: Number(data.value), total: Number(data.max) });
+      t.progress = { step: Number(data.value), total: Number(data.max) };
+      emit({ type: 'progress', jobId: t.jobId, index: t.index, ...t.progress });
     } else if (type === 'execution_success' || type === 'executing') {
       void finish(t);
     } else if (type === 'execution_error') {
@@ -468,7 +491,12 @@ export function createImageJobs(configDir: string) {
     }
   }
 
+  // 新连上的页面先拿到现在排第几、走到第几步，之后再收变化
   function subscribe(listener: (event: ImageJobEvent) => void): () => void {
+    for (const t of tracked.values()) {
+      if (t.position) listener({ type: 'queue', jobId: t.jobId, index: t.index, position: t.position });
+      if (t.progress) listener({ type: 'progress', jobId: t.jobId, index: t.index, ...t.progress });
+    }
     listeners.add(listener);
     return () => listeners.delete(listener);
   }

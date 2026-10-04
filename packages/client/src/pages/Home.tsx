@@ -1,10 +1,12 @@
-import { splitTags, type CanvasImage, type Config, type Family, type HomeCanvas, type HomeData, type HomeNode, type StarredPrompt } from '@media-agent/shared';
+import { splitTags, type CanvasImage, type Config, type Family, type GeneratedRef, type HomeCanvas, type HomeData, type HomeNode, type ImageJob, type StarredPrompt } from '@media-agent/shared';
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, imageThumbUrl } from '../api';
+import { generatedThumb } from '../canvas/imageActions';
 import { splitError } from '../canvas/nodeInfo';
 import { tokens } from '../canvas/tokens';
 import { UploadList } from '../canvas/UploadDialog';
+import { ComfyPill } from '../components/ComfyPill';
 import { TagChip } from '../tags/TagChip';
 import { composeBox, useTagChecks } from '../tags/tagStore';
 import { confirmBox } from '../ui/confirm';
@@ -141,6 +143,7 @@ export function Home() {
       <header className="appbar" data-od-id="home-appbar">
         <Link className="brand" to="/"><span className="brand-mark"><Icon name="logo" /></span>提示词画布</Link>
         <span className="spacer" />
+        <ComfyPill />
         <Link
           className={`path-pill hide-sm${view === 'error' ? ' is-error' : ''}`}
           to={workdirLink}
@@ -244,6 +247,7 @@ export function Home() {
                         prompt={prompt}
                         family={prompt.image.family}
                         canvasTitle={titleOf(prompt.canvasId)}
+                        onQueued={() => void refresh()}
                       />
                     ) : (
                       <StarItem
@@ -400,11 +404,34 @@ function Mosaic({ canvasId, ids, images }: { canvasId: string; ids: string[]; im
   );
 }
 
+// 出过图的生图节点：最近出的图拼成一个方块，两列
+function GenMosaic({ node, refs }: { node: HomeNode; refs: GeneratedRef[] }) {
+  const cols = refs.length === 1 ? 1 : 2;
+  const rows = Math.ceil(refs.length / cols);
+  const spare = cols * rows - refs.length;
+  return (
+    <div className="hm-mosaic is-gen" style={{ '--cols': cols, '--rows': rows } as CSSProperties} aria-label={`最近出的 ${refs.length} 张图`}>
+      {refs.map((ref, i) => (
+        <span key={`${ref.jobId}:${ref.index}`} className="hm-cell" style={spare && i === refs.length - 1 ? { gridColumn: `span ${spare + 1}` } : undefined}>
+          <GenThumb src={generatedThumb(node.canvasId, node.id, ref)} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// 出的一张图；临时文件清掉了、也没下载过的写「已清理」
+function GenThumb({ src }: { src: string }) {
+  const [gone, setGone] = useState(false);
+  return gone ? <span className="hm-gone">已清理</span> : <img className="im" src={src} alt="" loading="lazy" onError={() => setGone(true)} />;
+}
+
 function NodeCard({ node, canvasTitle, images }: { node: HomeNode; canvasTitle: string; images: Images }) {
   const failure = node.error ? splitError(node.error) : null;
+  const generated = node.generated;
   return (
     <Link className={`hm-node${failure ? ' is-failed' : ''}`} to={nodeLink(node.canvasId, node.id)} data-node={node.id} data-od-id={`recent-node-${node.id}`}>
-      <Mosaic canvasId={node.canvasId} ids={node.slots} images={images} />
+      {generated?.images.length ? <GenMosaic node={node} refs={generated.images} /> : <Mosaic canvasId={node.canvasId} ids={node.slots} images={images} />}
       <div className="hm-node-body">
         <div className="hm-node-top">
           {node.image && (
@@ -422,10 +449,18 @@ function NodeCard({ node, canvasTitle, images }: { node: HomeNode; canvasTitle: 
           <span className="grow" />
           {node.generating ? (
             <span className="tag hm-live"><span className="dot dot-live" />正在生成</span>
+          ) : failure ? (
+            <span className="tag tag-danger" title={failure.code ? `${failure.code} · ${failure.reason}` : failure.reason}>
+              <Icon name="warn" />回复失败
+            </span>
+          ) : generated?.live ? (
+            <span className="tag hm-live">
+              <span className="dot dot-live" />出图 <span className="mono">{generated.live.done}/{generated.live.total}</span>
+            </span>
           ) : (
-            failure && (
-              <span className="tag tag-danger" title={failure.code ? `${failure.code} · ${failure.reason}` : failure.reason}>
-                <Icon name="warn" />回复失败
+            generated?.failed && (
+              <span className="tag tag-danger">
+                <Icon name="warn" />出图失败
               </span>
             )
           )}
@@ -503,9 +538,15 @@ function StarWhere({ prompt, canvasTitle }: { prompt: StarredPrompt; canvasTitle
 
 const SHOWN_TAGS = 10;
 
-// 打过星的生图框：显示前 10 个标签；复制的是拼好的一串，和画布上的复制一样
-function StarImageItem({ prompt, family, canvasTitle }: { prompt: StarredPrompt; family: Family | null; canvasTitle: string }) {
+const SHOWN_IMAGES = 6;
+
+// 打过星的生图框：显示前 10 个标签和这个框出过的图（打过星的在前）；复制的是拼好的一串，和画布上的复制一样。
+// 「再出图」按节点现在的出图设置再出一组
+function StarImageItem({ prompt, family, canvasTitle, onQueued }: { prompt: StarredPrompt; family: Family | null; canvasTitle: string; onQueued: () => void }) {
+  const navigate = useNavigate();
   const label = prompt.label || '提示词';
+  const generated = prompt.image?.generated ?? [];
+  const starredCount = generated.filter((ref) => ref.starred).length;
   const items = useMemo(() => splitTags(prompt.text), [prompt.text]);
   const shown = items.slice(0, SHOWN_TAGS);
   const checks = useTagChecks(
@@ -515,6 +556,21 @@ function StarImageItem({ prompt, family, canvasTitle }: { prompt: StarredPrompt;
   const copy = async () => {
     const composed = await composeBox(prompt.text, family);
     copyText(composed.text, `已复制提示词（${composed.count} 个标签）`);
+  };
+  const regenerate = async () => {
+    try {
+      const job = await api<ImageJob>(`/canvases/${prompt.canvasId}/nodes/${prompt.nodeId}/messages/${prompt.messageId}/images`, {
+        method: 'POST',
+        body: { promptIndex: prompt.promptIndex },
+      });
+      toast(`「${prompt.nodeTitle}」这个框又排上了 ${job.images.length} 张，按节点现在的出图设置`, {
+        action: '去看看',
+        onAction: () => navigate(nodeLink(prompt.canvasId, prompt.nodeId)),
+      });
+      onQueued();
+    } catch (err) {
+      failed(err);
+    }
   };
   return (
     <article className="hm-star-item is-image" data-star={`${prompt.messageId}-${prompt.promptIndex}`} data-od-id={`starred-image-${prompt.messageId}-${prompt.promptIndex}`}>
@@ -535,11 +591,44 @@ function StarImageItem({ prompt, family, canvasTitle }: { prompt: StarredPrompt;
           </span>
         )}
       </div>
-      <div className="meta">还没出过图</div>
+      {generated.length ? (
+        <>
+          <div className="hm-gen-strip" aria-label={`这个框出过的 ${generated.length} 张图`}>
+            {generated.slice(0, SHOWN_IMAGES).map((ref) => (
+              <span key={`${ref.jobId}:${ref.index}`} className={`hm-gen${ref.starred ? ' is-star' : ''}`}>
+                <GenThumb src={generatedThumb(prompt.canvasId, prompt.nodeId, ref)} />
+                {ref.starred && (
+                  <i>
+                    <Icon name="star" className="icon-fill" />
+                  </i>
+                )}
+              </span>
+            ))}
+          </div>
+          <div className="meta hm-gen-meta">
+            <span>
+              <span className="mono">{generated.length}</span> 张
+              {starredCount > 0 && (
+                <>
+                  ，打星 <span className="mono">{starredCount}</span> 张
+                </>
+              )}
+            </span>
+            <span className="mono">
+              {prompt.image!.width}×{prompt.image!.height}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="meta">还没出过图</div>
+      )}
       <StarWhere prompt={prompt} canvasTitle={canvasTitle} />
       <div className="hm-star-acts">
         <button type="button" className="btn btn-secondary btn-sm" title="复制整串标签，可以贴进 ComfyUI" onClick={() => void copy()}>
           <Icon name="copy" />复制
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" data-regen title="用节点现在的出图设置，再出一组" onClick={() => void regenerate()}>
+          <Icon name="sparkles" />再出图
         </button>
       </div>
     </article>

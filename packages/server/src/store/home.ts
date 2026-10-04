@@ -1,7 +1,10 @@
 import {
   activePath,
+  cardGenerated,
   cardImageInfo,
   cardSummary,
+  DEFAULT_IMAGE_SIZE,
+  generatedImages,
   isOwnMessage,
   starredBoxes,
   TRANSLATE_LANGUAGES,
@@ -18,6 +21,8 @@ import { readImages } from './images';
 import { promptMetaReader } from './prompts';
 
 const RECENT_NODES = 8;
+// 最近动过的生图节点卡片上最多显示几张出的图
+const CARD_IMAGES = 4;
 const UNREADABLE = ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'];
 
 type Loaded = { canvas: Canvas; images: Record<string, ImageRecord>; nodes: ChatNode[] };
@@ -65,6 +70,8 @@ export async function homeData(work: string, isGenerating: (nodeId: string) => b
     duration: node.duration,
     aspectRatio: node.aspectRatio,
     image: cardImageInfo(node, metas[i]),
+    // 首页列图时打过星的排在前面，见 docs/dev-plan.md 5.20
+    generated: cardGenerated(node, CARD_IMAGES, true),
     starred: starredNodes.has(node.id),
     generating: isGenerating(node.id),
     error: activePath(node).at(-1)?.error ?? null,
@@ -84,7 +91,7 @@ export async function homeData(work: string, isGenerating: (nodeId: string) => b
 }
 
 // 打过星的提示词，所有版本都算，新写的在前
-// 生图的框（看写这条回复时用的系统提示词）带上系列
+// 生图的框（看写这条回复时用的系统提示词）带上系列、节点现在的尺寸、这个框出过的图
 async function starredPrompts(loaded: Loaded[], metaOf: (name: string) => Promise<PromptMeta | null>): Promise<StarredPrompt[]> {
   const boxes = loaded.flatMap(({ canvas, nodes }) => starredBoxes(nodes).map((starred) => ({ canvas, ...starred })));
   const metas = await Promise.all(boxes.map(({ message }) => metaOf(message.systemPromptName ?? '')));
@@ -105,7 +112,15 @@ async function starredPrompts(loaded: Loaded[], metaOf: (name: string) => Promis
         .filter((t) => t.promptIndex === promptIndex)
         .sort((a, b) => TRANSLATE_LANGUAGES.indexOf(a.language) - TRANSLATE_LANGUAGES.indexOf(b.language))
         .map((t) => ({ language: t.language, text: t.text })),
-      image: metas[i]?.use === 'image' ? { family: metas[i]!.family } : null,
+      image:
+        metas[i]?.use === 'image'
+          ? {
+              family: metas[i]!.family,
+              width: node.image?.width ?? DEFAULT_IMAGE_SIZE.width,
+              height: node.image?.height ?? DEFAULT_IMAGE_SIZE.height,
+              generated: generatedImages([message], { promptIndex, starFirst: true }),
+            }
+          : null,
       createdAt: message.createdAt,
     }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));

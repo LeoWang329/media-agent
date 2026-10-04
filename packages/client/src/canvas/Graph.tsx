@@ -5,6 +5,7 @@ import { useCanvasStore } from '../store/canvasStore';
 import { Icon } from '../ui/Icon';
 import { showMenu, showMenuAt } from '../ui/menu';
 import { RenameInput } from '../ui/RenameInput';
+import { generatedThumb } from './imageActions';
 import { cardMenu, closeDrawer, descendantsOf, finishRename, selectNode, toggleCollapse, useRenaming } from './nodeActions';
 import { NODE_W, useView, zoomAt } from './view';
 
@@ -264,8 +265,11 @@ const GraphNode = memo(
           </button>
         </div>
         <div className="gn-sum">{n.summary || '还没有提示词'}</div>
-        <div className="gn-slots">
-          {n.slots.length ? (
+        <div className={`gn-slots${n.generated?.images.length ? ' is-gen' : ''}`}>
+          {n.generated?.images.length ? (
+            // 出过图的：缩略图换成最近出的图
+            n.generated.images.map((ref) => <GeneratedSlot key={`${ref.jobId}:${ref.index}:${ref.seed}`} src={generatedThumb(canvasId, n.id, ref)} starred={ref.starred} />)
+          ) : n.slots.length ? (
             <>
               {shown.map((id, i) => (
                 <div key={`${i}-${id}`} className="gn-slot">
@@ -285,6 +289,19 @@ const GraphNode = memo(
               <Icon name="sparkles" />
               生图{n.image.family ? ` · ${n.image.family}` : ''}
             </span>
+          )}
+          {n.generated?.live ? (
+            <span className="tag tag-accent">
+              <span className="dot dot-live" />
+              出图 {n.generated.live.done}/{n.generated.live.total}
+            </span>
+          ) : (
+            n.generated?.failed && (
+              <span className="tag tag-danger">
+                <Icon name="warn" />
+                出图失败
+              </span>
+            )
           )}
           {generating && (
             <span className="tag tag-accent">
@@ -322,3 +339,18 @@ const GraphNode = memo(
     a.generating === b.generating &&
     a.hiddenCount === b.hiddenCount,
 );
+
+// 卡片上出的一张图；临时文件清掉了、也没下载过的显示斜线底
+function GeneratedSlot({ src, starred }: { src: string; starred: boolean }) {
+  const [gone, setGone] = useState(false);
+  return (
+    <div className={`gn-slot gn-gen${gone ? ' is-cleared' : ''}`}>
+      {!gone && <img className="im" src={src} alt="" loading="lazy" draggable={false} onError={() => setGone(true)} />}
+      {starred && (
+        <span className="gn-gstar">
+          <Icon name="star" className="icon-fill" />
+        </span>
+      )}
+    </div>
+  );
+}

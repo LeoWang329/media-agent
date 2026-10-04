@@ -15,6 +15,7 @@ import {
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
+import { ComfyPill } from '../components/ComfyPill';
 import { isPriced, ModelForm } from '../components/ModelForm';
 import { confirmBox } from '../ui/confirm';
 import { fmtNum } from '../ui/copy';
@@ -24,9 +25,10 @@ import { SaveState, trackWrite } from '../ui/saveState';
 import { ThemeToggle } from '../ui/theme';
 import { LEVEL_LABELS, STYLE_LABELS, styleNote } from '../ui/thinking';
 import { toast } from '../ui/toast';
+import { CheckpointsTab, ComfyTab, ImagesTab } from './SettingsComfy';
 import { FragmentsTab, TagLibraryTab } from './SettingsImage';
 
-type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'taglib' | 'fragments';
+type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'comfy' | 'checkpoints' | 'taglib' | 'fragments' | 'images';
 
 const TABS: [Tab, string, IconName][] = [
   ['workdir', '工作文件夹', 'folder'],
@@ -38,8 +40,11 @@ const TABS: [Tab, string, IconName][] = [
 
 // 生图用的几节，导航里排在「生图」下面
 const IMAGE_TABS: [Tab, string, IconName][] = [
+  ['comfy', 'ComfyUI', 'server'],
+  ['checkpoints', '底模和默认值', 'sliders'],
   ['taglib', '词库', 'tag'],
   ['fragments', '片段库', 'copy'],
+  ['images', '出的图', 'download'],
 ];
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
@@ -66,6 +71,7 @@ export function Settings() {
         <span className="muted hide-sm">/</span>
         <span className="hide-sm">设置</span>
         <span className="spacer" />
+        <ComfyPill />
         <SaveState idle="改动自动写入" />
         <ThemeToggle />
         <Link className="btn btn-ghost" to="/"><Icon name="home" /><span className="hide-sm">回首页</span></Link>
@@ -96,8 +102,11 @@ export function Settings() {
           {config && tab === 'prompts' && <PromptsTab key={config.workFolder} workFolder={config.workFolder} />}
           {tab === 'format' && <FormatTab />}
           {config && tab === 'thinking' && <ThinkingTab key={config.workFolder} config={config} />}
+          {config && tab === 'comfy' && <ComfyTab key={config.workFolder} workFolder={config.workFolder} />}
+          {config && tab === 'checkpoints' && <CheckpointsTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'taglib' && <TagLibraryTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'fragments' && <FragmentsTab key={config.workFolder} workFolder={config.workFolder} />}
+          {config && tab === 'images' && <ImagesTab key={config.workFolder} workFolder={config.workFolder} />}
         </main>
       </div>
     </>

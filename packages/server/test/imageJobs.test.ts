@@ -1,12 +1,16 @@
 import {
   builtinGraph,
   FAMILY_DEFAULTS,
+  type CanvasDetail,
   type ChatNode,
   type ComfyOptions,
   type ComfyStatus,
   type Config,
+  type HomeData,
   type ImageJob,
   type ImageJobEvent,
+  type ImageTempInfo,
+  type ImageWhere,
   type Message,
   type SharedSettings,
 } from '@media-agent/shared';
@@ -166,6 +170,24 @@ describe('出图任务', () => {
     expect(events).toContainEqual({ type: 'queue', jobId: job.id, index: 1, position: 1 });
   });
 
+  it('后连上的页面先拿到现在排第几、走到第几步', async () => {
+    const first = await watch();
+    const messageId = await prepare('1girl, 慢', { count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    for (const deadline = Date.now() + 8000; !first.events.some((e) => e.type === 'progress' && e.jobId === job.id) || !first.events.some((e) => e.type === 'queue'); ) {
+      if (Date.now() > deadline) throw new Error('等不到进度');
+      await sleep(20);
+    }
+    first.close();
+    const later = await watch();
+    await sleep(50);
+    later.close();
+    expect(later.events).toContainEqual({ type: 'queue', jobId: job.id, index: 1, position: 1 });
+    expect(later.events).toContainEqual(expect.objectContaining({ type: 'progress', jobId: job.id, index: 0, total: 5 }));
+    await t.ok('POST', `${imagesUrl(messageId)}/${job.id}/stop`);
+    await until(messageId, job.id, settled);
+  });
+
   it('叫停：排队的从 ComfyUI 队列里删掉，正在跑的让它停；已经出完的留着', async () => {
     const messageId = await prepare('1girl, 慢', { count: 3 });
     const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
@@ -218,9 +240,82 @@ describe('出图任务', () => {
     expect(same.images).toEqual([{ seed: 100, status: 'queued' }]);
     expect(other.images).toHaveLength(1);
     expect(other.images[0].seed).not.toBe(100);
+    // 记下照着哪张出的：那一组和那张的种子
+    expect(same.source).toEqual({ kind: 'generated', jobId: first.id, seed: 100 });
+    expect(other.source).toEqual({ kind: 'generated', jobId: first.id, seed: 100 });
+    expect(first.source).toBeUndefined();
     await until(messageId, same.id, settled);
     await until(messageId, other.id, settled);
     expect((await t.ok<ChatNode>('GET', nodeUrl())).messages[messageId].images!.map((job) => job.id)).toEqual([first.id, same.id, other.id]);
+  });
+
+  it('节点还没选过底模：用这台 ComfyUI 上这个系列的第一个，记进这一组；这个系列一个底模都没有算失败', async () => {
+    const messageId = await prepare('1girl', { checkpoint: '' });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params.checkpoint).toBe('');
+    const done = await until(messageId, job.id, settled);
+    expect(done.params.checkpoint).toBe('il-test.safetensors');
+    expect(done.images[0].status).toBe('done');
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(builtinGraph(done.params, 100));
+
+    // 两个底模都标成 Pony：IL 节点没得选
+    await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });
+    const none = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, none.id, settled)).images[0]).toEqual({
+      seed: 100,
+      status: 'failed',
+      error: '这台 ComfyUI 上没有 IL 系列的底模。去设置「底模和默认值」里看看底模各标成了哪个系列',
+    });
+  });
+
+  it('卡片和首页带上出的图：画布卡片最近的在前，首页打过星的在前；正在出的算进度；最近一组全失败标出来', async () => {
+    const messageId = await prepare('1girl', { count: 2 });
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, first.id, settled);
+    const second = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, second.id, settled);
+    await t.ok('POST', `${imagesUrl(messageId)}/${first.id}/1/star`, { on: true });
+    await t.ok('POST', `${nodeUrl()}/messages/${messageId}/star`, { promptIndex: 0, on: true });
+
+    const ref = (job: ImageJob, index: number, starred = false) => ({ messageId, jobId: job.id, index, seed: 100 + index, starred });
+    const card = async () => (await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).nodes[0].generated;
+    expect(await card()).toEqual({ images: [ref(second, 0), ref(second, 1), ref(first, 0), ref(first, 1, true)], live: null, failed: false });
+    const home = await t.ok<HomeData>('GET', '/home');
+    expect(home.recentNodes[0].generated).toEqual({ images: [ref(first, 1, true), ref(second, 0), ref(second, 1), ref(first, 0)], live: null, failed: false });
+    expect(home.starred[0].image).toEqual({ family: 'IL', width: 832, height: 1216, generated: [ref(first, 1, true), ref(second, 0), ref(second, 1), ref(first, 0)] });
+
+    // 正在出：出完几张、一共几张
+    const slowId = await prepare('1girl, 慢', { count: 2 });
+    const slow = await t.ok<ImageJob>('POST', imagesUrl(slowId), { promptIndex: 0 });
+    expect((await card())!.live).toEqual({ done: 0, total: 2 });
+    await t.ok('POST', `${imagesUrl(slowId)}/${slow.id}/stop`);
+    await until(slowId, slow.id, settled);
+    expect((await card())!.failed).toBe(false);
+    // 最近一组全失败
+    await t.ok('PATCH', nodeUrl(), { image: { checkpoint: 'missing.safetensors' } });
+    const broken = await t.ok<ImageJob>('POST', imagesUrl(slowId), { promptIndex: 0 });
+    await until(slowId, broken.id, settled);
+    expect(await card()).toMatchObject({ live: null, failed: true });
+  });
+
+  it('大图旁边的文件在哪；设置里的临时文件夹：按日期分的子文件夹各有几张多大，上次下载到哪', async () => {
+    const messageId = await prepare('1girl', { count: 2 });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const done = await until(messageId, job.id, settled);
+    const temp = path.join(t.work, done.images[0].file!);
+    const whereUrl = `${imagesUrl(messageId)}/${job.id}/0/where`;
+    expect(await t.ok<ImageWhere>('GET', whereUrl)).toEqual({ temp, saved: null });
+
+    const info = await t.ok<ImageTempInfo>('GET', '/image-temp');
+    const bytes = (await Promise.all(done.images.map((image) => fs.stat(path.join(t.work, image.file!))))).reduce((sum, st) => sum + st.size, 0);
+    expect(info).toEqual({ path: path.join(t.work, 'image-temp'), days: [{ name: path.basename(path.dirname(temp)), count: 2, bytes }], lastDownload: null });
+
+    const folder = path.join(t.work, 'downloads');
+    await fs.mkdir(folder);
+    const { paths } = await t.ok('POST', '/images/download', { items: [{ canvasId, nodeId, messageId, jobId: job.id, index: 0 }], folder });
+    await fs.rm(temp);
+    expect(await t.ok<ImageWhere>('GET', whereUrl)).toEqual({ temp: null, saved: paths[0] });
+    expect((await t.ok<ImageTempInfo>('GET', '/image-temp')).lastDownload).toEqual({ folder, inLibrary: false });
   });
 
   it('打星；删一张：临时文件直接删，下载过的那份不动，一张不剩整组去掉；没出完的不让删', async () => {
@@ -345,6 +440,10 @@ describe('出图设置', () => {
 
     await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });
     expect((await t.ok<ComfyOptions>('GET', '/comfy/options')).checkpoints[0]).toEqual({ name: 'il-test.safetensors', family: 'Pony', guessed: false });
+    // null 是两个系列都不是
+    await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': null } });
+    expect((await t.ok<ComfyOptions>('GET', '/comfy/options')).checkpoints[0]).toEqual({ name: 'il-test.safetensors', family: null, guessed: false });
+    expect((await t.call('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'SD15' } })).status).toBe(400);
 
     await t.ok('PUT', '/settings', { comfy: { lanUrl: null } });
     expect(await t.ok('GET', '/comfy/status')).toEqual({ ok: false, url: null, error: '还没填局域网 ComfyUI 的地址' });

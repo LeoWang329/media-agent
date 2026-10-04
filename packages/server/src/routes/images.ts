@@ -1,15 +1,22 @@
+import type { ImageTempInfo, ImageWhere, JobImage } from '@media-agent/shared';
 import express, { type Request } from 'express';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { thumbnail } from '../assets/thumbs';
 import { copyToFolder, imageFile } from '../comfy/files';
 import type { ImageJobs, JobPlace } from '../comfy/jobs';
 import { readConfig, requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
+import { openExternal } from '../native/openExternal';
+import { revealInFolder } from '../native/reveal';
 import { isInside } from '../paths';
 import { readNode } from '../store/canvases';
 import { chosenFolder } from './assets';
 import * as v from './validate';
 
-// 出图：建任务、叫停、删一张、打星、看图、下载、推送状态，见 docs/dev-plan.md 5.19、5.20
+const isFile = async (file: string) => Boolean((await fs.stat(file).catch(() => null))?.isFile());
+
+// 出图：建任务、叫停、删一张、打星、看图、下载、推送状态、临时文件夹，见 docs/dev-plan.md 5.19、5.20
 export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router {
   const router = express.Router();
   const base = '/canvases/:canvasId/nodes/:nodeId/messages/:messageId/images';
@@ -49,6 +56,23 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
     res.sendFile(await thumbnail(configDir, (await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file));
   });
 
+  // 大图旁边显示文件在哪：临时文件夹里的、下载的那份还在不在
+  router.get(`${base}/:jobId/:index/where`, async (req, res) => {
+    const at = await place(req);
+    const { image } = await jobImage(at, String(req.params.jobId), imageIndex(req));
+    const temp = image.file ? path.join(at.work, image.file) : null;
+    const where: ImageWhere = {
+      temp: temp && (await isFile(temp)) ? temp : null,
+      saved: image.savedPath && (await isFile(image.savedPath)) ? image.savedPath : null,
+    };
+    res.json(where);
+  });
+
+  router.post(`${base}/:jobId/:index/reveal`, async (req, res) => {
+    revealInFolder((await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file);
+    res.status(204).end();
+  });
+
   // 下载：复制到选好的文件夹，记下存到哪；那个文件夹不在资产库里时 inLibrary 为假，界面上问要不要导入
   router.post('/images/download', async (req, res) => {
     const items = downloadItems(req.body?.items);
@@ -67,6 +91,37 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
     res.json({ paths, inLibrary: assetFolders.some((root) => isInside(root, folder)) });
   });
 
+  // 设置里「出的图」：临时文件夹按日期分的子文件夹各有几张、多大；上次下载到哪、在不在资产库里
+  router.get('/image-temp', async (_req, res) => {
+    const work = await requireWorkFolder(configDir);
+    const root = path.join(work, 'image-temp');
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+    const days = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const files = await fs.readdir(path.join(root, entry.name), { withFileTypes: true });
+          const sizes = await Promise.all(files.filter((f) => f.isFile()).map((f) => fs.stat(path.join(root, entry.name, f.name)).then((st) => st.size, () => 0)));
+          return { name: entry.name, count: sizes.length, bytes: sizes.reduce((a, b) => a + b, 0) };
+        }),
+    );
+    const { lastDownloadFolder, assetFolders } = await readConfig(configDir);
+    const info: ImageTempInfo = {
+      path: root,
+      days: days.sort((a, b) => b.name.localeCompare(a.name)),
+      lastDownload: lastDownloadFolder ? { folder: lastDownloadFolder, inLibrary: assetFolders.some((r) => isInside(r, lastDownloadFolder)) } : null,
+    };
+    res.json(info);
+  });
+
+  // 还没出过图时文件夹不在，先建好再打开
+  router.post('/image-temp/open', async (_req, res) => {
+    const root = path.join(await requireWorkFolder(configDir), 'image-temp');
+    await fs.mkdir(root, { recursive: true });
+    openExternal(root);
+    res.status(204).end();
+  });
+
   router.get('/image-jobs/events', (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders();
@@ -79,13 +134,18 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
   return router;
 }
 
-async function findImage(place: JobPlace, jobId: string, index: number): Promise<{ title: string; seed: number; file: string }> {
+async function jobImage(place: JobPlace, jobId: string, index: number): Promise<{ title: string; image: JobImage }> {
   const node = await readNode(place.work, place.canvasId, place.nodeId);
   const image = node.messages[place.messageId]?.images?.find((job) => job.id === jobId)?.images[index];
   if (!image) throw new HttpError(404, '找不到这张图');
+  return { title: node.title, image };
+}
+
+async function findImage(place: JobPlace, jobId: string, index: number): Promise<{ title: string; seed: number; file: string }> {
+  const { title, image } = await jobImage(place, jobId, index);
   const file = await imageFile(place.work, image);
   if (!file) throw new HttpError(404, '这张图已经清理掉了');
-  return { title: node.title, seed: image.seed, file };
+  return { title, seed: image.seed, file };
 }
 
 function againOf(value: unknown): { jobId: string; index: number; sameSeed: boolean } {

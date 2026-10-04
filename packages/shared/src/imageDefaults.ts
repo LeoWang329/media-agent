@@ -59,7 +59,8 @@ export function familyWords(defaults: FamilyDefaults): Map<string, string> {
   return words;
 }
 
-// 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张，底模等用户选
+// 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张；
+// 底模空着，出图时用这台 ComfyUI 上这个系列的第一个，见 docs/dev-plan.md 5.19
 export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
   return {
     ...DEFAULT_IMAGE_SIZE,
@@ -77,10 +78,12 @@ export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
   };
 }
 
-// 底模属于哪个系列：设置里标过的照标的；没标过的按文件名猜，名字里有 pony 的当 Pony，其他当 IL
-export function checkpointFamily(name: string, marked: Record<string, Family>): { family: Family; guessed: boolean } {
+// 底模属于哪个系列，null 是两个系列都不是：设置里标过的照标的；没标过的按文件名猜，
+// 名字里有 pony 的当 Pony，有 illustrious、noob、wai 或者单独一个 IL（IL-xxx、xxx_IL）的当 IL，别的都不是
+export function checkpointFamily(name: string, marked: Record<string, Family | null>): { family: Family | null; guessed: boolean } {
   if (Object.hasOwn(marked, name)) return { family: marked[name], guessed: false };
-  return { family: /pony/i.test(name) ? 'Pony' : 'IL', guessed: true };
+  if (/pony/i.test(name)) return { family: 'Pony', guessed: true };
+  return { family: /illustrious|noob|wai|(^|[^a-z])il([^a-z]|$)/i.test(name) ? 'IL' : null, guessed: true };
 }
 
 // 卡片上生图节点那一行：系列和尺寸。meta 是节点现在选的系统提示词的说明段，找不到提示词时为 null，当视频节点

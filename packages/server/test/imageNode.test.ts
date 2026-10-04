@@ -96,8 +96,8 @@ describe('生图节点', () => {
     await t.ok('POST', `${nodeUrl()}/messages/${reply.id}/star`, { promptIndex: 0, on: true });
     const home = await t.ok<HomeData>('GET', '/home');
     expect(home.recentNodes[0].image).toEqual({ family: 'Pony', width: 1216, height: 832 });
-    // 打过星的框看写它时用的提示词：这条回复是 pony 写的
-    expect(home.starred.map((prompt) => prompt.image)).toEqual([{ family: 'Pony' }]);
+    // 打过星的框看写它时用的提示词：这条回复是 pony 写的；尺寸是节点现在的，还没出过图
+    expect(home.starred.map((prompt) => prompt.image)).toEqual([{ family: 'Pony', width: 1216, height: 832, generated: [] }]);
 
     // 提示词删掉了：当视频节点
     await t.ok('DELETE', '/prompts/pony');

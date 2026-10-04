@@ -1,5 +1,6 @@
 import {
   activePath,
+  cardGenerated,
   cardImageInfo,
   cardSummary,
   descendantIds,
@@ -24,6 +25,8 @@ import { promptMetaReader } from './prompts';
 // fork 出的节点放在原节点右侧、已有子节点的下方（卡片宽 264，横向留 80 的空）
 const FORK_OFFSET_X = 344;
 const FORK_OFFSET_Y = 230;
+// 生图节点卡片上最多显示几张出的图
+const CARD_IMAGES = 5;
 
 const now = () => new Date().toISOString();
 const canvasDir = (work: string, canvasId: string) => path.join(work, 'canvases', canvasId);
@@ -89,6 +92,7 @@ export async function canvasDetail(work: string, canvasId: string, isGenerating:
     duration: node.duration,
     aspectRatio: node.aspectRatio,
     image: cardImageInfo(node, metas[i]),
+    generated: cardGenerated(node, CARD_IMAGES),
     ...cardSummary(node),
     starred: starred.has(node.id),
     failed: Boolean(activePath(node).at(-1)?.error),

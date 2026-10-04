@@ -25,9 +25,12 @@ function comboOptions(info: ObjectInfo, nodeType: string, input: string): string
   return spec[0] === 'COMBO' && Array.isArray(options) ? options.map(String) : [];
 }
 
-export function comfyOptions(info: ObjectInfo, marked: Record<string, Family>): ComfyOptions {
+// 这台 ComfyUI 上的底模文件名
+export const comfyCheckpoints = (info: ObjectInfo) => comboOptions(info, 'CheckpointLoaderSimple', 'ckpt_name');
+
+export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | null>): ComfyOptions {
   return {
-    checkpoints: comboOptions(info, 'CheckpointLoaderSimple', 'ckpt_name').map((name) => ({ name, ...checkpointFamily(name, marked) })),
+    checkpoints: comfyCheckpoints(info).map((name) => ({ name, ...checkpointFamily(name, marked) })),
     loras: comboOptions(info, 'LoraLoader', 'lora_name'),
     samplers: comboOptions(info, 'KSampler', 'sampler_name'),
     schedulers: comboOptions(info, 'KSampler', 'scheduler'),

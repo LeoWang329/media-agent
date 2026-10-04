@@ -77,12 +77,13 @@ function parseComfy(value: unknown): Partial<SharedSettings['comfy']> {
   return { lanUrl: trimmed || null };
 }
 
-function parseCheckpoints(value: unknown): Record<string, Family> {
+// 底模文件名 → 系列；null 是两个系列都不是
+function parseCheckpoints(value: unknown): Record<string, Family | null> {
   const fields = object(value, '底模的系列');
   for (const family of Object.values(fields)) {
-    if (!FAMILIES.includes(family as Family)) throw new HttpError(400, '底模的系列只能是 IL 或 Pony');
+    if (family !== null && !FAMILIES.includes(family as Family)) throw new HttpError(400, '底模的系列只能是 IL、Pony，或者 null 表示两个都不是');
   }
-  return fields as Record<string, Family>;
+  return fields as Record<string, Family | null>;
 }
 
 // 各系列的默认值，只改带了的项
