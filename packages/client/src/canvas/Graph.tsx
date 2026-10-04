@@ -237,7 +237,7 @@ const GraphNode = memo(
     return (
       <div
         ref={register}
-        className={`gnode${selected ? ' is-selected' : ''}${dragging ? ' is-dragging' : ''}${fresh ? ' is-new' : ''}`}
+        className={`gnode${n.image ? ' is-image' : ''}${selected ? ' is-selected' : ''}${dragging ? ' is-dragging' : ''}${fresh ? ' is-new' : ''}`}
         data-id={n.id}
         data-od-id={`graph-node-${n.id}`}
         data-testid="node-card"
@@ -286,10 +286,15 @@ const GraphNode = memo(
           )}
         </div>
         <div className="gn-foot">
-          {n.image && (
+          {n.image ? (
             <span className="tag tag-outline gn-kind">
               <Icon name="sparkles" />
               生图{n.image.family ? ` · ${n.image.family}` : ''}
+            </span>
+          ) : (
+            <span className="tag tag-outline gn-kind">
+              <Icon name="film" />
+              视频
             </span>
           )}
           {n.generated?.live ? (

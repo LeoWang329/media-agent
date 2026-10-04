@@ -44,6 +44,9 @@ export type PromptMeta = { use: 'video' | 'image'; family: Family | null; body: 
 // GET /api/prompts 列表里的一项
 export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family | null };
 
+// 节点是视频节点还是生图节点，和系统提示词的两种用途对应，见 docs/dev-plan.md 5.23
+export type NodeKind = PromptMeta['use'];
+
 // 两份固定格式要求：视频节点的、生图节点的
 export type FormatRequirements = { video: string; image: string };
 
@@ -408,7 +411,8 @@ export type ChatNode = {
   forkedFromMessageId: string | null;
   copiedCount?: number; // 岔出时从原节点复制来几条消息（之前岔出的节点没记）
   modelConfigId: string;
-  systemPromptName: string;
+  kind: NodeKind; // 建的时候定，之后不能改；没记的老节点读的时候按系统提示词补上
+  systemPromptName: string; // 只能是这种节点用的
   slots: string[];
   duration: number;
   aspectRatio: AspectRatio;

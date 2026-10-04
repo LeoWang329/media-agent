@@ -103,10 +103,10 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const modelConfig = modelConfigs.find((m) => m.id === node.modelConfigId);
       if (!modelConfig) throw new Error('这个节点没有可用的模型配置，请在面板顶部选一个');
       const prompt = await snapshotPrompt(work, node.systemPromptName);
-      // 开头的说明段不发给模型；生图提示词接生图的格式要求
+      // 开头的说明段不发给模型；生图节点接生图的格式要求
       const meta = parsePromptMeta(prompt.text);
       const path = ancestorsOf(node, assistant.parentId!);
-      const messages = composeMessages(path, meta.body, await readFormatRequirement(meta.use), await llmImageUrls(work, canvasId, path));
+      const messages = composeMessages(path, meta.body, await readFormatRequirement(node.kind), await llmImageUrls(work, canvasId, path));
       const level = thinkingLevelFor((await readSettings(work)).thinking, 'chat');
       assistant = { ...assistant, modelName: thinkingRequest(modelConfig, level).model, systemPromptHash: prompt.hash };
 

@@ -23,12 +23,18 @@ import { useCanvasStore } from '../store/canvasStore';
 import { watchImageJobs } from '../store/comfyStore';
 import { clockSeconds } from '../ui/format';
 import { Icon } from '../ui/Icon';
-import { showMenu } from '../ui/menu';
+import { showMenu, type MenuItem } from '../ui/menu';
 import { RenameInput } from '../ui/RenameInput';
 import { SaveState } from '../ui/saveState';
 import { ThemeToggle, toggleTheme } from '../ui/theme';
 
 // 画布工作台：节点图铺满整个窗口，工具浮在四角，右边滑出节点对话面板
+// 新建节点先选是视频节点还是生图节点，建好就不能换，见 docs/dev-plan.md 5.23
+const NEW_NODE_MENU: MenuItem[] = [
+  { label: '视频节点', icon: 'film', onClick: () => void addRootNode('video') },
+  { label: '生图节点', icon: 'sparkles', onClick: () => void addRootNode('image') },
+];
+
 export function Canvas() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -155,7 +161,7 @@ export function Canvas() {
       </header>
 
       <nav className="ws-float ws-tools" id="tools" aria-label="画布工具" data-od-id="canvas-tools">
-        <button type="button" className="btn btn-ghost" id="btnNewNode" data-od-id="btn-new-node" onClick={() => void addRootNode()}>
+        <button type="button" className="btn btn-ghost" id="btnNewNode" data-od-id="btn-new-node" aria-haspopup="menu" onClick={(e) => showMenu(e.currentTarget, NEW_NODE_MENU, 'left')}>
           <Icon name="plus" />
           <span className="hide-sm">新建节点</span>
         </button>

@@ -1,5 +1,6 @@
 import {
   activePath,
+  aspectRatioText,
   hasUnsentSettings,
   messageCost,
   formatCost,
@@ -21,7 +22,7 @@ import { chatThinkingLevel } from '../ui/thinking';
 import { toast } from '../ui/toast';
 import { copiedCount, splitError } from './nodeInfo';
 import { useOverlays } from './overlays';
-import { promptUse, usePromptInfo } from './imageNode';
+import { usePromptInfo } from './imageNode';
 import { PromptBox } from './PromptBox';
 import { TagBox } from './TagBox';
 import { Markdown, tokens } from './tokens';
@@ -140,7 +141,6 @@ export function Thread({ node }: { node: ChatNode }) {
 
 // 同一位置有多个版本时显示 ‹ 1/2 ›；切过去后那时候的槽位、时长、比例跟着回来
 function VersionSwitch({ node, message, busy }: { node: ChatNode; message: Message; busy: boolean }) {
-  const use = promptUse(usePromptInfo(node.systemPromptName));
   const versions = shownVersions(node, message);
   if (versions.length < 2) return null;
   const index = versions.findIndex((v) => v.id === message.id);
@@ -150,7 +150,7 @@ function VersionSwitch({ node, message, busy }: { node: ChatNode; message: Messa
     const target = versions[to];
     const settings = switchChangesSettings(node, target.id);
     if (settings && hasUnsentSettings(node)) {
-      const note = slotDiff(activePath(node).at(-1)!, node, use).systemNote ?? '';
+      const note = slotDiff(activePath(node).at(-1)!, node, node.kind).systemNote ?? '';
       const ok = await confirmBox({
         title: '有改动还没发出去',
         body: (
@@ -249,7 +249,8 @@ function UserMessage({ node, message, ro, busy, images, editing, onEdit }: UserP
           </div>
         )}
         <div className="meta" style={{ marginTop: 8 }}>
-          这条带了 {imgs.length} 张图 · {message.duration} 秒 · {message.aspectRatio === 'auto' ? '自动' : message.aspectRatio}
+          这条带了 {imgs.length} 张图
+          {node.kind === 'video' && ` · ${message.duration} 秒 · ${aspectRatioText(message.aspectRatio)}`}
         </div>
       </div>
     </div>

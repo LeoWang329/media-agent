@@ -18,6 +18,7 @@ import {
   type ImageRecord,
   type ImageSettings,
   type ModelConfigWithKey,
+  type NodeKind,
   type PromptInfo,
   type PromptTranslation,
   type SharedSettings,
@@ -80,7 +81,7 @@ type CanvasState = {
   select: (nodeId: string | null) => Promise<void>;
   loadNode: (nodeId: string) => Promise<ChatNode>;
   renameCanvas: (title: string) => Promise<void>;
-  createNode: (x: number, y: number) => Promise<ChatNode | undefined>;
+  createNode: (x: number, y: number, kind: NodeKind) => Promise<ChatNode | undefined>;
   // 下面几个返回服务端改成没有，改成了再弹提示
   patchNode: (nodeId: string, patch: NodePatch) => Promise<boolean>;
   patchesSaved: () => Promise<void>; // 排着队的节点改动都存好了（成没成都算）
@@ -544,9 +545,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         set((s) => (s.detail ? { detail: { ...s.detail, canvas: { ...s.detail.canvas, title: canvas.title, updatedAt: canvas.updatedAt } } } : {}));
       }),
 
-    createNode: (x, y) =>
+    createNode: (x, y, kind) =>
       attempt(async () => {
-        const node = await write<ChatNode>(`${canvasUrl()}/nodes`, 'POST', { x, y });
+        const node = await write<ChatNode>(`${canvasUrl()}/nodes`, 'POST', { x, y, kind });
         setNode(node);
         await refreshCanvas();
         set({ selectedId: node.id });

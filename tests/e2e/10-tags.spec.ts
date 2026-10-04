@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { cards, lastReply, newCanvasWithNode, panel, send, setupWorkFolder, toasts } from './helpers';
+import { cards, lastReply, newCanvasWithNode, newNode, panel, send, setupWorkFolder, toasts } from './helpers';
 
 const copied = async (page: Page) => (await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, '\n');
 
@@ -14,23 +14,15 @@ test.beforeAll(async ({ playwright }) => {
   await setupWorkFolder(playwright);
 });
 
-// 面板上的系统提示词换成 il，节点变成生图节点
-async function useIl(page: Page) {
-  await panel(page).locator('#cfgSys').selectOption('il');
-  await expect(toasts(page).filter({ hasText: '这个节点变成生图节点' })).toBeVisible();
-}
-
 // 在编辑窗最后打字
 async function typeAtEnd(page: Page, text: string) {
   await page.locator('#teInput').press('Control+End');
   await page.keyboard.type(text);
 }
 
-test('10.3 第 2 条：系统提示词选 il → 面板是尺寸和张数 → 框里的标签是小块，别名注明原来的写法，不认识的点开换掉 → 复制拿到的是换好的', async ({ page, context }) => {
+test('10.3 第 2 条：新建生图节点 → 面板是尺寸和张数 → 框里的标签是小块，别名注明原来的写法，不认识的点开换掉 → 复制拿到的是换好的', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await newCanvasWithNode(page, '生图标签');
-  await expect(panel(page).locator('#durVal')).toBeVisible();
-  await useIl(page);
+  await newCanvasWithNode(page, '生图标签', '生图节点');
   await expect(panel(page).locator('#durVal')).toHaveCount(0);
   await expect(panel(page).getByLabel('画面比例')).toHaveCount(0);
   await expect(panel(page).getByLabel('图的尺寸')).toHaveValue('832×1216');
@@ -68,8 +60,7 @@ test('10.3 第 2 条：系统提示词选 il → 面板是尺寸和张数 → �
 
 test('10.3 第 3 条：编辑窗里打「金发」选第一个候选、拖到最前、权重调到 1.2、存 → 复制以它开头；再打一句中文让 AI 转成标签', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await newCanvasWithNode(page, '标签编辑窗');
-  await useIl(page);
+  await newCanvasWithNode(page, '标签编辑窗', '生图节点');
   await send(page, '写一个');
 
   await box(page).locator('[data-act="editTags"]').click();
@@ -128,8 +119,7 @@ test('10.3 第 3 条：编辑窗里打「金发」选第一个候选、拖到最
 });
 
 test('10.3 第 4 条：挑两个小块存成片段 → 另一个生图节点的编辑窗里搜到、插进来 → 设置的片段库里有，删掉后搜不到', async ({ page }) => {
-  await newCanvasWithNode(page, '片段');
-  await useIl(page);
+  await newCanvasWithNode(page, '片段', '生图节点');
   await send(page, '写一个');
 
   await box(page).locator('[data-act="editTags"]').click();
@@ -148,9 +138,8 @@ test('10.3 第 4 条：挑两个小块存成片段 → 另一个生图节点的�
   await editor(page).getByRole('button', { name: '放弃' }).click();
 
   // 另一个生图节点
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await newNode(page, '生图节点');
   await expect(cards(page)).toHaveCount(2);
-  await useIl(page);
   await send(page, '写一个');
   await box(page).locator('[data-act="editTags"]').click();
   await expect(chips(page)).toHaveCount(7);
@@ -188,7 +177,7 @@ test('10.3 第 4 条：挑两个小块存成片段 → 另一个生图节点的�
 test('设置：系统提示词分视频和生图两组，生图的标着系列；固定格式要求两份都能看；词库显示概况', async ({ page }) => {
   await page.goto('/settings#prompts');
   const list = page.locator('#pList');
-  await expect(list.locator('.li-sep')).toHaveText(['写视频提示词', '写生图标签 · 节点选了这些就变成生图节点']);
+  await expect(list.locator('.li-sep')).toHaveText(['写视频提示词 · 视频节点用', '写生图标签 · 生图节点用']);
   await expect(list.locator('[data-prompt]')).toHaveText([/^ref2va/, /^i2v/, /^t2v/, /^il/, /^pony/]);
   await expect(list.locator('[data-prompt="il"] .tag-outline')).toHaveText('生图 · IL');
   await expect(list.locator('[data-prompt="pony"] .tag-outline')).toHaveText('生图 · Pony');

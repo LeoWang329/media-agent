@@ -12,6 +12,8 @@ import {
   type CanvasImage,
   type CanvasNodeLayout,
   type ChatNode,
+  type NodeKind,
+  type PromptMeta,
 } from '@media-agent/shared';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -20,7 +22,7 @@ import { HttpError } from '../httpError';
 import { readImages } from './images';
 import { readJson, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
-import { promptMetaReader } from './prompts';
+import { promptMetaReader, readPromptMeta } from './prompts';
 
 // fork 出的节点放在原节点右侧、已有子节点的下方（卡片宽 264，横向留 80 的空）
 const FORK_OFFSET_X = 344;
@@ -65,11 +67,19 @@ export function updateCanvas(work: string, canvasId: string, change: (canvas: Ca
   });
 }
 
+// 没记类型的老节点按现在用的系统提示词归类：生图提示词的算生图节点，别的（包括提示词已经不在了的）算视频节点。
+// 读的时候补上，下次存的时候写进文件，见 docs/dev-plan.md 5.23
+async function withKind(node: ChatNode, metaOf: (name: string) => Promise<PromptMeta | null>): Promise<ChatNode> {
+  if (node.kind) return node;
+  return { ...node, kind: (await metaOf(node.systemPromptName))?.use === 'image' ? 'image' : 'video' };
+}
+
 export async function listNodes(work: string, canvasId: string): Promise<ChatNode[]> {
   const dir = nodesDir(work, canvasId);
   const files = (await fs.readdir(dir)).filter((file) => file.endsWith('.json'));
   const nodes = await Promise.all(files.map((file) => readJson<ChatNode>(path.join(dir, file))));
-  return nodes.filter((node): node is ChatNode => node !== null);
+  const metaOf = promptMetaReader(work);
+  return Promise.all(nodes.filter((node): node is ChatNode => node !== null).map((node) => withKind(node, metaOf)));
 }
 
 const exists = (file: string) => fs.access(file).then(() => true, () => false);
@@ -131,7 +141,7 @@ export async function restoreCanvas(work: string, trash: string): Promise<string
 export async function readNode(work: string, canvasId: string, nodeId: string): Promise<ChatNode> {
   const node = await readJson<ChatNode>(nodeFile(work, canvasId, nodeId));
   if (!node) throw new HttpError(404, '找不到这个节点');
-  return node;
+  return withKind(node, (name) => readPromptMeta(work, name));
 }
 
 export function updateNode(work: string, canvasId: string, nodeId: string, change: (node: ChatNode) => ChatNode): Promise<ChatNode> {
@@ -145,7 +155,7 @@ export function updateNode(work: string, canvasId: string, nodeId: string, chang
 export async function createNode(
   work: string,
   canvasId: string,
-  fields: { x: number; y: number; modelConfigId: string; systemPromptName: string },
+  fields: { x: number; y: number; modelConfigId: string; kind: NodeKind; systemPromptName: string },
 ): Promise<ChatNode> {
   await readCanvas(work, canvasId);
   const time = now();
@@ -157,6 +167,7 @@ export async function createNode(
     parentNodeId: null,
     forkedFromMessageId: null,
     modelConfigId: fields.modelConfigId,
+    kind: fields.kind,
     systemPromptName: fields.systemPromptName,
     slots: [],
     duration: 8,
@@ -189,6 +200,7 @@ export async function forkNode(work: string, canvasId: string, sourceId: string,
     forkedFromMessageId: messageId,
     copiedCount: Object.keys(chain.messages).length,
     modelConfigId: source.modelConfigId,
+    kind: source.kind,
     systemPromptName: source.systemPromptName,
     slots: chain.slots,
     duration: chain.duration,

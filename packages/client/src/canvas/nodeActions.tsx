@@ -1,4 +1,4 @@
-import { activePath, type CanvasNodeLayout, type NodeSummary } from '@media-agent/shared';
+import { activePath, type CanvasNodeLayout, type NodeKind, type NodeSummary } from '@media-agent/shared';
 import { create } from 'zustand';
 import { useCanvasStore } from '../store/canvasStore';
 import { confirmBox } from '../ui/confirm';
@@ -114,10 +114,10 @@ export function drawerMenu(nodeId: string): MenuItem[] {
 }
 
 // 新建的根节点排在最下面那个根节点下方，建好后挪进视野
-export async function addRootNode() {
+export async function addRootNode(kind: NodeKind) {
   const roots = summaries().filter((n) => !n.parentNodeId);
   const y = roots.reduce((max, n) => Math.max(max, n.y), 0) + 260;
-  const node = await store().createNode(0, y);
+  const node = await store().createNode(0, y, kind);
   if (node) setTimeout(() => ensureVisible({ x: 0, y }), 60);
 }
 

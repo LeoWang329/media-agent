@@ -34,8 +34,7 @@ beforeEach(async () => {
   await fs.writeFile(path.join(t.work, 'tags', 'info.json'), '{ "updatedAt": "2026-09-01" }');
   await t.ok('PUT', '/prompts/il', { text: '---\n用途: 生图\n底模: IL\n---\n只写标签' });
   canvasId = (await t.ok('POST', '/canvases', { title: '出图' })).id;
-  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0 })).id;
-  await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
+  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0, kind: 'image' })).id;
   replyId = ((await t.stream(`${nodeUrl()}/send`, { parentId: null, text: '写一个' })).at(-1) as { message: Message }).message.id;
   await t.ok('PATCH', nodeUrl(), { image: { checkpoint: 'il-test.safetensors', count: 1, seed: 100 } });
 });

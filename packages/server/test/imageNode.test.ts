@@ -32,6 +32,11 @@ afterEach(async () => {
   await t.cleanup();
 });
 
+// 在同一个画布上新建一个生图节点（用 il），后面的请求都对着它
+async function useImageNode(): Promise<void> {
+  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 300, kind: 'image' })).id;
+}
+
 async function send(text: string): Promise<Message> {
   const events = await t.stream(`${nodeUrl()}/send`, { parentId: null, text });
   return (events.at(-1) as { message: Message }).message;
@@ -51,7 +56,8 @@ describe('生图节点', () => {
     try {
       const config = await t.ok<Config>('GET', '/config');
       await t.ok('PUT', '/config', { modelConfigs: [...config.modelConfigs, { ...config.modelConfigs[0], id: 'capture', name: 'capture', baseUrl: `${urlOf(server)}/v1` }] });
-      await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il', modelConfigId: 'capture', duration: 12 });
+      await useImageNode();
+      await t.ok('PATCH', nodeUrl(), { modelConfigId: 'capture', duration: 12 });
       await send('写一个');
 
       const [system, user] = requests[0].messages;
@@ -67,10 +73,11 @@ describe('生图节点', () => {
     }
   });
 
-  it('mock 回一串标签；改了时长再发，说明里也不提时长；换回视频提示词，说明照旧写时长', async () => {
+  it('mock 回一串标签；改了时长再发，说明里也不提时长；视频节点的说明照旧写时长', async () => {
     const reply = async (parentId: string, text: string) =>
       ((await t.stream(`${nodeUrl()}/send`, { parentId, text })).at(-1) as { message: Message }).message;
-    await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
+    const videoId = nodeId;
+    await useImageNode();
     const first = await send('写一个');
     expect(first.parsed).toMatchObject({ title: '测试图片', prompts: [{ text: '1girl, solo, long hair, blond hair, goldish hair, smile, hatsune miku' }] });
 
@@ -78,15 +85,18 @@ describe('生图节点', () => {
     const second = await reply(first.id, '改一下');
     expect(second.text).toContain('说明：改一下');
 
-    await t.ok('PATCH', nodeUrl(), { systemPromptName: 'ref2va', duration: 10 });
-    const video = await reply(second.id, '换成视频');
+    nodeId = videoId;
+    await t.ok('PATCH', nodeUrl(), { duration: 10 });
+    const video = await send('写一个视频');
     expect(video.text).toContain('<title>测试标题</title>');
-    expect(video.text).toContain('说明：视频时长改为 10 秒。');
+    expect(video.text).toContain('说明：本次没有参考图。视频时长 10 秒');
   });
 
   it('卡片上生图节点带系列和尺寸，没改过的是 832×1216；视频节点没有；首页最近动过的节点和打过星的框也带', async () => {
-    const card = async () => (await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).nodes[0].image;
+    const card = async () => (await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).nodes.find((n) => n.id === nodeId)!.image;
     expect(await card()).toBeNull();
+    await useImageNode();
+    expect(await card()).toEqual({ family: 'IL', width: 832, height: 1216 });
     await t.ok('PATCH', nodeUrl(), { systemPromptName: 'pony' });
     expect(await card()).toEqual({ family: 'Pony', width: 832, height: 1216 });
     await t.ok('PATCH', nodeUrl(), { image: { width: 1216, height: 832 } });
@@ -99,9 +109,9 @@ describe('生图节点', () => {
     // 打过星的框看写它时用的提示词：这条回复是 pony 写的；尺寸是节点现在的，还没出过图
     expect(home.starred.map((prompt) => prompt.image)).toEqual([{ family: 'Pony', width: 1216, height: 832, generated: [] }]);
 
-    // 提示词删掉了：当视频节点
+    // 提示词删掉了：还是生图节点，看不出系列
     await t.ok('DELETE', '/prompts/pony');
-    expect(await card()).toBeNull();
+    expect(await card()).toEqual({ family: null, width: 1216, height: 832 });
   });
 
   it('自己写的框：不调模型，接在最后，标着自己写的，不能重答；之后发消息时当成用户说的话发给模型', async () => {
@@ -116,7 +126,8 @@ describe('生图节点', () => {
     try {
       const config = await t.ok<Config>('GET', '/config');
       await t.ok('PUT', '/config', { modelConfigs: [...config.modelConfigs, { ...config.modelConfigs[0], id: 'capture', name: 'capture', baseUrl: `${urlOf(server)}/v1` }] });
-      await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il', modelConfigId: 'capture' });
+      await useImageNode();
+      await t.ok('PATCH', nodeUrl(), { modelConfigId: 'capture' });
 
       const node = await t.ok<ChatNode>('POST', `${nodeUrl()}/handwritten`, { parentId: null, text: '1girl, solo, red hair' });
       const written = node.messages[node.activeChildOf.root];
@@ -145,6 +156,45 @@ describe('生图节点', () => {
   });
 });
 
+describe('节点类型', () => {
+  it('新建时定类型：不说是视频节点，用 ref2va；生图节点用 il，il 删了用排在最前的生图提示词，一套都没有建不了', async () => {
+    const create = (body: object) => t.call<ChatNode>('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0, ...body });
+    expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'video', systemPromptName: 'ref2va' });
+    expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'il' });
+    await t.ok('DELETE', '/prompts/il');
+    expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'pony' });
+    await t.ok('DELETE', '/prompts/pony');
+    expect(await create({ kind: 'image' })).toMatchObject({ status: 400, body: { error: '设置里还没有生图用的系统提示词' } });
+    expect(await create({ kind: 'audio' })).toMatchObject({ status: 400, body: { error: '节点类型只能是 video 或 image' } });
+  });
+
+  it('系统提示词只能换成同一种的；岔出来的节点和原节点同一种', async () => {
+    expect(await t.call('PATCH', nodeUrl(), { systemPromptName: 'il' })).toMatchObject({ status: 400, body: { error: '视频节点只能选写视频提示词的系统提示词' } });
+    await t.ok('PATCH', nodeUrl(), { systemPromptName: 't2v' });
+    await useImageNode();
+    expect(await t.call('PATCH', nodeUrl(), { systemPromptName: 'ref2va' })).toMatchObject({ status: 400, body: { error: '生图节点只能选生图用的系统提示词' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { systemPromptName: 'pony' })).toMatchObject({ kind: 'image', systemPromptName: 'pony' });
+    const reply = await send('写一个');
+    expect(await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: reply.id })).toMatchObject({ kind: 'image', systemPromptName: 'pony' });
+  });
+
+  it('没记类型的老节点按现在用的系统提示词归类，下次存的时候写进文件；提示词已经不在了的算视频节点', async () => {
+    const file = path.join(t.work, 'canvases', canvasId, 'nodes', `${nodeId}.json`);
+    const old = async (systemPromptName: string) => {
+      const { kind, ...rest } = JSON.parse(await fs.readFile(file, 'utf8')) as ChatNode;
+      await fs.writeFile(file, JSON.stringify({ ...rest, systemPromptName }));
+    };
+    await old('pony');
+    expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'image' });
+    expect((await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).nodes[0].image).toEqual({ family: 'Pony', width: 832, height: 1216 });
+    await t.ok('PATCH', nodeUrl(), { title: '老节点' });
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).kind).toBe('image');
+
+    await old('gone');
+    expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'video' });
+  });
+});
+
 describe('标签', () => {
   it('校验时这个系列的固定开头和评级词算认识，中文那行写质量词、评级词', async () => {
     const checks = await t.ok<TagCheck[]>('POST', '/tags/check', { tags: ['score_9', 'rating_safe', 'sitting', 'masterpiece'], family: 'Pony' });
@@ -160,7 +210,7 @@ describe('标签', () => {
     const convert = (text: string) => t.call<TagConvertResult>('POST', '/tags/convert', { canvasId, nodeId, text });
     expect((await convert('坐在窗边看书')).body).toEqual({ error: '这个节点用的不是生图提示词' });
 
-    await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
+    await useImageNode();
     const { body } = await convert('坐在窗边看书');
     expect(body.text).toBe('sitting, window, book, reading');
     expect(body.checks.map((check) => [check.status, check.tag])).toEqual([

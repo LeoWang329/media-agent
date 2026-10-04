@@ -39,7 +39,7 @@ import {
 } from '../store/canvases';
 import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
-import { DEFAULT_PROMPT, listPrompts, readPromptMeta } from '../store/prompts';
+import { DEFAULT_PROMPT, defaultPromptFor, readPromptMeta } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import * as v from './validate';
 
@@ -87,15 +87,18 @@ export function canvasRoutes(configDir: string): express.Router {
     res.json({ trash: await trashCanvas(w, canvasId) });
   });
 
-  // 新建空节点：模型配置取第一个，系统提示词取 default
+  // 新建空节点：视频节点或生图节点，不说是视频节点；模型配置取第一个，系统提示词取这种节点默认的那套
   router.post('/canvases/:canvasId/nodes', async (req, res) => {
     const w = await work();
-    const [{ modelConfigs }, prompts] = await Promise.all([readConfig(configDir), listPrompts(w)]);
+    const kind = req.body?.kind === undefined ? 'video' : v.nodeKind(req.body.kind);
+    const [{ modelConfigs }, prompt] = await Promise.all([readConfig(configDir), defaultPromptFor(w, kind)]);
+    if (!prompt && kind === 'image') throw new HttpError(400, '设置里还没有生图用的系统提示词');
     const node = await createNode(w, v.uuid(req.params.canvasId), {
       x: v.finiteNumber(req.body?.x, '节点位置'),
       y: v.finiteNumber(req.body?.y, '节点位置'),
       modelConfigId: modelConfigs[0]?.id ?? '',
-      systemPromptName: prompts.includes(DEFAULT_PROMPT) ? DEFAULT_PROMPT : (prompts[0] ?? DEFAULT_PROMPT),
+      kind,
+      systemPromptName: prompt ?? DEFAULT_PROMPT,
     });
     res.status(201).json(node);
   });
@@ -109,6 +112,11 @@ export function canvasRoutes(configDir: string): express.Router {
     const { canvasId, nodeId } = ids(req);
     const w = await work();
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // 节点的类型建好就定了，系统提示词只能换成这种节点用的
+    if (typeof body.systemPromptName === 'string') {
+      const [node, meta] = await Promise.all([readNode(w, canvasId, nodeId), readPromptMeta(w, body.systemPromptName)]);
+      if ((meta?.use ?? 'video') !== node.kind) throw new HttpError(400, node.kind === 'image' ? '生图节点只能选生图用的系统提示词' : '视频节点只能选写视频提示词的系统提示词');
+    }
     // 改出图设置：节点还没改过的，先按它系列的默认值补全
     let imageBase: ImageSettings | undefined;
     if (body.image !== undefined) {
@@ -146,12 +154,11 @@ export function canvasRoutes(configDir: string): express.Router {
     const text = v.nonEmptyText(req.body?.text, '消息');
     const parentId: string | null = req.body?.parentId ?? null;
     const w = await work();
-    const use = (await readPromptMeta(w, (await readNode(w, canvasId, nodeId)).systemPromptName))?.use;
     await runGeneration({ configDir, work: w, canvasId, nodeId }, res, (node) => {
       const parent = parentId === null ? null : node.messages[parentId];
       if (parent === undefined) throw new HttpError(404, '找不到要接着回复的那条消息');
       // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明；生图节点不说时长和比例
-      const { systemNote, attachments } = slotDiff(parent, node, use);
+      const { systemNote, attachments } = slotDiff(parent, node, node.kind);
       const userMessage: Message = {
         id: randomUUID(),
         parentId,

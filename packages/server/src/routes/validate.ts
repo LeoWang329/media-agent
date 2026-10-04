@@ -8,6 +8,7 @@ import {
   type DetailPass,
   type ImageRating,
   type ImageSettings,
+  type NodeKind,
   type TranslateLanguage,
   type UpscaleSettings,
 } from '@media-agent/shared';
@@ -83,6 +84,11 @@ export function duration(value: unknown): number {
 export function language(value: unknown): TranslateLanguage {
   if (!TRANSLATE_LANGUAGES.includes(value as TranslateLanguage)) throw new HttpError(400, `翻译语言只能是${TRANSLATE_LANGUAGES.join('、')}`);
   return value as TranslateLanguage;
+}
+
+export function nodeKind(value: unknown): NodeKind {
+  if (value !== 'video' && value !== 'image') throw new HttpError(400, '节点类型只能是 video 或 image');
+  return value;
 }
 
 export function aspectRatio(value: unknown): AspectRatio {

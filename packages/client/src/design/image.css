@@ -92,6 +92,9 @@ details.think[open] > summary .chev { transform: rotate(180deg); }
 
 /* ─── 画布和首页的生图节点卡片、首页打过星的生图框 ─── */
 .gn-kind .icon { width: 11px; height: 11px; }
+/* 画布上的生图节点边框是紫色，选中时照旧是选中的样子 */
+.gnode.is-image:not(.is-selected) { border-color: color-mix(in oklch, var(--image) 60%, var(--border)); }
+.gnode.is-image:not(.is-selected):hover { border-color: var(--image); }
 .hm-kind { flex: none; height: 20px; padding: 0 6px; font-size: 11px; gap: 3px; }
 .hm-kind .icon { width: 12px; height: 12px; }
 .hm-star-top { display: flex; align-items: center; gap: 6px; min-width: 0; }

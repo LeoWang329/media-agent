@@ -11,7 +11,7 @@ import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
-import { effectiveCheckpoint, imageSize, promptUse, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
+import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
 
@@ -26,7 +26,7 @@ const misfitNote = (image: { width: number; height: number }) => `尺寸不符�
 // 面板底部：没发出的改动、参考图槽位、时长比例（生图节点是尺寸和张数）、输入框
 export function Dock({ node }: { node: ChatNode }) {
   const fileInput = useRef<HTMLInputElement>(null);
-  const use = promptUse(usePromptInfo(node.systemPromptName));
+  const use = node.kind;
   return (
     <footer className={`dr-dock${use === 'image' ? ' is-image' : ''}`} data-od-id="composer-dock">
       <Pending node={node} use={use} />

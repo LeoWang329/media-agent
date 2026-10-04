@@ -60,8 +60,7 @@ beforeEach(async () => {
   await t.ok('PUT', '/settings', { comfy: { lanUrl: comfyUrl } });
   await t.ok('PUT', '/prompts/il', { text:'---\n用途: 生图\n底模: IL\n---\n只写标签' });
   canvasId = (await t.ok('POST', '/canvases', { title: '出图' })).id;
-  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0 })).id;
-  await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il' });
+  nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0, kind: 'image' })).id;
   const events = await t.stream(`${nodeUrl()}/send`, { parentId: null, text: '写一个' });
   replyId = (events.at(-1) as { message: Message }).message.id;
 });

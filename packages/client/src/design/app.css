@@ -15,6 +15,7 @@ html[data-theme="light"] {
   --warn:   oklch(62% 0.15 55);
   --danger: oklch(56% 0.19 25);
   --star:   oklch(72% 0.16 85);
+  --image:  oklch(56% 0.17 300);
 
   --canvas-bg: oklch(97.5% 0.003 250);
   --shadow-pop: 0 1px 2px oklch(20% 0.02 250 / 0.06), 0 12px 32px -8px oklch(20% 0.02 250 / 0.18);
@@ -34,6 +35,7 @@ html[data-theme="dark"] {
   --warn:   oklch(77% 0.14 60);
   --danger: oklch(69% 0.18 25);
   --star:   oklch(84% 0.16 88);
+  --image:  oklch(72% 0.14 300);
 
   --canvas-bg: oklch(13% 0.007 255);
   --shadow-pop: 0 1px 0 oklch(100% 0 0 / 0.04) inset, 0 16px 40px -8px oklch(0% 0 0 / 0.6);

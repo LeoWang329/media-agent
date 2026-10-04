@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { MOCK_AUTODL_TOKEN, MOCK_AUTODL_UUID } from '../../tools/mock-comfyui/src/autodl';
 import { E2E_WORK_FOLDER, MOCK_COMFY_PORT } from './env';
-import { assetsDialog, assetTile, cards, cardTitled, drawerTitle, filledSlots, lastReply, newCanvasWithNode, panel, send, setupWorkFolder, toasts } from './helpers';
+import { assetsDialog, assetTile, cards, cardTitled, drawerTitle, filledSlots, lastReply, newCanvasWithNode, newNode, panel, send, setupWorkFolder, toasts } from './helpers';
 
 const COMFY_URL = `http://127.0.0.1:${MOCK_COMFY_PORT}`;
 
@@ -33,11 +33,6 @@ test.beforeAll(async ({ playwright }) => {
 // 第 5 条之后的用例直接用接口填好局域网 ComfyUI 的地址
 async function useMockComfy(page: Page) {
   expect((await page.request.put('/api/settings', { data: { comfy: { lanUrl: COMFY_URL } } })).ok()).toBe(true);
-}
-
-async function useIl(page: Page) {
-  await panel(page).locator('#cfgSys').selectOption('il');
-  await expect(toasts(page).filter({ hasText: '这个节点变成生图节点' })).toBeVisible();
 }
 
 // 张数从默认的 4 张往下调，每次等服务端存好
@@ -85,8 +80,7 @@ test('10.3 第 5 条：填 mock-comfyui 的地址测试连接 → pony-test 自�
   await expect(pony).toContainText('按文件名猜的');
   await expect(page.locator('[data-ck="il-test.safetensors"]').getByRole('button', { name: 'IL' })).toHaveAttribute('aria-pressed', 'true');
 
-  await newCanvasWithNode(page, '出图');
-  await useIl(page);
+  await newCanvasWithNode(page, '出图', '生图节点');
   await setCount(page, 2);
   await send(page, '写一个');
   const sentBefore = (await comfyPrompts(page)).length;
@@ -130,8 +124,7 @@ test('10.3 第 5 条：填 mock-comfyui 的地址测试连接 → pony-test 自�
 
 test('10.3 第 6 条：张数 3、框里含「慢」→ 第一张在跑时叫停，跑着的和排队的都标已叫停；含「报错」的显示失败原因；底模文件不在时说清楚', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, '叫停');
-  await useIl(page);
+  await newCanvasWithNode(page, '叫停', '生图节点');
   await setCount(page, 3);
   await send(page, '写一个');
   await addTag(page, '慢');
@@ -174,8 +167,7 @@ test('10.3 第 7 条：下载一张到不在资产库里的新文件夹，顺便
   // 选文件夹的窗口是系统弹的，测试里直接给结果
   await page.route('**/api/assets/pick-folder', (route) => route.fulfill({ json: { path: folder } }));
 
-  await newCanvasWithNode(page, '下载');
-  await useIl(page);
+  await newCanvasWithNode(page, '下载', '生图节点');
   await setCount(page, 2);
   await send(page, '写一个');
   await box(page).locator('[data-act="gen"]').click();
@@ -201,7 +193,7 @@ test('10.3 第 7 条：下载一张到不在资产库里的新文件夹，顺便
   await expect(cells(page).first().locator('.ig-dl')).toHaveText('已下载');
 
   // 新建一个视频节点，从资产库里把下载的那张放进槽位
-  await page.getByRole('button', { name: '新建节点' }).click();
+  await newNode(page);
   await expect(cards(page)).toHaveCount(2);
   await expect(drawerTitle(page)).toHaveText('新节点');
   await panel(page).locator('#slotAssets').click();
@@ -238,8 +230,7 @@ test('10.3 第 7 条：下载一张到不在资产库里的新文件夹，顺便
 
 test('10.3 第 8 条：给生图框打星 → 首页打过星的提示词里有它出的图 → 点「再出图」→ 回到画布，框下面多一组', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, '再出图');
-  await useIl(page);
+  await newCanvasWithNode(page, '再出图', '生图节点');
   await setCount(page, 1);
   await send(page, '写一个');
   await box(page).locator('[data-act="gen"]').click();
@@ -306,8 +297,7 @@ test('10.3 第 9 条：导入普通格式的提示用「导出（API）」→ �
   await dialog.getByRole('button', { name: '导入' }).click();
   await expect(page.locator('[data-wf]').filter({ hasText: '缺插件的' })).toContainText('这台 ComfyUI 上没有这几种节点：NotInstalledTestNode');
 
-  await newCanvasWithNode(page, '导入的工作流');
-  await useIl(page);
+  await newCanvasWithNode(page, '导入的工作流', '生图节点');
   await setCount(page, 1);
   await send(page, '写一个');
   const settings = page.getByRole('dialog', { name: '出图设置' });
@@ -351,8 +341,7 @@ test('10.3 第 9 条：导入普通格式的提示用「导出（API）」→ �
 
 test('出图设置：LoRA 点开能按名字搜，空格隔开的几个词都对得上才列出来；上下键挑、回车选上，存进节点', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, 'LoRA');
-  await useIl(page);
+  await newCanvasWithNode(page, 'LoRA', '生图节点');
   const settings = page.getByRole('dialog', { name: '出图设置' });
   await panel(page).locator('#btnGenCfg').click();
   await settings.getByRole('button', { name: '挂一个 LoRA' }).click();
@@ -385,8 +374,7 @@ test('出图设置：LoRA 点开能按名字搜，空格隔开的几个词都对
 
 test('写标签：不问 AI 写成一个框，标着「自己写的」，能直接生图；再写一串、带一句要求让 AI 优化，自己写的存下来留着，AI 带着前面的对话回一个新框', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, '写标签');
-  await useIl(page);
+  await newCanvasWithNode(page, '写标签', '生图节点');
   await setCount(page, 1);
   const writer = page.getByRole('dialog', { name: '写标签' });
   const tagNames = writer.locator('.te-chip .tg-name');
@@ -439,8 +427,7 @@ const linkedNode = (graph: Graph, link: unknown) => graph[String((link as [strin
 
 test('10.3 第 11 条：出图设置里打开放大 2 倍、加两道部位重绘（脸、手，手这道写了正面）→ 生图，新图是原来的 2 倍 → mock 收到放大和两个 FaceDetailer → 大图参数里写着 → mock 去掉 FaceDetailer 再生图，说缺 Impact Pack', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, '放大重绘');
-  await useIl(page);
+  await newCanvasWithNode(page, '放大重绘', '生图节点');
   await setCount(page, 1);
   await send(page, '写一个');
 
@@ -503,8 +490,7 @@ test('10.3 第 11 条：出图设置里打开放大 2 倍、加两道部位重�
 
 test('10.3 第 12 条：大图里点「放大和重绘」→ 关掉放大、只留脸那道 → 开始 → 框下面多一组，标着从哪张来，mock 收到传上去的图，流程从 LoadImage 开始 → 存成预设、另一个节点套用 → 设置里改名、删除', async ({ page }) => {
   await useMockComfy(page);
-  await newCanvasWithNode(page, '补做');
-  await useIl(page);
+  await newCanvasWithNode(page, '补做', '生图节点');
   await setCount(page, 1);
   await send(page, '写一个');
   const place = await placeOf(page);
@@ -551,8 +537,7 @@ test('10.3 第 12 条：大图里点「放大和重绘」→ 关掉放大、只�
   await expect(toasts(page).filter({ hasText: '存成了预设「测试预设」' })).toBeVisible();
   await settings.getByRole('button', { name: '好了' }).click();
 
-  await newCanvasWithNode(page, '套预设');
-  await useIl(page);
+  await newCanvasWithNode(page, '套预设', '生图节点');
   await setCount(page, 2);
   await panel(page).locator('#btnGenCfg').click();
   await settings.locator('#gcPreset').selectOption({ label: '测试预设' });
@@ -592,8 +577,7 @@ test('10.3 第 10 条：设置里填 AutoDL 的 Token（mock 的）、选实例 
   await page.locator('#adInst').selectOption(MOCK_AUTODL_UUID);
   await expect(page.locator('#adState')).toContainText('已关机');
 
-  await newCanvasWithNode(page, 'AutoDL 出图');
-  await useIl(page);
+  await newCanvasWithNode(page, 'AutoDL 出图', '生图节点');
   await setCount(page, 1);
   await send(page, '写一个');
   const settings = page.getByRole('dialog', { name: '出图设置' });

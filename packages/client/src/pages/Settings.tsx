@@ -417,8 +417,8 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
   const metaOf = (p: Prompt) => parsePromptMeta(p.text);
   const selectedMeta = selected ? metaOf(selected) : null;
   const groups: [string, Prompt[]][] = [
-    ['写视频提示词', prompts.filter((p) => metaOf(p).use === 'video')],
-    ['写生图标签 · 节点选了这些就变成生图节点', prompts.filter((p) => metaOf(p).use === 'image')],
+    ['写视频提示词 · 视频节点用', prompts.filter((p) => metaOf(p).use === 'video')],
+    ['写生图标签 · 生图节点用', prompts.filter((p) => metaOf(p).use === 'image')],
   ];
 
   const edit = (text: string) => {

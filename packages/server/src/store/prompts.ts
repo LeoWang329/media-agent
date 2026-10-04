@@ -1,4 +1,4 @@
-import { parsePromptMeta, type FormatRequirements, type PromptInfo, type PromptMeta } from '@media-agent/shared';
+import { parsePromptMeta, type FormatRequirements, type NodeKind, type PromptInfo, type PromptMeta } from '@media-agent/shared';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -77,6 +77,13 @@ export async function listPromptInfos(work: string): Promise<PromptInfo[]> {
       return { name, use, family };
     }),
   );
+}
+
+// 新建节点用哪套：视频节点用 ref2va，生图节点用 il；不在了用排在最前的同一种，一套都没有是 null，见 docs/dev-plan.md 5.23
+export async function defaultPromptFor(work: string, kind: NodeKind): Promise<string | null> {
+  const mine = (await listPromptInfos(work)).filter((info) => info.use === kind);
+  const preferred = kind === 'image' ? 'il' : DEFAULT_PROMPT;
+  return (mine.find((info) => info.name === preferred) ?? mine[0])?.name ?? null;
 }
 
 // 节点用的系统提示词的说明段；提示词已经不在了是 null，当视频提示词

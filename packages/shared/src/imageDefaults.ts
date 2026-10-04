@@ -101,8 +101,13 @@ export function checkpointFamily(name: string, marked: Record<string, Family | n
   return { family: /illustrious|noob|wai|(^|[^a-z])il([^a-z]|$)/i.test(name) ? 'IL' : null, guessed: true };
 }
 
-// 卡片上生图节点那一行：系列和尺寸。meta 是节点现在选的系统提示词的说明段，找不到提示词时为 null，当视频节点
-export function cardImageInfo(node: Pick<ChatNode, 'image'>, meta: Pick<PromptMeta, 'use' | 'family'> | null): CardImageInfo {
-  if (meta?.use !== 'image') return null;
-  return { family: meta.family, width: node.image?.width ?? DEFAULT_IMAGE_SIZE.width, height: node.image?.height ?? DEFAULT_IMAGE_SIZE.height };
+// 卡片上生图节点那一行：系列和尺寸，视频节点是 null。meta 是节点现在选的系统提示词的说明段，
+// 提示词不在了或者不是生图用的，看不出系列
+export function cardImageInfo(node: Pick<ChatNode, 'kind' | 'image'>, meta: Pick<PromptMeta, 'use' | 'family'> | null): CardImageInfo {
+  if (node.kind !== 'image') return null;
+  return {
+    family: meta?.use === 'image' ? meta.family : null,
+    width: node.image?.width ?? DEFAULT_IMAGE_SIZE.width,
+    height: node.image?.height ?? DEFAULT_IMAGE_SIZE.height,
+  };
 }

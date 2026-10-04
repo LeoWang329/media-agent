@@ -35,9 +35,7 @@ test('10.3 第 16 条：设置「AutoDL 上的模型」→ 从电脑传一个 Lo
   await expect(page.locator('.mx-state')).toContainText('那台还剩');
 
   // 出图设置的 LoRA 下拉里搜得到
-  await newCanvasWithNode(page, '传上去的 LoRA');
-  await panel(page).locator('#cfgSys').selectOption('il');
-  await expect(toasts(page).filter({ hasText: '这个节点变成生图节点' })).toBeVisible();
+  await newCanvasWithNode(page, '传上去的 LoRA', '生图节点');
   const settings = page.getByRole('dialog', { name: '出图设置' });
   await panel(page).locator('#btnGenCfg').click();
   await settings.getByRole('button', { name: '挂一个 LoRA' }).click();
