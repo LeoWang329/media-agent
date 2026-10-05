@@ -118,15 +118,22 @@ export type Config = {
   autodlToken: string | null;
 };
 
-// 生图节点的出图设置，存在 node.image，见 docs/dev-plan.md 5.14
+// 生图节点的出图设置，存在 node.image，见 docs/dev-plan.md 5.14。
+// vae、weighting、loraTarget 和部位重绘的 sam 是 E02 的几样（5.21）：VAE 空着是用底模自带的；
+// weighting 是带权重的标签怎么算，comfy 是 ComfyUI 自带的，a1111 是 A1111 的；loraTarget 是 LoRA 作用在哪，both 是画图的模型和文字理解都作用，model 是只作用在画图的模型上
 export type ImageRating = 'none' | 'general' | 'sensitive' | 'explicit';
+export type TagWeighting = 'comfy' | 'a1111';
+export type LoraTarget = 'both' | 'model';
 export type ImageSettings = {
-  width: number;
+  width: number; // 宽高是九档之一，或者自己填的 8 的倍数
   height: number;
   count: number; // 一次出几张，1 到 8
   workflowId: string | null; // null 是内置流程
   checkpoint: string;
+  vae: string;
   loras: { name: string; strength: number }[];
+  loraTarget: LoraTarget;
+  weighting: TagWeighting;
   steps: number;
   cfg: number;
   sampler: string;
@@ -136,21 +143,40 @@ export type ImageSettings = {
   negativeExtra: string; // 接在系列默认负面词后面
   upscale: UpscaleSettings;
   details: DetailPass[]; // 部位重绘，按顺序做
+  controls: ControlSettings[]; // ControlNet，按顺序接
 };
 
 // 放大，像 WebUI 的高清修复，见 docs/dev-plan.md 5.21：先用放大模型放大，缩到出图尺寸乘倍数；denoise 是 0 时不重画
 export type UpscaleSettings = { on: boolean; model: string; scale: number; denoise: number };
 
 // 部位重绘的一道，像 WebUI 的 ADetailer：detector 是检测模型，bbox/ 下的重画整个框，segm/ 下的只重画轮廓里面；
+// sam 是用哪个 SAM 模型把框收成形状，空着是不用；
 // guideSize 是检测到的地方放大到多大再画；positive 写了换掉框里的标签，negative 写了换掉额外的负面词
 export type DetailPass = {
   on: boolean;
   detector: string;
+  sam: string;
   threshold: number;
   denoise: number;
   guideSize: number;
   positive: string;
   negative: string;
+};
+
+// ControlNet 的一个，像 WebUI，见 docs/dev-plan.md 5.21。type 是姿势、深度、线稿、边缘、其他；
+// image 是参考图：槽位里的图，或者这个节点出过的图（那一组的 id 和那张的种子），没选是 null；
+// preprocessor 是 AIO_Preprocessor 列表里的提取方式，none 是不提取、直接用这张；model 是 ControlNetLoader 的文件名，空着是还没选
+export type ControlType = 'pose' | 'depth' | 'lineart' | 'edge' | 'other';
+export type RefImage = { kind: 'slot'; imageId: string } | { kind: 'generated'; messageId: string; jobId: string; seed: number };
+export type ControlSettings = {
+  on: boolean;
+  type: ControlType;
+  image: RefImage | null;
+  preprocessor: string;
+  model: string;
+  strength: number;
+  start: number;
+  end: number;
 };
 
 // 预设：出图设置整套存一个名字，存在工作文件夹 image-presets.json，按系列分开，见 docs/dev-plan.md 5.21
@@ -177,7 +203,8 @@ export type ImportedWorkflow = {
 
 // 发给 ComfyUI 的全部参数，「同样参数再来」照这个发；positive、negative 是最终发出去的，含固定开头和默认负面词。
 // 用导入的工作流时没有底模到 clip skip 这几项，照工作流里原来的。
-// 出完的图上补做的，宽高是原图的。放大、部位重绘开着的才记；部位重绘的 positive、negative 是拼好的，空着是和原图一样
+// 出完的图上补做的，宽高是原图的。放大、部位重绘、ControlNet 开着的才记；部位重绘的 positive、negative 是拼好的，空着是和原图一样。
+// VAE、权重算法、LoRA 作用在哪不是默认的才记
 export type ImageJobParams = {
   family: Family;
   positive: string;
@@ -186,7 +213,10 @@ export type ImageJobParams = {
   width: number;
   height: number;
   checkpoint?: string;
+  vae?: string;
   loras?: { name: string; strength: number }[];
+  loraTarget?: LoraTarget;
+  weighting?: TagWeighting;
   steps?: number;
   cfg?: number;
   sampler?: string;
@@ -194,6 +224,7 @@ export type ImageJobParams = {
   clipSkip?: number;
   upscale?: UpscaleSettings;
   details?: DetailPass[];
+  controls?: ControlSettings[];
 };
 
 // 一组里的一张图，对应 ComfyUI 上的一个任务。file 是临时文件夹里的图，相对工作文件夹、用 / 隔开；ms 是出图用了多久；savedPath 是下载到哪
@@ -286,16 +317,19 @@ export type ComfyStatus =
   | { ok: false; url: string | null; error: string };
 
 // 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的。
-// detectors 是部位重绘用的检测模型，只列 .pt 的（同一个文件夹里放的 SAM 这类不是）。
+// detectors 是部位重绘用的检测模型，只列 .pt 的（同一个文件夹里放的 SAM 这类不是），sams 是 SAMLoader 的列表。preprocessors 是 ControlNet 的提取方式（AIO_Preprocessor 的列表）。
 // nodeTypes 是这台装了的全部节点类型，用来查缺不缺插件
 export type ComfyOptions = {
   checkpoints: { name: string; family: Family | null; guessed: boolean }[];
+  vaes: string[];
   loras: string[];
   samplers: string[];
   schedulers: string[];
   upscaleModels: string[];
   detectors: string[];
+  sams: string[];
   controlnets: string[];
+  preprocessors: string[];
   ipadapters: string[];
   clipVisions: string[];
   taggers: string[];

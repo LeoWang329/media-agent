@@ -20,10 +20,14 @@ function summary(settings: PresetSettings, workflowName: (id: string) => string 
   const size = `${settings.width}×${settings.height}`;
   if (settings.workflowId) return `用导入的工作流「${workflowName(settings.workflowId) ?? '已经删了'}」 · ${size}`;
   const passes = settings.details.filter((pass) => pass.on).length;
+  const controls = settings.controls.filter((control) => control.on).length;
   return [
     settings.checkpoint ? shortCheckpoint(settings.checkpoint) : '底模没选',
-    settings.loras.length ? `LoRA ${settings.loras.length} 个` : '没挂 LoRA',
+    ...(settings.vae ? [`VAE ${shortCheckpoint(settings.vae)}`] : []),
+    settings.loras.length ? `LoRA ${settings.loras.length} 个${settings.loraTarget === 'model' ? '（只作用在画图的模型）' : ''}` : '没挂 LoRA',
     `${settings.steps} 步 · CFG ${settings.cfg} · ${settings.sampler} · ${settings.scheduler}`,
+    ...(settings.weighting === 'a1111' ? ['A1111 权重'] : []),
+    ...(controls ? [`ControlNet ${controls} 个`] : []),
     settings.upscale.on ? `放大 ${settings.upscale.scale}×` : '不放大',
     passes ? `部位重绘 ${passes} 道` : '不重绘部位',
     size,

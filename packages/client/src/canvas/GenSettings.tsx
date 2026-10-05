@@ -1,4 +1,17 @@
-import { missingNodeTypes, PLUGIN_OF, type ChatNode, type ComfyTarget, type Family, type ImagePreset, type ImageRating, type ImageSettings } from '@media-agent/shared';
+import {
+  DETAILER_NODES,
+  missingNodeTypes,
+  NO_PREPROCESSOR,
+  PLUGIN_OF,
+  type ChatNode,
+  type ComfyTarget,
+  type Family,
+  type ImagePreset,
+  type ImageRating,
+  type ImageSettings,
+  type LoraTarget,
+  type TagWeighting,
+} from '@media-agent/shared';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { api } from '../api';
 import { LanState } from '../components/ComfyPill';
@@ -8,6 +21,7 @@ import { usePresetStore } from '../store/presetStore';
 import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { anyNumber, CommitInput, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
 import { confirmBox } from '../ui/confirm';
+import { ControlList } from './ControlList';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
@@ -18,10 +32,14 @@ import { useOverlays } from './overlays';
 import { DetailPassList, UpscaleFields } from './StageFields';
 
 // 出图设置：每个节点各存一份，常动的放上面，很少动的收起来。改一项存一项，见 docs/dev-plan.md 5.14。
-// 选了导入的工作流，底模、LoRA、步数、放大、部位重绘这些照工作流里的，不显示。整套能存成预设、套用预设，见 5.21
+// 选了导入的工作流，底模、VAE、LoRA、步数、权重算法、ControlNet、放大、部位重绘这些照工作流里的，不显示。整套能存成预设、套用预设，见 5.21
 
 export const RATING_LABELS: Record<ImageRating, string> = { none: '不加', general: '全年龄', sensitive: '擦边', explicit: '成人' };
 const RATINGS = Object.keys(RATING_LABELS) as ImageRating[];
+const LORA_TARGET_LABELS: Record<LoraTarget, string> = { both: '画图的模型和文字理解', model: '只作用在画图的模型' };
+const LORA_TARGETS = Object.keys(LORA_TARGET_LABELS) as LoraTarget[];
+const WEIGHTING_LABELS: Record<TagWeighting, string> = { comfy: 'ComfyUI 自带的', a1111: 'A1111 的' };
+const WEIGHTINGS = Object.keys(WEIGHTING_LABELS) as TagWeighting[];
 
 const close = () => useOverlays.setState({ genSettings: null });
 
@@ -46,9 +64,11 @@ function GenSettings({ node }: { node: ChatNode }) {
   const missing = workflow && options ? missingNodeTypes(workflow.graph, options.nodeTypes) : [];
   const presets = usePresetStore((s) => s.list);
   const mine = presets?.filter((preset) => preset.family === family) ?? [];
-  // 开了部位重绘，这台 ComfyUI 上却没装要用的插件
-  const detailerMissing =
-    options && image.details.some((pass) => pass.on) ? Object.keys(PLUGIN_OF).filter((type) => !options.nodeTypes.includes(type)) : [];
+  // 开了部位重绘、开了要提取的 ControlNet，这台 ComfyUI 上却没装要用的插件
+  const detailerMissing = options && image.details.some((pass) => pass.on) ? DETAILER_NODES.filter((type) => !options.nodeTypes.includes(type)) : [];
+  const extractorMissing =
+    options && image.controls.some((control) => control.on && control.preprocessor !== NO_PREPROCESSOR) && !options.nodeTypes.includes('AIO_Preprocessor');
+  const weightingMissing = options && image.weighting === 'a1111' && !options.nodeTypes.includes('BNK_CLIPTextEncodeAdvanced');
 
   useEffect(() => {
     void useComfyStore.getState().loadTarget();
@@ -81,13 +101,23 @@ function GenSettings({ node }: { node: ChatNode }) {
   const loras = options?.loras ?? [];
   const pick = (list: string[], value: string) => (value && !list.includes(value) ? [value, ...list] : list);
   const ratingWord = image.rating === 'none' ? '（不加）' : defaults.rating[image.rating];
+  // 收起来时一行写完，VAE 和权重算法不是默认的才写
+  const rarely = [
+    `${image.steps} 步`,
+    `CFG ${image.cfg}`,
+    image.sampler,
+    image.scheduler,
+    ...(image.vae ? [image.vae.replace(/\.(safetensors|pt|ckpt)$/, '')] : []),
+    ...(image.weighting === 'a1111' ? ['A1111 权重'] : []),
+    RATING_LABELS[image.rating],
+  ].join(' · ');
 
-  // 套用预设：张数和种子留着节点自己的
+  // 套用预设：张数和种子留着节点自己的；预设不存 ControlNet 的参考图，要重选
   const apply = (id: string) => {
     const preset = mine.find((p) => p.id === id);
     if (!preset) return;
     save({ ...preset.settings });
-    toast(`套上了「${preset.name}」。张数和种子没动`);
+    toast(`套上了「${preset.name}」。张数和种子没动${preset.settings.controls.some((control) => control.on) ? '，ControlNet 的参考图要重选' : ''}`);
   };
 
   return (
@@ -236,6 +266,37 @@ function GenSettings({ node }: { node: ChatNode }) {
                   挂一个 LoRA
                 </button>
               </div>
+              {image.loras.length > 0 && (
+                <div className="row gc-lora-target">
+                  <span className="meta">作用在</span>
+                  <div className="seg" role="group" aria-label="LoRA 作用在哪">
+                    {LORA_TARGETS.map((loraTarget) => (
+                      <button key={loraTarget} type="button" aria-pressed={image.loraTarget === loraTarget} onClick={() => save({ loraTarget })}>
+                        {LORA_TARGET_LABELS[loraTarget]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="gc-sec">
+              <h4>
+                ControlNet<span className="meta">像 WebUI，照着参考图的姿势、深度这些画</span>
+              </h4>
+              <ControlList node={node} controls={image.controls} options={options} onChange={(controls) => save({ controls })} />
+              <p className="hint">
+                <Icon name="info" className="icon-sm" />
+                <span>
+                  参考图从这个节点的槽位和出过的图里选。提取方式把参考图变成姿势图、深度图这些，参考图本来就是的选「不提取」。IL 用 NoobAI-XL 出的 ControlNet（比如深度
+                  noob-sdxl-controlnet-depth_midas、姿势 noob_openpose），Pony 用通用 SDXL 的（比如 xinsir 的 union，一个文件管好几种）。
+                  {extractorMissing && (
+                    <b className="gc-warn">
+                      {' '}
+                      这台 ComfyUI 上没有 AIO_Preprocessor，要装 {PLUGIN_OF.AIO_Preprocessor}，出图前会拦下来；选「不提取」的不受影响。
+                    </b>
+                  )}
+                </span>
+              </p>
             </div>
             <div className="gc-sec">
               <h4>
@@ -247,11 +308,11 @@ function GenSettings({ node }: { node: ChatNode }) {
               <h4>
                 部位重绘<span className="meta">像 WebUI 的 ADetailer，找到脸、手这些地方再重画</span>
               </h4>
-              <DetailPassList passes={image.details} detectors={options?.detectors ?? []} onChange={(details) => save({ details })} />
+              <DetailPassList passes={image.details} detectors={options?.detectors ?? []} sams={options?.sams ?? []} onChange={(details) => save({ details })} />
               <p className="hint">
                 <Icon name="info" className="icon-sm" />
                 <span>
-                  按顺序做。检测模型名字里 face 是脸、hand 是手、person 是人；bbox 下的重画整个框，segm 下的只重画轮廓里面。这道写了正面就换掉框里的标签，写了负面就换掉额外的负面词，系列固定开头和默认负面词照加。
+                  按顺序做。检测模型名字里 face 是脸、hand 是手、person 是人；bbox 下的重画整个框，segm 下的只重画轮廓里面；选了 SAM 的先用它把框收成脸、手的形状再重画（E02 就这样）。这道写了正面就换掉框里的标签，写了负面就换掉额外的负面词，系列固定开头和默认负面词照加。
                   {detailerMissing.length > 0 && (
                     <b className="gc-warn">
                       {' '}
@@ -284,9 +345,7 @@ function GenSettings({ node }: { node: ChatNode }) {
           <summary>
             <Icon name="chev-down" className="icon-sm chev" />
             很少动的
-            <span className="meta mono">
-              {workflow ? `评级 ${RATING_LABELS[image.rating]}` : `${image.steps} 步 · CFG ${image.cfg} · ${image.sampler} · ${image.scheduler} · ${RATING_LABELS[image.rating]}`}
-            </span>
+            <span className="meta mono">{workflow ? `评级 ${RATING_LABELS[image.rating]}` : rarely}</span>
           </summary>
           <div className="gc-grid">
             {!workflow && (
@@ -330,6 +389,34 @@ function GenSettings({ node }: { node: ChatNode }) {
                       </option>
                     ))}
                   </select>
+                </div>
+                <div className="field gc-wide">
+                  <label htmlFor="gcVae">
+                    VAE<span className="muted">（把画好的变成图片，影响颜色和细节）</span>
+                  </label>
+                  <select className="select" id="gcVae" value={image.vae} onChange={(e) => save({ vae: e.target.value })}>
+                    <option value="">底模自带的</option>
+                    {pick(options?.vaes ?? [], image.vae).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                        {options && !options.vaes.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field gc-wide">
+                  <span className="label">带权重的标签怎么算</span>
+                  <div className="seg" id="gcWeighting" role="group" aria-label="权重算法">
+                    {WEIGHTINGS.map((weighting) => (
+                      <button key={weighting} type="button" aria-pressed={image.weighting === weighting} onClick={() => save({ weighting })}>
+                        {WEIGHTING_LABELS[weighting]}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="hint">
+                    标签写成 <span className="mono">(blonde hair:1.2)</span> 这样带权重时，两种算法出来不一样。A1111 的和 WebUI 一样，要装 {PLUGIN_OF.BNK_CLIPTextEncodeAdvanced} 插件。
+                    {weightingMissing && <b className="gc-warn"> 这台 ComfyUI 上没装，出图前会拦下来。</b>}
+                  </p>
                 </div>
               </>
             )}

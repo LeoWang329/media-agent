@@ -3,6 +3,7 @@ import {
   builtinGraph,
   checkpointFamily,
   composeChecked,
+  CONTROL_LABELS,
   familyWords,
   imageSettingsOf,
   importedGraph,
@@ -17,6 +18,7 @@ import {
   type ChatNode,
   type ComfyGraph,
   type ComfyTarget,
+  type ControlSettings,
   type DetailPass,
   type Family,
   type FamilyDefaults,
@@ -25,6 +27,7 @@ import {
   type ImageJobParams,
   type ImageRating,
   type JobImage,
+  type RefImage,
   type SharedSettings,
   type UpscaleSettings,
 } from '@media-agent/shared';
@@ -36,6 +39,7 @@ import { comfyClientId, readComfyConfig, readConfig } from '../config';
 import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases, readNode, updateNode } from '../store/canvases';
 import { withLock } from '../store/locks';
+import { canvasImagePath, readImage } from '../store/images';
 import { readPrompt } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import { readWorkflow } from '../store/workflows';
@@ -123,6 +127,23 @@ function stagesFor(
   return { ...(upscale.on && { upscale }), ...(passes.length > 0 && { details: passes }) };
 }
 
+// 开着的 ControlNet 才记，见 docs/dev-plan.md 5.21；参考图、模型没选的不让出。第几个按出图设置里的列表数
+function controlsFor(controls: ControlSettings[]): Pick<ImageJobParams, 'controls'> {
+  controls.forEach((control, i) => {
+    if (control.on && !control.image) throw new HttpError(400, `ControlNet 第 ${i + 1} 个还没选参考图`);
+    if (control.on && !control.model) throw new HttpError(400, `ControlNet 第 ${i + 1} 个还没选模型`);
+  });
+  const on = controls.filter((control) => control.on);
+  return on.length ? { controls: on } : {};
+}
+
+// E02 的几样里 VAE、权重算法、LoRA 作用在哪，不是默认的才记，见 docs/dev-plan.md 5.21
+const e02Params = ({ vae, weighting, loraTarget }: Pick<ImageJobParams, 'vae' | 'weighting' | 'loraTarget'>): Pick<ImageJobParams, 'vae' | 'weighting' | 'loraTarget'> => ({
+  ...(vae && { vae }),
+  ...(weighting === 'a1111' && { weighting }),
+  ...(loraTarget === 'model' && { loraTarget }),
+});
+
 // 按节点现在的出图设置和这个框拼参数，见 docs/dev-plan.md 5.18。用导入的工作流时底模、LoRA、步数这些照工作流里的，不记
 async function paramsFor(work: string, node: ChatNode, text: string, settings: SharedSettings): Promise<{ params: ImageJobParams; seeds: number[] }> {
   const family = await imageFamily(work, node.systemPromptName);
@@ -146,21 +167,23 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
           sampler: image.sampler,
           scheduler: image.scheduler,
           clipSkip: defaults.clipSkip,
+          ...e02Params(image),
+          ...controlsFor(image.controls),
           ...stagesFor(image.upscale, image.details, defaults, image.rating, compose),
         },
     seeds: jobSeeds(image.seed ?? randomSeed(), image.count),
   };
 }
 
-// 出完的图上补做放大和部位重绘，见 docs/dev-plan.md 5.21：提示词、底模、LoRA、种子这些用原图那一组记的，
+// 出完的图上补做放大和部位重绘，见 docs/dev-plan.md 5.21：提示词、底模、VAE、LoRA、种子这些用原图那一组记的，
 // 原图是导入的工作流出的，底模这些用节点现在的出图设置；尺寸是原图的
 async function refineParams(work: string, node: ChatNode, from: ImageJobParams, image: JobImage, refine: Refine, settings: SharedSettings): Promise<ImageJobParams> {
   if (!refine.upscale.on && !refine.details.some((pass) => pass.on)) throw new HttpError(400, '放大和部位重绘至少开一样');
   const defaults = settings.defaults[from.family];
   const current = imageSettingsOf(node.image, defaults);
   const model = from.workflow.id
-    ? { checkpoint: current.checkpoint, loras: current.loras, steps: current.steps, cfg: current.cfg, sampler: current.sampler, scheduler: current.scheduler, clipSkip: defaults.clipSkip }
-    : { checkpoint: from.checkpoint, loras: from.loras, steps: from.steps, cfg: from.cfg, sampler: from.sampler, scheduler: from.scheduler, clipSkip: from.clipSkip };
+    ? { checkpoint: current.checkpoint, loras: current.loras, steps: current.steps, cfg: current.cfg, sampler: current.sampler, scheduler: current.scheduler, clipSkip: defaults.clipSkip, ...e02Params(current) }
+    : { checkpoint: from.checkpoint, loras: from.loras, steps: from.steps, cfg: from.cfg, sampler: from.sampler, scheduler: from.scheduler, clipSkip: from.clipSkip, ...e02Params(from) };
   return {
     family: from.family,
     positive: from.positive,
@@ -371,14 +394,15 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
   }
 
   // 怎么拼发出去的流程，见 docs/dev-plan.md 5.18、5.21：先对照这台 ComfyUI 装了哪些节点，缺的说清楚，一张都不发。
-  // 出完的图上补做的，先把原图传上去
+  // 出完的图上补做的，先把原图传上去；用了 ControlNet 的，先把参考图传上去
   async function graphMaker(place: JobPlace, jobId: string, url: string): Promise<(params: ImageJobParams, seed: number) => ComfyGraph> {
     const job = await readJob(place, jobId);
     const { params } = job;
     if (!params.workflow.id) {
-      await requireNodes(url, builtinGraph(params, 0, job.kind === 'refine' ? { image: '' } : undefined));
-      const input = job.kind === 'refine' ? { image: await uploadSource(place, job, url) } : undefined;
-      return (jobParams, seed) => builtinGraph(jobParams, seed, input);
+      const refine = job.kind === 'refine';
+      await requireNodes(url, builtinGraph(params, 0, refine ? { image: '' } : {}));
+      const uploaded = refine ? { image: await uploadSource(place, job, url) } : { controls: await uploadControls(place, params.controls ?? [], url) };
+      return (jobParams, seed) => builtinGraph(jobParams, seed, uploaded);
     }
     const workflow = await chosenWorkflow(place.work, params.workflow.id);
     if (!workflow) throw new comfy.ComfyError(`工作流「${params.workflow.name}」已经删了，在出图设置里换一个再出`);
@@ -403,8 +427,36 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       ?.images.find((image) => image.seed === job.source?.seed && image.status === 'done');
     const file = from && (await imageFile(place.work, from));
     if (!file) throw new comfy.ComfyError('要补做的那张原图找不到了：删掉了，或者临时文件清掉了又没下载过');
+    return uploadFile(url, file);
+  }
+
+  // ControlNet 的参考图传给 ComfyUI：槽位里的用画布里存的那份，出过的图用临时文件或下载的那份
+  async function uploadControls(place: JobPlace, controls: ControlSettings[], url: string): Promise<string[]> {
+    if (!controls.length) return [];
+    const node = await readNode(place.work, place.canvasId, place.nodeId);
+    const names: string[] = [];
+    for (const control of controls) {
+      const file = control.image && (await refFile(place, node, control.image));
+      if (!file) throw new comfy.ComfyError(`ControlNet「${CONTROL_LABELS[control.type]}」的参考图找不到了：删掉了，或者临时文件清掉了又没下载过`);
+      names.push(await uploadFile(url, file));
+    }
+    return names;
+  }
+
+  async function refFile(place: JobPlace, node: ChatNode, ref: RefImage): Promise<string | null> {
+    if (ref.kind === 'generated') {
+      const image = node.messages[ref.messageId]?.images?.find((job) => job.id === ref.jobId)?.images.find((item) => item.seed === ref.seed && item.status === 'done');
+      return image ? imageFile(place.work, image) : null;
+    }
+    const record = await readImage(place.work, place.canvasId, ref.imageId).catch(() => null);
+    const file = record && canvasImagePath(place.work, place.canvasId, record);
+    return file && (await fs.stat(file).catch(() => null))?.isFile() ? file : null;
+  }
+
+  // 文件名按内容算，同一张传几次都是同一个名字
+  async function uploadFile(url: string, file: string): Promise<string> {
     const data = await fs.readFile(file);
-    return comfy.uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}.png`);
+    return comfy.uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}${path.extname(file).toLowerCase() || '.png'}`);
   }
 
   function track(t: Tracked): void {

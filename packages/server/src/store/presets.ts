@@ -1,4 +1,4 @@
-import type { Family, ImagePreset, PresetSettings } from '@media-agent/shared';
+import { FAMILY_DEFAULTS, imageSettingsOf, type Family, type ImagePreset, type PresetSettings } from '@media-agent/shared';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { HttpError } from '../httpError';
@@ -8,8 +8,12 @@ import { withLock } from './locks';
 // 出图设置的预设：工作文件夹 image-presets.json，两台机器共用，见 docs/dev-plan.md 5.21
 const presetsFile = (work: string) => path.join(work, 'image-presets.json');
 
+// 后来加的项（ControlNet、E02 的几样），之前存的预设里没有，按新节点的默认值补上
 export async function listPresets(work: string): Promise<ImagePreset[]> {
-  return (await readJson<ImagePreset[]>(presetsFile(work))) ?? [];
+  return ((await readJson<ImagePreset[]>(presetsFile(work))) ?? []).map((preset) => {
+    const { count: _count, seed: _seed, ...settings } = imageSettingsOf(preset.settings, FAMILY_DEFAULTS[preset.family]);
+    return { ...preset, settings };
+  });
 }
 
 // 读改写排队，免得两次保存互相覆盖

@@ -1,9 +1,17 @@
+import { NO_PREPROCESSOR, unionType } from './imageDefaults';
 import type { ComfyGraph, FillTarget, ImageJobParams, ImportedWorkflow, WorkflowFill } from './types';
 
 export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 
-// 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个
-export const PLUGIN_OF: Record<string, string> = { FaceDetailer: 'ComfyUI-Impact-Pack', UltralyticsDetectorProvider: 'ComfyUI-Impact-Subpack' };
+// 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个。部位重绘用前三个，ControlNet 的提取用 AIO_Preprocessor，A1111 的权重算法用最后一个
+export const PLUGIN_OF: Record<string, string> = {
+  FaceDetailer: 'ComfyUI-Impact-Pack',
+  SAMLoader: 'ComfyUI-Impact-Pack',
+  UltralyticsDetectorProvider: 'ComfyUI-Impact-Subpack',
+  AIO_Preprocessor: 'comfyui_controlnet_aux',
+  BNK_CLIPTextEncodeAdvanced: 'ComfyUI_ADV_CLIP_emb',
+};
+export const DETAILER_NODES = ['FaceDetailer', 'UltralyticsDetectorProvider'];
 
 // 放大后的尺寸：取 8 的倍数
 export const scaledSize = (size: { width: number; height: number }, scale: number) => ({
@@ -12,9 +20,11 @@ export const scaledSize = (size: { width: number; height: number }, scale: numbe
 });
 
 // 内置流程，见 docs/dev-plan.md 5.18、5.21：
-// 底模 → 每个 LoRA 一个、串起来 → clip skip → 正面、负面 → 空白画布 → 采样 → 解码 → 放大 → 部位重绘 → 预览（不在 ComfyUI 那台机器上留文件）。
-// 放大、部位重绘开着才有；出完的图上补做的，从 input 那张传上去的图开始，不出新图
-export function builtinGraph(params: ImageJobParams, seed: number, input?: { image: string }): ComfyGraph {
+// 底模（单独选了 VAE 的另外加载）→ 每个 LoRA 一个、串起来 → clip skip → 正面、负面 → ControlNet → 空白画布 → 采样 → 解码 → 放大 → 部位重绘 → 预览（不在 ComfyUI 那台机器上留文件）。
+// 放大、部位重绘、ControlNet 开着才有。LoRA 只作用在画图的模型上时文字理解用底模原来的；A1111 的权重算法换一种编码节点。
+// uploaded 是传上去的图在 ComfyUI 上的名字：
+// image 是出完的图上补做的那张，从它开始、不出新图；controls 是各个 ControlNet 的参考图，和 params.controls 一一对应
+export function builtinGraph(params: ImageJobParams, seed: number, uploaded: { image?: string; controls?: string[] } = {}): ComfyGraph {
   const graph: ComfyGraph = {};
   const add = (class_type: string, inputs: Record<string, unknown>): Link => {
     const id = String(Object.keys(graph).length + 1);
@@ -25,20 +35,54 @@ export function builtinGraph(params: ImageJobParams, seed: number, input?: { ima
   const checkpoint = add('CheckpointLoaderSimple', { ckpt_name: params.checkpoint });
   let model = checkpoint;
   let clip = out(checkpoint, 1);
-  const vae = out(checkpoint, 2);
+  const vae = params.vae ? add('VAELoader', { vae_name: params.vae }) : out(checkpoint, 2);
   for (const lora of params.loras ?? []) {
+    if (params.loraTarget === 'model') {
+      model = add('LoraLoaderModelOnly', { lora_name: lora.name, strength_model: lora.strength, model });
+      continue;
+    }
     const loaded = add('LoraLoader', { lora_name: lora.name, strength_model: lora.strength, strength_clip: lora.strength, model, clip });
     model = loaded;
     clip = out(loaded, 1);
   }
   const skip = add('CLIPSetLastLayer', { stop_at_clip_layer: -(params.clipSkip ?? 1), clip });
-  const encode = (text: string) => add('CLIPTextEncode', { text, clip: skip });
+  const encode = (text: string) =>
+    params.weighting === 'a1111'
+      ? add('BNK_CLIPTextEncodeAdvanced', { text, clip: skip, token_normalization: 'none', weight_interpretation: 'A1111' })
+      : add('CLIPTextEncode', { text, clip: skip });
   const positive = encode(params.positive);
   const negative = encode(params.negative);
-  const sampling = { seed, steps: params.steps, cfg: params.cfg, sampler_name: params.sampler, scheduler: params.scheduler };
-  const sample = (latent: Link, denoise: number) => add('VAEDecode', { samples: add('KSampler', { ...sampling, denoise, model, positive, negative, latent_image: latent }), vae });
 
-  let image = input ? add('LoadImage', { image: input.image }) : sample(add('EmptyLatentImage', { width: params.width, height: params.height, batch_size: 1 }), 1);
+  // ControlNet：参考图提取成姿势图、深度图这些（不提取的直接用），按顺序接在正负面后面。采样和放大重画用接好的，部位重绘用原来的
+  let guided = { positive, negative };
+  for (const [i, control] of (params.controls ?? []).entries()) {
+    const loaded = add('LoadImage', { image: uploaded.controls?.[i] ?? '' });
+    const hint =
+      control.preprocessor === NO_PREPROCESSOR
+        ? loaded
+        : add('AIO_Preprocessor', { image: loaded, preprocessor: control.preprocessor, resolution: Math.min(params.width, params.height) });
+    let net = add('ControlNetLoader', { control_net_name: control.model });
+    if (/union/i.test(control.model)) net = add('SetUnionControlNetType', { control_net: net, type: unionType(control) });
+    const applied = add('ControlNetApplyAdvanced', {
+      positive: guided.positive,
+      negative: guided.negative,
+      control_net: net,
+      image: hint,
+      strength: control.strength,
+      start_percent: control.start,
+      end_percent: control.end,
+    });
+    guided = { positive: applied, negative: out(applied, 1) };
+  }
+
+  const sampling = { seed, steps: params.steps, cfg: params.cfg, sampler_name: params.sampler, scheduler: params.scheduler };
+  const sample = (latent: Link, denoise: number) =>
+    add('VAEDecode', { samples: add('KSampler', { ...sampling, denoise, model, ...guided, latent_image: latent }), vae });
+
+  let image =
+    uploaded.image !== undefined
+      ? add('LoadImage', { image: uploaded.image })
+      : sample(add('EmptyLatentImage', { width: params.width, height: params.height, batch_size: 1 }), 1);
 
   // 放大：放大模型放大后缩到出图尺寸乘倍数；重绘强度大于 0 再用同样的底模、提示词和种子画一遍
   if (params.upscale) {
@@ -48,7 +92,8 @@ export function builtinGraph(params: ImageJobParams, seed: number, input?: { ima
     if (denoise > 0) image = sample(add('VAEEncode', { pixels: image, vae }), denoise);
   }
 
-  // 部位重绘：每道一个检测模型加一个 FaceDetailer，没写提示词的用原图的。segm/ 下的检测模型按轮廓重画，不用 SAM；别的参数照 E02
+  // 部位重绘：每道一个检测模型加一个 FaceDetailer，没写提示词的用原图的。选了 SAM 的用它把框收成形状；
+  // 没选的，segm/ 下的检测模型按轮廓重画（两个都给的话 FaceDetailer 只用 SAM）。别的参数照 E02
   for (const pass of params.details ?? []) {
     const detector = add('UltralyticsDetectorProvider', { model_name: pass.detector });
     image = add('FaceDetailer', {
@@ -80,7 +125,9 @@ export function builtinGraph(params: ImageJobParams, seed: number, input?: { ima
       wildcard: '',
       cycle: 1,
       noise_mask_feather: 20,
-      ...(pass.detector.startsWith('segm/') && { segm_detector_opt: out(detector, 1) }),
+      ...(pass.sam
+        ? { sam_model_opt: add('SAMLoader', { model_name: pass.sam, device_mode: 'AUTO' }) }
+        : pass.detector.startsWith('segm/') && { segm_detector_opt: out(detector, 1) }),
     });
   }
 

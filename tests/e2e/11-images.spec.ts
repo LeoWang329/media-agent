@@ -494,7 +494,7 @@ test('10.3 第 12 条：大图里点「放大和重绘」→ 关掉放大、只�
   await setCount(page, 1);
   await send(page, '写一个');
   const place = await placeOf(page);
-  const face = { on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+  const face = { on: true, detector: 'bbox/face_yolov8m.pt', sam: '', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
   const image = { upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0.35 }, details: [face, { ...face, detector: 'bbox/hand_yolov8s.pt' }] };
   expect((await page.request.patch(`/api/canvases/${place.canvasId}/nodes/${place.nodeId}`, { data: { image } })).ok()).toBe(true);
   // 先离开画布页再回来，页面重新读节点（只改 # 后面的部分不会重新加载）

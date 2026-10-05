@@ -30,32 +30,60 @@ const STEPS = 5;
 
 const MODELS = {
   checkpoints: ['il-test.safetensors', 'pony-test.safetensors'],
+  vae: ['sdxl_vae.safetensors'],
   loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
   schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
   upscale: ['4x-test.pth'],
-  controlnet: ['openpose-test.safetensors'],
+  controlnet: ['openpose-test.safetensors', 'depth-test.safetensors', 'union-test.safetensors'],
+  // ControlNet 的提取方式，真的 AIO_Preprocessor 列得更多，第一个是 none
+  preprocessor: [
+    'none',
+    'MiDaS-DepthMapPreprocessor',
+    'DepthAnythingV2Preprocessor',
+    'Zoe-DepthMapPreprocessor',
+    'DWPreprocessor',
+    'OpenposePreprocessor',
+    'AnimeLineArtPreprocessor',
+    'LineArtPreprocessor',
+    'CannyEdgePreprocessor',
+    'HEDPreprocessor',
+    'TilePreprocessor',
+  ],
+  unionType: ['auto', 'openpose', 'depth', 'hed/pidi/scribble/ted', 'canny/lineart/anime_lineart/mlsd', 'normal', 'segment', 'tile', 'repaint'],
   ipadapter: ['ip-adapter-test.safetensors'],
   clipVision: ['clip-vision-test.safetensors'],
   tagger: ['wd-v1-4-moat-tagger-v2'],
   // 真的 ComfyUI 上，检测模型的文件夹里还放着 SAM 这类别的模型，也会列出来
   detector: ['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt', 'segm/person_yolov8m-seg.pt', 'segm/sam_vit_b_01ec64.pth'],
+  sam: ['sam_vit_b_01ec64.pth'],
 };
 
 // 下拉选项两种写法都有：老的 [[选项…], {…}]，新的 ['COMBO', {options: […]}]
 const combo = (options: string[]) => [options, {}];
 const comboV3 = (options: string[]) => ['COMBO', { options }];
-const node = (required: Record<string, unknown> = {}, output: string[] = [], outputNode = false) => ({
-  input: { required },
+const node = (required: Record<string, unknown> = {}, output: string[] = [], outputNode = false, optional?: Record<string, unknown>) => ({
+  input: { required, ...(optional && { optional }) } as { required: Record<string, unknown>; optional?: Record<string, unknown> },
   output,
   output_node: outputNode,
 });
 
 const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   CheckpointLoaderSimple: node({ ckpt_name: combo(MODELS.checkpoints) }, ['MODEL', 'CLIP', 'VAE']),
+  VAELoader: node({ vae_name: combo(MODELS.vae) }, ['VAE']),
   LoraLoader: node({ model: ['MODEL'], clip: ['CLIP'], lora_name: combo(MODELS.loras), strength_model: ['FLOAT', {}], strength_clip: ['FLOAT', {}] }, ['MODEL', 'CLIP']),
+  LoraLoaderModelOnly: node({ model: ['MODEL'], lora_name: combo(MODELS.loras), strength_model: ['FLOAT', {}] }, ['MODEL']),
   CLIPSetLastLayer: node({ clip: ['CLIP'], stop_at_clip_layer: ['INT', { min: -24, max: -1 }] }, ['CLIP']),
   CLIPTextEncode: node({ text: ['STRING', { multiline: true }], clip: ['CLIP'] }, ['CONDITIONING']),
+  BNK_CLIPTextEncodeAdvanced: node(
+    {
+      text: ['STRING', { multiline: true }],
+      clip: ['CLIP'],
+      token_normalization: combo(['none', 'mean', 'length', 'length+mean']),
+      weight_interpretation: combo(['comfy', 'A1111', 'compel', 'comfy++', 'down_weight']),
+    },
+    ['CONDITIONING'],
+  ),
   EmptyLatentImage: node({ width: ['INT', {}], height: ['INT', {}], batch_size: ['INT', {}] }, ['LATENT']),
   KSampler: node(
     {
@@ -83,10 +111,13 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   ImageScale: node({}, ['IMAGE']),
   ControlNetLoader: node({ control_net_name: combo(MODELS.controlnet) }, ['CONTROL_NET']),
   ControlNetApplyAdvanced: node({}, ['CONDITIONING', 'CONDITIONING']),
+  SetUnionControlNetType: node({ control_net: ['CONTROL_NET'], type: comboV3(MODELS.unionType) }, ['CONTROL_NET']),
+  AIO_Preprocessor: node({ image: ['IMAGE'] }, ['IMAGE'], false, { preprocessor: combo(MODELS.preprocessor), resolution: ['INT', { default: 512, min: 64, max: 16384, step: 64 }] }),
   CLIPVisionLoader: node({ clip_name: comboV3(MODELS.clipVision) }, ['CLIP_VISION']),
   IPAdapterModelLoader: node({ ipadapter_file: combo(MODELS.ipadapter) }, ['IPADAPTER']),
   IPAdapterAdvanced: node({}, ['MODEL']),
   UltralyticsDetectorProvider: node({ model_name: combo(MODELS.detector) }, ['BBOX_DETECTOR', 'SEGM_DETECTOR']),
+  SAMLoader: node({ model_name: combo(MODELS.sam), device_mode: combo(['AUTO', 'Prefer GPU', 'CPU']) }, ['SAM_MODEL']),
   FaceDetailer: node({}, ['IMAGE']),
   DWPreprocessor: node({}, ['IMAGE']),
   'WD14Tagger|pysssss': node({ model: combo(MODELS.tagger) }, ['STRING'], true),
@@ -96,6 +127,8 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
 const REMOTE_MODELS: { dir: string; type: string; input: string; prefix?: string }[] = [
   { dir: '/root/autodl-tmp/models/checkpoints', type: 'CheckpointLoaderSimple', input: 'ckpt_name' },
   { dir: '/root/autodl-tmp/models/loras', type: 'LoraLoader', input: 'lora_name' },
+  { dir: '/root/autodl-tmp/models/loras', type: 'LoraLoaderModelOnly', input: 'lora_name' },
+  { dir: '/root/autodl-tmp/models/vae', type: 'VAELoader', input: 'vae_name' },
   { dir: '/root/autodl-tmp/models/upscale_models', type: 'UpscaleModelLoader', input: 'model_name' },
   { dir: '/root/ComfyUI/models/ultralytics/bbox', type: 'UltralyticsDetectorProvider', input: 'model_name', prefix: 'bbox/' },
   { dir: '/root/ComfyUI/models/ultralytics/segm', type: 'UltralyticsDetectorProvider', input: 'model_name', prefix: 'segm/' },
@@ -120,9 +153,19 @@ function comboOptions(spec: unknown): unknown[] | null {
 
 const findNode = (graph: Graph, type: string) => Object.keys(graph).find((id) => graph[id].class_type === type);
 const linked = (graph: Graph, value: unknown) => (Array.isArray(value) ? graph[String(value[0])] : undefined);
+
+// 正面提示词：顺着 positive 往上找到写着文字的节点，中间隔着 ControlNet 的照样找得到
+function textAbove(graph: Graph, value: unknown): string {
+  const seen = new Set<unknown>();
+  for (let item = linked(graph, value); item && !seen.has(item); item = linked(graph, item.inputs.positive)) {
+    if (typeof item.inputs.text === 'string') return item.inputs.text;
+    seen.add(item);
+  }
+  return '';
+}
 const escapeXml = (text: string) => text.replace(/[<>&"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
-// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里；LoadImage 的图要是传上来过的
+// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里（选填的没填不管）；LoadImage 的图要是传上来过的
 function validate(graph: Graph, info: typeof OBJECT_INFO, uploaded: Map<string, Buffer>, hidden: Set<string>): object | null {
   for (const [id, item] of Object.entries(graph)) {
     if (!info[item.class_type] || hidden.has(item.class_type)) {
@@ -135,11 +178,12 @@ function validate(graph: Graph, info: typeof OBJECT_INFO, uploaded: Map<string, 
   const outputs = Object.keys(graph).filter((id) => info[graph[id].class_type].output_node);
   const nodeErrors: Record<string, object> = {};
   for (const [id, item] of Object.entries(graph)) {
-    const specs = { ...info[item.class_type].input.required, ...(item.class_type === 'LoadImage' && { image: combo([...uploaded.keys()]) }) };
+    const { required, optional = {} } = info[item.class_type].input;
+    const specs = { ...optional, ...required, ...(item.class_type === 'LoadImage' && { image: combo([...uploaded.keys()]) }) };
     const errors = Object.entries(specs).flatMap(([name, spec]) => {
       const options = comboOptions(spec);
       const value = item.inputs[name];
-      if (!options || Array.isArray(value) || options.includes(value)) return [];
+      if (!options || Array.isArray(value) || options.includes(value) || (value === undefined && name in optional)) return [];
       return [
         {
           type: 'value_not_in_list',
@@ -208,7 +252,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
       if (!names.length) continue;
       const spec = info[type].input.required[input] as unknown[];
       const options = [...(comboOptions(spec) as string[]), ...names];
-      info[type] = { ...info[type], input: { required: { ...info[type].input.required, [input]: spec[0] === 'COMBO' ? comboV3(options) : combo(options) } } };
+      info[type] = { ...info[type], input: { ...info[type].input, required: { ...info[type].input.required, [input]: spec[0] === 'COMBO' ? comboV3(options) : combo(options) } } };
     }
     return info;
   }
@@ -231,7 +275,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     const { graph } = task;
     const samplerId = findNode(graph, 'KSampler') ?? findNode(graph, 'FaceDetailer') ?? Object.keys(graph)[0];
     const sampler = graph[samplerId];
-    const positive = String(linked(graph, sampler.inputs.positive)?.inputs.text ?? '');
+    const positive = textAbove(graph, sampler.inputs.positive);
     const seed = Number(sampler.inputs.seed ?? 0);
     const wait = positive.includes('慢') ? slowStepMs : stepMs;
     const failure = positive.includes('显存')

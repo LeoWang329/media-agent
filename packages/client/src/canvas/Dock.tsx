@@ -1,4 +1,16 @@
-import { activePath, aspectRatioText, hasUnsentSettings, imageSizeFits, slotDiff, type AspectRatio, type ChatNode, type PromptMeta } from '@media-agent/shared';
+import {
+  activePath,
+  aspectRatioText,
+  hasUnsentSettings,
+  IMAGE_SIZES,
+  imageSizeFits,
+  roundSize,
+  SIZE_LIMITS,
+  slotDiff,
+  type AspectRatio,
+  type ChatNode,
+  type PromptMeta,
+} from '@media-agent/shared';
 import { EditorContent, type Editor } from '@tiptap/react';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { imageThumbUrl, SLOT_DRAG_TYPE } from '../api';
@@ -9,6 +21,7 @@ import { useComfyStore } from '../store/comfyStore';
 import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
+import { Popover } from '../ui/Popover';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
 import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
@@ -16,6 +29,9 @@ import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overla
 import { tokens } from './tokens';
 
 const RATIOS: AspectRatio[] = ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'auto'];
+
+// 尺寸下拉里「自己填…」那一项的值
+const CUSTOM_SIZE = 'custom';
 
 // 输入框：删槽位里的图时要看输入框里有没有引用它
 let composer: { nodeId: string; editor: Editor } | null = null;
@@ -117,14 +133,19 @@ function VideoParams({ node }: { node: ChatNode }) {
   );
 }
 
-// 生图节点：尺寸和张数，改了存进节点的出图设置；旁边是出图设置，按钮上写着用哪个底模，用导入的工作流时写工作流的名字
+// 生图节点：尺寸和张数，改了存进节点的出图设置；旁边是出图设置，按钮上写着用哪个底模，用导入的工作流时写工作流的名字。
+// 尺寸九档以外能自己填，自己填的也列在下拉里
 function ImageParams({ node }: { node: ChatNode }) {
   const image = imageSize(node);
+  const [customAt, setCustomAt] = useState<DOMRect | null>(null);
+  const listed = IMAGE_SIZES.some((size) => size.width === image.width && size.height === image.height);
   const family = usePromptInfo(node.systemPromptName)?.family ?? 'IL';
   const settings = useImageSettings(node, family);
   const options = useComfyStore((s) => s.options);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const setCount = (count: number) => void patchNode(node.id, { image: { count } });
+  const setSize = (size: { width: number; height: number }) =>
+    void patchNode(node.id, { image: size }).then((ok) => ok && toast(`下次生图按 ${sizeText(size)} 出`));
   const checkpoint = effectiveCheckpoint(settings, family, options);
   const workflow = useNodeWorkflow(settings.workflowId);
 
@@ -146,9 +167,12 @@ function ImageParams({ node }: { node: ChatNode }) {
           data-od-id="image-size"
           value={sizeText(image)}
           onChange={(e) => {
-            const size = e.target.value;
-            const [width, height] = size.split('×').map(Number);
-            void patchNode(node.id, { image: { width, height } }).then((ok) => ok && toast(`下次生图按 ${size} 出`));
+            if (e.target.value === CUSTOM_SIZE) {
+              setCustomAt(e.currentTarget.getBoundingClientRect());
+              return;
+            }
+            const [width, height] = e.target.value.split('×').map(Number);
+            setSize({ width, height });
           }}
         >
           {SIZE_GROUPS.map((group) => (
@@ -160,7 +184,22 @@ function ImageParams({ node }: { node: ChatNode }) {
               ))}
             </optgroup>
           ))}
+          <optgroup label="自己填">
+            {!listed && <option value={sizeText(image)}>{sizeText(image)}</option>}
+            <option value={CUSTOM_SIZE}>自己填…</option>
+          </optgroup>
         </select>
+        {customAt && (
+          <CustomSize
+            anchor={customAt}
+            size={image}
+            onPick={(size) => {
+              setCustomAt(null);
+              setSize(size);
+            }}
+            onClose={() => setCustomAt(null)}
+          />
+        )}
       </div>
       <div className="param">
         <span className="meta">张数</span>
@@ -196,6 +235,43 @@ function ImageParams({ node }: { node: ChatNode }) {
         )}
       </button>
     </span>
+  );
+}
+
+// 尺寸自己填：宽高取最近的 8 的倍数，见 docs/dev-plan.md 5.21
+function CustomSize({ anchor, size, onPick, onClose }: { anchor: DOMRect; size: { width: number; height: number }; onPick: (size: { width: number; height: number }) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState({ width: String(size.width), height: String(size.height) });
+  const rounded = { width: roundSize(Number(draft.width)), height: roundSize(Number(draft.height)) };
+  const ok = [rounded.width, rounded.height].every((side) => side >= SIZE_LIMITS.min && side <= SIZE_LIMITS.max);
+  const go = () => ok && onPick(rounded);
+  const field = (side: 'width' | 'height', label: string, autofocus?: boolean) => (
+    <input
+      className="input mono"
+      type="number"
+      aria-label={label}
+      data-autofocus={autofocus || undefined}
+      min={SIZE_LIMITS.min}
+      max={SIZE_LIMITS.max}
+      step="8"
+      value={draft[side]}
+      onChange={(e) => setDraft({ ...draft, [side]: e.target.value })}
+      onKeyDown={(e) => e.key === 'Enter' && go()}
+    />
+  );
+  return (
+    <Popover anchor={anchor} className="size-pop" odId="popover-custom-size" label="自己填尺寸" onClose={onClose}>
+      <div className="row">
+        {field('width', '宽', true)}
+        <span className="meta">×</span>
+        {field('height', '高')}
+        <button type="button" className="btn btn-primary btn-sm" disabled={!ok} onClick={go}>
+          {ok ? `用 ${sizeText(rounded)}` : '用这个'}
+        </button>
+      </div>
+      <p className="hint">
+        宽高取最近的 8 的倍数，能填 {SIZE_LIMITS.min} 到 {SIZE_LIMITS.max}。
+      </p>
+    </Popover>
   );
 }
 

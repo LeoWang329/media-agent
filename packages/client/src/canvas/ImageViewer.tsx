@@ -1,4 +1,4 @@
-import { imageSettingsOf, type DetailPass, type Family, type FamilyDefaults, type ImageJob, type ImageWhere, type UpscaleSettings } from '@media-agent/shared';
+import { CONTROL_LABELS, imageSettingsOf, NO_PREPROCESSOR, type DetailPass, type Family, type FamilyDefaults, type ImageJob, type ImageWhere, type UpscaleSettings } from '@media-agent/shared';
 import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
@@ -308,14 +308,27 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             <Kv k="底模">
               <span className="mono">{shortCheckpoint(params.checkpoint ?? '')}</span> <span className="tag">{family}</span>
             </Kv>
+            {params.vae && (
+              <Kv k="VAE">
+                <span className="mono">{shortCheckpoint(params.vae)}</span>
+              </Kv>
+            )}
             <Kv k="LoRA">
               {params.loras?.length ? (
-                params.loras.map((lora, i) => (
-                  <span key={i}>
-                    {i > 0 && <br />}
-                    <span className="mono">{shortCheckpoint(lora.name)}</span> <span className="meta mono">{lora.strength}</span>
-                  </span>
-                ))
+                <>
+                  {params.loras.map((lora, i) => (
+                    <span key={i}>
+                      {i > 0 && <br />}
+                      <span className="mono">{shortCheckpoint(lora.name)}</span> <span className="meta mono">{lora.strength}</span>
+                    </span>
+                  ))}
+                  {params.loraTarget === 'model' && (
+                    <>
+                      <br />
+                      <span className="meta">只作用在画图的模型上</span>
+                    </>
+                  )}
+                </>
               ) : (
                 <span className="meta">没挂</span>
               )}
@@ -333,7 +346,21 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             <Kv k="clip skip">
               <span className="mono">{params.clipSkip}</span>
             </Kv>
+            {params.weighting === 'a1111' && <Kv k="权重算法">A1111 的</Kv>}
           </>
+        )}
+        {params.controls && (
+          <Kv k="ControlNet">
+            {params.controls.map((control, i) => (
+              <span key={i}>
+                {i > 0 && <br />}
+                {CONTROL_LABELS[control.type]} <span className="mono">{control.model.replace(/\.(safetensors|pth|bin)$/, '')}</span>{' '}
+                <span className="meta mono">
+                  {control.preprocessor === NO_PREPROCESSOR ? '不提取' : control.preprocessor} · 强度 {control.strength} · {control.start}–{control.end}
+                </span>
+              </span>
+            ))}
+          </Kv>
         )}
         {params.upscale && (
           <Kv k="放大">
@@ -351,6 +378,7 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
                 <span className="mono">{pass.detector.replace(/\.pt$/, '')}</span>{' '}
                 <span className="meta mono">
                   阈值 {pass.threshold} · 重绘 {pass.denoise} · {pass.guideSize}
+                  {pass.sam && ` · SAM ${pass.sam.replace(/\.(pth|safetensors)$/, '')}`}
                 </span>
                 {(pass.positive || pass.negative) && (
                   <span className="meta">（自己写了{[pass.positive && '正面', pass.negative && '负面'].filter(Boolean).join('和')}）</span>
@@ -414,7 +442,7 @@ function RefineForm({ target, family, size }: { target: ImageTarget; family: Fam
       <span className="ib-form-k">放大</span>
       <UpscaleFields value={upscale} models={options?.upscaleModels ?? []} size={size} onChange={setUpscale} />
       <span className="ib-form-k">部位重绘</span>
-      <DetailPassList passes={details} detectors={options?.detectors ?? []} onChange={setDetails} />
+      <DetailPassList passes={details} detectors={options?.detectors ?? []} sams={options?.sams ?? []} onChange={setDetails} />
       <p className="hint">先拿的是节点现在的出图设置，在这里改不影响节点。底模、提示词、种子用这张图的。</p>
       <span className="grow" />
       <button type="button" className="btn btn-primary btn-sm" id="ibRefineGo" disabled={!ready} title={ready ? undefined : '放大和部位重绘至少开一样'} onClick={go}>

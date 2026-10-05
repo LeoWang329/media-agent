@@ -1,14 +1,20 @@
 import {
+  CONTROL_TYPES,
   GUIDE_SIZES,
-  IMAGE_SIZES,
+  SIZE_LIMITS,
   TRANSLATE_LANGUAGES,
   UPSCALE_SCALES,
   type AspectRatio,
   type CanvasNodeLayout,
+  type ControlSettings,
+  type ControlType,
   type DetailPass,
   type ImageRating,
   type ImageSettings,
+  type LoraTarget,
   type NodeKind,
+  type RefImage,
+  type TagWeighting,
   type TranslateLanguage,
   type UpscaleSettings,
 } from '@media-agent/shared';
@@ -97,6 +103,22 @@ export function aspectRatio(value: unknown): AspectRatio {
 }
 
 const RATINGS: ImageRating[] = ['none', 'general', 'sensitive', 'explicit'];
+const LORA_TARGETS: LoraTarget[] = ['both', 'model'];
+const WEIGHTINGS: TagWeighting[] = ['comfy', 'a1111'];
+
+function choice<T extends string>(value: unknown, what: string, choices: T[]): T {
+  if (!choices.includes(value as T)) throw new HttpError(400, `${what}只能是 ${choices.join('、')}`);
+  return value as T;
+}
+
+// 尺寸的宽或高：九档之一，或者自己填的，都是 8 的倍数，见 docs/dev-plan.md 5.21
+function side(value: unknown, what: string): number {
+  const { min, max } = SIZE_LIMITS;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value % 8 !== 0 || value < min || value > max) {
+    throw new HttpError(400, `${what}要是 ${min} 到 ${max} 之间 8 的倍数`);
+  }
+  return value;
+}
 
 function integer(value: unknown, what: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
@@ -110,18 +132,14 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (typeof value !== 'object' || value === null) throw new HttpError(400, '出图设置格式不对');
   const fields = value as Record<string, unknown>;
   const next = { ...base };
-  if (fields.width !== undefined || fields.height !== undefined) {
-    const width = fields.width ?? base.width;
-    const height = fields.height ?? base.height;
-    if (!IMAGE_SIZES.some((size) => size.width === width && size.height === height)) {
-      throw new HttpError(400, `尺寸只能是 ${IMAGE_SIZES.map((size) => `${size.width}×${size.height}`).join('、')}`);
-    }
-    next.width = width as number;
-    next.height = height as number;
-  }
+  if (fields.width !== undefined) next.width = side(fields.width, '宽');
+  if (fields.height !== undefined) next.height = side(fields.height, '高');
   if (fields.count !== undefined) next.count = integer(fields.count, '张数', 1, 8);
   if (fields.workflowId !== undefined) next.workflowId = fields.workflowId === null ? null : uuid(fields.workflowId);
   if (fields.checkpoint !== undefined) next.checkpoint = text(fields.checkpoint, '底模');
+  if (fields.vae !== undefined) next.vae = text(fields.vae, 'VAE');
+  if (fields.loraTarget !== undefined) next.loraTarget = choice(fields.loraTarget, 'LoRA 作用在哪', LORA_TARGETS);
+  if (fields.weighting !== undefined) next.weighting = choice(fields.weighting, '权重算法', WEIGHTINGS);
   if (fields.loras !== undefined) {
     if (!Array.isArray(fields.loras)) throw new HttpError(400, 'LoRA 格式不对');
     next.loras = fields.loras.map((lora) => {
@@ -144,6 +162,7 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (fields.negativeExtra !== undefined) next.negativeExtra = text(fields.negativeExtra, '额外的负面词');
   if (fields.upscale !== undefined) next.upscale = upscaleSettings(fields.upscale);
   if (fields.details !== undefined) next.details = detailPasses(fields.details);
+  if (fields.controls !== undefined) next.controls = controls(fields.controls);
   return next;
 }
 
@@ -170,10 +189,11 @@ export function detailPasses(value: unknown): DetailPass[] {
   if (!Array.isArray(value)) throw new HttpError(400, '部位重绘的设置格式不对');
   return value.map((item) => {
     if (typeof item !== 'object' || item === null) throw new HttpError(400, '部位重绘的设置格式不对');
-    const { on, detector, threshold, denoise, guideSize, positive, negative } = item as Record<string, unknown>;
+    const { on, detector, sam, threshold, denoise, guideSize, positive, negative } = item as Record<string, unknown>;
     return {
       on: bool(on, '部位重绘开关'),
       detector: text(detector, '检测模型'),
+      sam: text(sam, 'SAM 模型'),
       threshold: between(threshold, '检测阈值', 0, 1),
       denoise: between(denoise, '部位重绘的重绘强度', 0.01, 1),
       guideSize: oneOf(guideSize, '重画尺寸', GUIDE_SIZES),
@@ -181,4 +201,38 @@ export function detailPasses(value: unknown): DetailPass[] {
       negative: text(negative, '这道的负面'),
     };
   });
+}
+
+// ControlNet 的列表，见 docs/dev-plan.md 5.21。强度 0 到 2，起止 0 到 1、起点不比终点大
+export function controls(value: unknown): ControlSettings[] {
+  if (!Array.isArray(value)) throw new HttpError(400, 'ControlNet 的设置格式不对');
+  return value.map((item) => {
+    if (typeof item !== 'object' || item === null) throw new HttpError(400, 'ControlNet 的设置格式不对');
+    const { on, type, image, preprocessor, model, strength, start, end } = item as Record<string, unknown>;
+    if (!CONTROL_TYPES.includes(type as ControlType)) throw new HttpError(400, `ControlNet 的类型只能是 ${CONTROL_TYPES.join('、')}`);
+    const from = between(start, 'ControlNet 的起点', 0, 1);
+    const to = between(end, 'ControlNet 的终点', 0, 1);
+    if (from > to) throw new HttpError(400, 'ControlNet 的起点不能比终点大');
+    return {
+      on: bool(on, 'ControlNet 开关'),
+      type: type as ControlType,
+      image: refImage(image),
+      preprocessor: nonEmptyText(preprocessor, '提取方式'),
+      model: text(model, 'ControlNet 模型'),
+      strength: between(strength, 'ControlNet 的强度', 0, 2),
+      start: from,
+      end: to,
+    };
+  });
+}
+
+// 参考图：槽位里的图，或者这个节点出过的图；没选是 null
+function refImage(value: unknown): RefImage | null {
+  if (value === null) return null;
+  const fields = (value ?? {}) as Record<string, unknown>;
+  if (fields.kind === 'slot') return { kind: 'slot', imageId: nonEmptyText(fields.imageId, '参考图') };
+  if (fields.kind === 'generated') {
+    return { kind: 'generated', messageId: nonEmptyText(fields.messageId, '参考图'), jobId: nonEmptyText(fields.jobId, '参考图'), seed: integer(fields.seed, '参考图的种子', 0) };
+  }
+  throw new HttpError(400, '参考图格式不对');
 }

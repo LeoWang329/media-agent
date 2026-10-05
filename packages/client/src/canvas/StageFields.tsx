@@ -64,8 +64,8 @@ export function UpscaleFields({ value, models, size, onChange }: { value: Upscal
   );
 }
 
-// 部位重绘，像 WebUI 的 ADetailer：能加几道，按顺序做；每道一个检测模型
-export function DetailPassList({ passes, detectors, onChange }: { passes: DetailPass[]; detectors: string[]; onChange: (next: DetailPass[]) => void }) {
+// 部位重绘，像 WebUI 的 ADetailer：能加几道，按顺序做；每道一个检测模型，能选用 SAM 把框收成形状
+export function DetailPassList({ passes, detectors, sams, onChange }: { passes: DetailPass[]; detectors: string[]; sams: string[]; onChange: (next: DetailPass[]) => void }) {
   const set = (i: number, patch: Partial<DetailPass>) => onChange(passes.map((pass, j) => (j === i ? { ...pass, ...patch } : pass)));
   const move = (i: number, step: number) => {
     const next = [...passes];
@@ -133,6 +133,18 @@ export function DetailPassList({ passes, detectors, onChange }: { passes: Detail
                 {GUIDE_SIZES.map((size) => (
                   <option key={size} value={size}>
                     {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="ib-num">
+              SAM
+              <select className="select" aria-label="SAM" value={pass.sam} onChange={(e) => set(i, { sam: e.target.value })}>
+                <option value="">不用</option>
+                {withValue(sams, pass.sam).map((name) => (
+                  <option key={name} value={name}>
+                    {name.replace(/\.(pth|safetensors)$/, '')}
+                    {!sams.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
                   </option>
                 ))}
               </select>

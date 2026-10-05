@@ -4,18 +4,27 @@ import {
   builtinGraph,
   checkpointFamily,
   composeChecked,
+  controlChoices,
+  controlModels,
+  controlPreprocessors,
   defaultImageSettings,
   downloadFileName,
   FAMILY_DEFAULTS,
   imageErrorKind,
   IMAGE_SIZES,
+  imageSettingsOf,
   jobSeeds,
   negativePrompt,
+  newControl,
   parsePromptMeta,
   positivePrompt,
+  roundSize,
   splitTags,
   tempFileName,
   tempFolderName,
+  unionType,
+  type ControlSettings,
+  type DetailPass,
   type ImageJobParams,
 } from '../src';
 
@@ -126,7 +135,7 @@ describe('builtinGraph', () => {
   });
 
   it('部位重绘：每道一个检测模型加一个 FaceDetailer，一道接一道；没写提示词的用原图的，写了的另编码；segm 的按轮廓', () => {
-    const pass = { on: true, threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+    const pass = { on: true, sam: '', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
     const graph = builtinGraph(
       {
         ...params,
@@ -169,7 +178,7 @@ describe('builtinGraph', () => {
 
   it('出完的图上补做：从传上去的那张图开始，不出新图', () => {
     const graph = builtinGraph(
-      { ...params, upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0 }, details: [{ on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' }] },
+      { ...params, upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0 }, details: [{ on: true, detector: 'bbox/face_yolov8m.pt', sam: '', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' }] },
       7,
       { image: 'media-agent-1234.png' },
     );
@@ -179,6 +188,169 @@ describe('builtinGraph', () => {
     expect(graph['7'].inputs.image).toEqual(['5', 0]);
     expect(graph['10'].inputs).toMatchObject({ image: ['8', 0] });
     expect(graph['11']).toEqual({ class_type: 'PreviewImage', inputs: { images: ['10', 0] } });
+  });
+
+  const depth: ControlSettings = {
+    on: true,
+    type: 'depth',
+    image: { kind: 'slot', imageId: 'a' },
+    preprocessor: 'MiDaS-DepthMapPreprocessor',
+    model: 'depth-test.safetensors',
+    strength: 1,
+    start: 0,
+    end: 1,
+  };
+
+  it('ControlNet：参考图提取成深度图（分辨率取短边），几个按顺序接在正负面后面，采样用接好的；不提取的直接用那张', () => {
+    const pose: ControlSettings = {
+      ...depth,
+      type: 'pose',
+      image: { kind: 'generated', messageId: 'm', jobId: 'j', seed: 3 },
+      preprocessor: 'none',
+      model: 'openpose-test.safetensors',
+      strength: 0.8,
+      start: 0.1,
+      end: 0.9,
+    };
+    const graph = builtinGraph({ ...params, controls: [depth, pose] }, 7, { controls: ['media-agent-a.jpg', 'media-agent-b.png'] });
+    expect(graph['5']).toEqual({ class_type: 'LoadImage', inputs: { image: 'media-agent-a.jpg' } });
+    expect(graph['6']).toEqual({ class_type: 'AIO_Preprocessor', inputs: { image: ['5', 0], preprocessor: 'MiDaS-DepthMapPreprocessor', resolution: 832 } });
+    expect(graph['7']).toEqual({ class_type: 'ControlNetLoader', inputs: { control_net_name: 'depth-test.safetensors' } });
+    expect(graph['8']).toEqual({
+      class_type: 'ControlNetApplyAdvanced',
+      inputs: { positive: ['3', 0], negative: ['4', 0], control_net: ['7', 0], image: ['6', 0], strength: 1, start_percent: 0, end_percent: 1 },
+    });
+    expect(graph['9']).toEqual({ class_type: 'LoadImage', inputs: { image: 'media-agent-b.png' } });
+    expect(graph['10']).toEqual({ class_type: 'ControlNetLoader', inputs: { control_net_name: 'openpose-test.safetensors' } });
+    expect(graph['11']).toEqual({
+      class_type: 'ControlNetApplyAdvanced',
+      inputs: { positive: ['8', 0], negative: ['8', 1], control_net: ['10', 0], image: ['9', 0], strength: 0.8, start_percent: 0.1, end_percent: 0.9 },
+    });
+    expect(graph['12'].class_type).toBe('EmptyLatentImage');
+    expect(graph['13']).toMatchObject({ class_type: 'KSampler', inputs: { positive: ['11', 0], negative: ['11', 1], latent_image: ['12', 0] } });
+    expect(nodesOf(graph, 'AIO_Preprocessor')).toHaveLength(1);
+  });
+
+  it('ControlNet：名字带 union 的再告诉它是哪种；放大重画也用接好的正负面，部位重绘用原来的', () => {
+    const face = { on: true, detector: 'bbox/face_yolov8m.pt', sam: '', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+    const graph = builtinGraph(
+      { ...params, controls: [{ ...depth, model: 'union-test.safetensors' }], upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0.35 }, details: [face] },
+      7,
+      { controls: ['u.png'] },
+    );
+    expect(graph['8']).toEqual({ class_type: 'SetUnionControlNetType', inputs: { control_net: ['7', 0], type: 'depth' } });
+    expect(graph['9'].inputs.control_net).toEqual(['8', 0]);
+    const samplers = nodesOf(graph, 'KSampler');
+    expect(samplers).toHaveLength(2);
+    for (const [, sampler] of samplers) expect(sampler.inputs).toMatchObject({ positive: ['9', 0], negative: ['9', 1] });
+    expect(nodesOf(graph, 'FaceDetailer')[0][1].inputs).toMatchObject({ positive: ['3', 0], negative: ['4', 0] });
+  });
+
+  it('E02 的几样：单独的 VAE 解码、放大重画、部位重绘都用它；LoRA 只作用在画图的模型上，文字理解用底模的；A1111 的权重算法；部位重绘用 SAM 收形状，segm 的也改用 SAM', () => {
+    const face = { on: true, detector: 'bbox/face_yolov8m.pt', sam: 'sam_vit_b_01ec64.pth', threshold: 0.2, denoise: 0.5, guideSize: 1024, positive: '', negative: '' };
+    const graph = builtinGraph(
+      {
+        ...params,
+        vae: 'sdxl_vae.safetensors',
+        loras: [
+          { name: 'a.safetensors', strength: 1 },
+          { name: 'b.safetensors', strength: 0.5 },
+        ],
+        loraTarget: 'model',
+        weighting: 'a1111',
+        upscale: { on: true, model: '4x-test.pth', scale: 2, denoise: 0.35 },
+        details: [face, { ...face, detector: 'segm/person_yolov8m-seg.pt', positive: 'masterpiece, detailed body' }],
+      },
+      7,
+    );
+    expect(graph['2']).toEqual({ class_type: 'VAELoader', inputs: { vae_name: 'sdxl_vae.safetensors' } });
+    expect(graph['3']).toEqual({ class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'a.safetensors', strength_model: 1, model: ['1', 0] } });
+    expect(graph['4']).toEqual({ class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'b.safetensors', strength_model: 0.5, model: ['3', 0] } });
+    expect(graph['5']).toEqual({ class_type: 'CLIPSetLastLayer', inputs: { stop_at_clip_layer: -2, clip: ['1', 1] } });
+    expect(graph['6']).toEqual({
+      class_type: 'BNK_CLIPTextEncodeAdvanced',
+      inputs: { text: 'masterpiece, 1girl', clip: ['5', 0], token_normalization: 'none', weight_interpretation: 'A1111' },
+    });
+    expect(graph['7'].inputs).toMatchObject({ text: 'lowres', weight_interpretation: 'A1111' });
+    expect(nodesOf(graph, 'CLIPTextEncode')).toHaveLength(0);
+    expect(nodesOf(graph, 'BNK_CLIPTextEncodeAdvanced')).toHaveLength(3);
+    expect(nodesOf(graph, 'LoraLoader')).toHaveLength(0);
+    for (const [, sampler] of nodesOf(graph, 'KSampler')) expect(sampler.inputs.model).toEqual(['4', 0]);
+    for (const type of ['VAEDecode', 'VAEEncode', 'FaceDetailer']) {
+      for (const [, item] of nodesOf(graph, type)) expect(item.inputs.vae).toEqual(['2', 0]);
+    }
+    const sams = nodesOf(graph, 'SAMLoader');
+    expect(sams.map(([, item]) => item.inputs)).toEqual([
+      { model_name: 'sam_vit_b_01ec64.pth', device_mode: 'AUTO' },
+      { model_name: 'sam_vit_b_01ec64.pth', device_mode: 'AUTO' },
+    ]);
+    const detailers = nodesOf(graph, 'FaceDetailer');
+    expect(detailers.map(([, item]) => item.inputs.sam_model_opt)).toEqual(sams.map(([id]) => [id, 0]));
+    expect(detailers[1][1].inputs).not.toHaveProperty('segm_detector_opt');
+    expect(detailers[0][1].inputs).toMatchObject({ model: ['4', 0], clip: ['5', 0], bbox_threshold: 0.2, denoise: 0.5, sam_detection_hint: 'center-1', sam_threshold: 0.93 });
+  });
+});
+
+describe('ControlNet 的下拉', () => {
+  const preprocessors = [
+    'none',
+    'MiDaS-DepthMapPreprocessor',
+    'DepthAnythingV2Preprocessor',
+    'DWPreprocessor',
+    'OpenposePreprocessor',
+    'DensePosePreprocessor',
+    'AnimeLineArtPreprocessor',
+    'LineArtPreprocessor',
+    'CannyEdgePreprocessor',
+    'HEDPreprocessor',
+    'M-LSDPreprocessor',
+    'TilePreprocessor',
+  ];
+  const controlnets = ['FLUX.1-dev-ControlNet-Union-Pro-2.0.safetensors', 'noob-sdxl-controlnet-depth_midas-v1-1.safetensors', 'noob_openpose.safetensors', 'xinsir-union-promax.safetensors'];
+
+  it('提取方式按类型挑，「其他」全列，都不含 none', () => {
+    expect(controlPreprocessors('pose', preprocessors)).toEqual(['DWPreprocessor', 'OpenposePreprocessor', 'DensePosePreprocessor']);
+    expect(controlPreprocessors('depth', preprocessors)).toEqual(['MiDaS-DepthMapPreprocessor', 'DepthAnythingV2Preprocessor']);
+    expect(controlPreprocessors('lineart', preprocessors)).toEqual(['AnimeLineArtPreprocessor', 'LineArtPreprocessor']);
+    expect(controlPreprocessors('edge', preprocessors)).toEqual(['CannyEdgePreprocessor', 'HEDPreprocessor', 'M-LSDPreprocessor']);
+    expect(controlPreprocessors('other', preprocessors)).toEqual(preprocessors.slice(1));
+  });
+
+  it('模型：名字对得上的在前，再是带 union 的；一个都对不上全列，「其他」全列', () => {
+    expect(controlModels('depth', controlnets)).toEqual([
+      'noob-sdxl-controlnet-depth_midas-v1-1.safetensors',
+      'FLUX.1-dev-ControlNet-Union-Pro-2.0.safetensors',
+      'xinsir-union-promax.safetensors',
+    ]);
+    expect(controlModels('lineart', controlnets)).toEqual(['FLUX.1-dev-ControlNet-Union-Pro-2.0.safetensors', 'xinsir-union-promax.safetensors']);
+    expect(controlModels('lineart', ['a.safetensors'])).toEqual(['a.safetensors']);
+    expect(controlModels('other', controlnets)).toEqual(controlnets);
+  });
+
+  it('新加一个先选的：深度 MiDaS、姿势 DWPose，列表里没有就选这一类的第一个，一个都没有是不提取；模型选名字对得上的，没有就空着', () => {
+    expect(newControl('depth', { preprocessors, controlnets })).toEqual({
+      on: true,
+      type: 'depth',
+      image: null,
+      preprocessor: 'MiDaS-DepthMapPreprocessor',
+      model: 'noob-sdxl-controlnet-depth_midas-v1-1.safetensors',
+      strength: 1,
+      start: 0,
+      end: 1,
+    });
+    expect(controlChoices('pose', { preprocessors, controlnets })).toEqual({ preprocessor: 'DWPreprocessor', model: 'noob_openpose.safetensors' });
+    expect(controlChoices('pose', { preprocessors: ['none', 'OpenposePreprocessor'], controlnets: ['xinsir-union-promax.safetensors'] })).toEqual({ preprocessor: 'OpenposePreprocessor', model: '' });
+    expect(controlChoices('edge', { preprocessors: ['none'], controlnets })).toEqual({ preprocessor: 'none', model: '' });
+    expect(controlChoices('other', { preprocessors, controlnets })).toEqual({ preprocessor: 'none', model: '' });
+  });
+
+  it('union 的类型：姿势 openpose、深度 depth、线稿和 Canny 那类边缘一组、HED 那类边缘一组、其他 auto', () => {
+    expect(unionType({ type: 'pose', preprocessor: 'DWPreprocessor' })).toBe('openpose');
+    expect(unionType({ type: 'depth', preprocessor: 'none' })).toBe('depth');
+    expect(unionType({ type: 'lineart', preprocessor: 'AnimeLineArtPreprocessor' })).toBe('canny/lineart/anime_lineart/mlsd');
+    expect(unionType({ type: 'edge', preprocessor: 'CannyEdgePreprocessor' })).toBe('canny/lineart/anime_lineart/mlsd');
+    expect(unionType({ type: 'edge', preprocessor: 'HEDPreprocessor' })).toBe('hed/pidi/scribble/ted');
+    expect(unionType({ type: 'other', preprocessor: 'none' })).toBe('auto');
   });
 });
 
@@ -196,13 +368,32 @@ describe('种子和文件名', () => {
 });
 
 describe('出图设置的默认值', () => {
-  it('尺寸九档，正方形、竖的四档、横的四档', () => {
+  it('尺寸九档，正方形、竖的四档、横的四档；自己填的取最近的 8 的倍数', () => {
     expect(IMAGE_SIZES).toHaveLength(9);
     expect(IMAGE_SIZES).toContainEqual({ width: 1216, height: 832 });
+    expect([870, 1283, 864].map(roundSize)).toEqual([872, 1280, 864]);
   });
 
-  it('参数取系列的默认值；尺寸 832×1216、4 张、种子随机、底模没选（出图时用这台 ComfyUI 上这个系列的第一个）', () => {
-    expect(defaultImageSettings(FAMILY_DEFAULTS.Pony)).toMatchObject({ width: 832, height: 1216, count: 4, steps: 25, cfg: 7, seed: null, checkpoint: '', rating: 'none' });
+  it('参数取系列的默认值；尺寸 832×1216、4 张、种子随机、底模没选（出图时用这台 ComfyUI 上这个系列的第一个），不开 ControlNet，E02 的几样照原来的', () => {
+    expect(defaultImageSettings(FAMILY_DEFAULTS.Pony)).toMatchObject({
+      width: 832,
+      height: 1216,
+      count: 4,
+      steps: 25,
+      cfg: 7,
+      seed: null,
+      checkpoint: '',
+      rating: 'none',
+      controls: [],
+      vae: '',
+      loraTarget: 'both',
+      weighting: 'comfy',
+    });
+  });
+
+  it('节点里 P16 之前加的部位重绘没有 SAM，读出来算不用', () => {
+    const old = { on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' } as DetailPass;
+    expect(imageSettingsOf({ details: [old] }, FAMILY_DEFAULTS.IL).details).toEqual([{ ...old, sam: '' }]);
   });
 
   it('底模属于哪个系列：标过的照标的；没标过的按名字猜，看不出是 IL 或 Pony 的两个都不是', () => {

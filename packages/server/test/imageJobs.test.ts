@@ -10,6 +10,7 @@ import {
   type ComfyOptions,
   type ComfyStatus,
   type Config,
+  type ControlSettings,
   type HomeData,
   type ImageJob,
   type ImageJobEvent,
@@ -18,6 +19,7 @@ import {
   type ImageWhere,
   type ImportedWorkflow,
   type Message,
+  type RefImage,
   type SharedSettings,
 } from '@media-agent/shared';
 import { createHash } from 'node:crypto';
@@ -455,7 +457,7 @@ describe('出图设置', () => {
     expect(await t.ok('GET', '/comfy/status')).toEqual({ ok: false, url: null, error: '还没填局域网 ComfyUI 的地址' });
   });
 
-  it('节点的出图设置：只有生图节点能改，没改过的按系列默认值补全，尺寸只能是九档之一；岔出去的节点带着', async () => {
+  it('节点的出图设置：只有生图节点能改，没改过的按系列默认值补全，宽高是 64 到 2048 之间 8 的倍数；岔出去的节点带着', async () => {
     const video = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 400, y: 0 })).id;
     expect(await t.call('PATCH', `/canvases/${canvasId}/nodes/${video}`, { image: { count: 2 } })).toEqual({ status: 400, body: { error: '这个节点用的不是生图提示词' } });
 
@@ -466,7 +468,10 @@ describe('出图设置', () => {
       count: 2,
       workflowId: null,
       checkpoint: '',
+      vae: '',
       loras: [{ name: 'detail-test.safetensors', strength: 0.7 }],
+      loraTarget: 'both',
+      weighting: 'comfy',
       steps: 28,
       cfg: 5,
       sampler: 'euler_ancestral',
@@ -476,9 +481,12 @@ describe('出图设置', () => {
       negativeExtra: '',
       upscale: { on: false, model: '', scale: 2, denoise: 0.35 },
       details: [],
+      controls: [],
     });
-    expect((await t.call('PATCH', nodeUrl(), { image: { width: 1000, height: 1000 } })).status).toBe(400);
+    expect(await t.call('PATCH', nodeUrl(), { image: { width: 1001 } })).toEqual({ status: 400, body: { error: '宽要是 64 到 2048 之间 8 的倍数' } });
+    expect((await t.call('PATCH', nodeUrl(), { image: { height: 2056 } })).status).toBe(400);
     expect((await t.call('PATCH', nodeUrl(), { image: { count: 9 } })).status).toBe(400);
+    expect((await t.ok<ChatNode>('PATCH', nodeUrl(), { image: { width: 864, height: 1280 } })).image).toMatchObject({ width: 864, height: 1280 });
     expect((await t.ok<ChatNode>('PATCH', nodeUrl(), { image: { width: 1216, height: 832 } })).image).toMatchObject({ width: 1216, height: 832, count: 2 });
 
     const fork = await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: replyId });
@@ -487,12 +495,13 @@ describe('出图设置', () => {
 });
 
 describe('放大、部位重绘、出完的图上补做、预设', () => {
-  const face = { on: true, detector: 'bbox/face_yolov8m.pt', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
+  const face = { on: true, detector: 'bbox/face_yolov8m.pt', sam: '', threshold: 0.3, denoise: 0.4, guideSize: 1024, positive: '', negative: '' };
   const hideNodes = (types: string[]) => fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types }) });
 
-  it('检测模型只列 .pt 的：同一个文件夹里的 SAM 不列', async () => {
+  it('检测模型只列 .pt 的：同一个文件夹里的 SAM 不列，SAM 另列', async () => {
     const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
     expect(options.detectors).toEqual(['bbox/face_yolov8m.pt', 'bbox/hand_yolov8s.pt', 'segm/person_yolov8m-seg.pt']);
+    expect(options.sams).toEqual(['sam_vit_b_01ec64.pth']);
   });
 
   it('出图时放大、部位重绘：只记开着的，部位重绘写了的提示词拼上固定开头和默认负面词；出的图是放大后的尺寸', async () => {
@@ -573,7 +582,7 @@ describe('放大、部位重绘、出完的图上补做、预设', () => {
     expect(created.settings).not.toHaveProperty('seed');
     expect(await t.call('POST', '/image-presets', { name: 'E02', family: 'IL', settings })).toEqual({ status: 409, body: { error: 'IL 系列已经有叫「E02」的预设' } });
     expect((await t.call('POST', '/image-presets', { name: 'E02', family: 'Pony', settings })).status).toBe(201);
-    expect((await t.call('POST', '/image-presets', { name: '尺寸不对', family: 'IL', settings: { ...settings, width: 1000 } })).status).toBe(400);
+    expect((await t.call('POST', '/image-presets', { name: '尺寸不对', family: 'IL', settings: { ...settings, width: 1001 } })).status).toBe(400);
     expect((await t.call('POST', '/image-presets', { name: '倍数不对', family: 'IL', settings: { ...settings, upscale: { ...settings.upscale, scale: 3 } } })).status).toBe(400);
 
     expect((await t.ok<ImagePreset>('PATCH', `/image-presets/${created.id}`, { name: 'E02 新' })).name).toBe('E02 新');
@@ -582,6 +591,175 @@ describe('放大、部位重绘、出完的图上补做、预设', () => {
     await t.ok('DELETE', `/image-presets/${created.id}`);
     expect((await t.ok<ImagePreset[]>('GET', '/image-presets')).map((preset) => preset.family)).toEqual(['Pony']);
     expect(JSON.parse(await fs.readFile(path.join(t.work, 'image-presets.json'), 'utf8'))).toHaveLength(1);
+  });
+});
+
+describe('ControlNet', () => {
+  const hideNodes = (types: string[]) => fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types }) });
+  const uploads = async () => (await (await fetch(`${comfyUrl}/_uploads`)).json()) as { name: string; bytes: number; sha256: string }[];
+  const sha256 = async (file: string) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
+  const depth = (image: RefImage | null): ControlSettings => ({ on: true, type: 'depth', image, preprocessor: 'MiDaS-DepthMapPreprocessor', model: 'depth-test.safetensors', strength: 1, start: 0, end: 1 });
+
+  it('槽位里的图做参考：传上去的是画布里存的那张，流程里先提取再接 ControlNet，记进这一组；同样参数再来时再传一次', async () => {
+    const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
+    expect(options.controlnets).toEqual(['openpose-test.safetensors', 'depth-test.safetensors', 'union-test.safetensors']);
+    expect(options.preprocessors).toContain('MiDaS-DepthMapPreprocessor');
+
+    const imageId = await t.addImage(canvasId, '#3366cc');
+    await t.ok('PATCH', nodeUrl(), { slots: [imageId] });
+    const messageId = await prepare('1girl, smile', { controls: [depth({ kind: 'slot', imageId })] });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params.controls).toEqual([depth({ kind: 'slot', imageId })]);
+    expect((await until(messageId, job.id, settled)).images[0]).toMatchObject({ status: 'done', width: 832, height: 1216 });
+
+    const record = (await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).images[imageId];
+    const sha = await sha256(path.join(t.work, 'canvases', canvasId, 'images', `${record.sha256}.${record.ext}`));
+    const name = `media-agent-${sha.slice(0, 16)}.jpg`;
+    expect(await uploads()).toEqual([{ name, bytes: expect.any(Number), sha256: sha }]);
+    const sent = (await lastPrompts()).at(-1)!.prompt;
+    expect(sent).toEqual(builtinGraph(job.params, 100, { controls: [name] }));
+
+    const again = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: job.id, index: 0, sameSeed: true } });
+    expect(again.params.controls).toEqual(job.params.controls);
+    await until(messageId, again.id, settled);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(sent);
+  });
+
+  it('出过的图做参考、选了不提取、模型是 union 的：直接用那张，告诉 union 是哪种', async () => {
+    const messageId = await prepare('1girl');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const original = (await until(messageId, first.id, settled)).images[0];
+    const ref: RefImage = { kind: 'generated', messageId, jobId: first.id, seed: 100 };
+    await t.ok('PATCH', nodeUrl(), { image: { controls: [{ ...depth(ref), type: 'pose', preprocessor: 'none', model: 'union-test.safetensors' }] } });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, job.id, settled)).images[0]).toMatchObject({ status: 'done' });
+
+    const sent = Object.values((await lastPrompts()).at(-1)!.prompt as ComfyGraph);
+    expect(sent.some((node) => node.class_type === 'AIO_Preprocessor')).toBe(false);
+    expect(sent.find((node) => node.class_type === 'SetUnionControlNetType')!.inputs.type).toBe('openpose');
+    expect((await uploads()).at(-1)!.sha256).toBe(await sha256(path.join(t.work, original.file!)));
+  });
+
+  it('开着的没选参考图、没选模型不让出，关着的不管；起点比终点大、强度超出、类型不对的不收；预设不存参考图', async () => {
+    const messageId = await prepare('1girl', { controls: [depth({ kind: 'slot', imageId: 'x' }), depth(null)] });
+    expect(await t.call('POST', imagesUrl(messageId), { promptIndex: 0 })).toEqual({ status: 400, body: { error: 'ControlNet 第 2 个还没选参考图' } });
+    await t.ok('PATCH', nodeUrl(), { image: { controls: [{ ...depth({ kind: 'slot', imageId: 'x' }), model: '' }] } });
+    expect(await t.call('POST', imagesUrl(messageId), { promptIndex: 0 })).toEqual({ status: 400, body: { error: 'ControlNet 第 1 个还没选模型' } });
+    expect(await t.call('PATCH', nodeUrl(), { image: { controls: [{ ...depth(null), start: 0.8, end: 0.2 }] } })).toEqual({ status: 400, body: { error: 'ControlNet 的起点不能比终点大' } });
+    expect((await t.call('PATCH', nodeUrl(), { image: { controls: [{ ...depth(null), strength: 3 }] } })).status).toBe(400);
+    expect((await t.call('PATCH', nodeUrl(), { image: { controls: [{ ...depth(null), type: 'style' }] } })).status).toBe(400);
+
+    await t.ok('PATCH', nodeUrl(), { image: { controls: [{ ...depth(null), on: false }] } });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params).not.toHaveProperty('controls');
+    await until(messageId, job.id, settled);
+
+    const preset = await t.ok<ImagePreset>('POST', '/image-presets', { name: '深度', family: 'IL', settings: { controls: [depth({ kind: 'slot', imageId: 'x' })] } });
+    expect(preset.settings.controls).toEqual([depth(null)]);
+    // P15 之前存的预设没有 ControlNet，读的时候补成空的
+    const file = path.join(t.work, 'image-presets.json');
+    const [stored] = JSON.parse(await fs.readFile(file, 'utf8')) as ImagePreset[];
+    const { controls: _controls, ...older } = stored.settings;
+    await fs.writeFile(file, JSON.stringify([{ ...stored, settings: older }]));
+    expect((await t.ok<ImagePreset[]>('GET', '/image-presets'))[0].settings.controls).toEqual([]);
+  });
+
+  it('参考图找不到了，这组算失败，说是哪个 ControlNet；没装 AIO_Preprocessor，要提取的一张都不发，说要装哪个插件，不提取的照发', async () => {
+    const messageId = await prepare('1girl', { controls: [depth({ kind: 'slot', imageId: 'gone' })] });
+    const lost = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, lost.id, settled)).images[0]).toMatchObject({
+      status: 'failed',
+      error: 'ControlNet「深度」的参考图找不到了：删掉了，或者临时文件清掉了又没下载过',
+    });
+
+    await hideNodes(['AIO_Preprocessor']);
+    await t.ok('GET', '/comfy/options?refresh=1');
+    const imageId = await t.addImage(canvasId, '#cc6633');
+    await t.ok('PATCH', nodeUrl(), { image: { controls: [depth({ kind: 'slot', imageId })] } });
+    const missing = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, missing.id, settled)).images[0]).toMatchObject({
+      status: 'failed',
+      error: '这台 ComfyUI 缺插件：object_info 里没有 AIO_Preprocessor，要装 comfyui_controlnet_aux',
+    });
+    expect(await lastPrompts()).toEqual([]);
+
+    await t.ok('PATCH', nodeUrl(), { image: { controls: [{ ...depth({ kind: 'slot', imageId }), preprocessor: 'none' }] } });
+    const plain = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, plain.id, settled)).images[0]).toMatchObject({ status: 'done' });
+  });
+});
+
+describe('E02 的几样', () => {
+  const face = { on: true, detector: 'bbox/face_yolov8m.pt', sam: 'sam_vit_b_01ec64.pth', threshold: 0.2, denoise: 0.5, guideSize: 1024, positive: '', negative: '' };
+  const e02 = {
+    width: 864,
+    height: 1280,
+    vae: 'sdxl_vae.safetensors',
+    loras: [{ name: 'detail-test.safetensors', strength: 1 }],
+    loraTarget: 'model',
+    weighting: 'a1111',
+    details: [face],
+  };
+  const hideNodes = (types: string[]) => fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types }) });
+
+  it('默认的不记；都打开：记进这一组，流程里换成单独的 VAE、只作用在画图模型上的 LoRA、A1111 的编码、SAM，尺寸 864×1280；同样参数再来、补做照用', async () => {
+    const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
+    expect(options.vaes).toEqual(['sdxl_vae.safetensors']);
+
+    const plainId = await prepare('1girl');
+    const plain = await t.ok<ImageJob>('POST', imagesUrl(plainId), { promptIndex: 0 });
+    for (const key of ['vae', 'loraTarget', 'weighting']) expect(plain.params).not.toHaveProperty(key);
+    await until(plainId, plain.id, settled);
+
+    const messageId = await prepare('1girl, (smile:1.2)', e02);
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect(job.params).toMatchObject({ width: 864, height: 1280, vae: 'sdxl_vae.safetensors', loraTarget: 'model', weighting: 'a1111', details: [face] });
+    expect((await until(messageId, job.id, settled)).images[0]).toMatchObject({ status: 'done', width: 864, height: 1280 });
+    const sent = (await lastPrompts()).at(-1)!.prompt as ComfyGraph;
+    expect(sent).toEqual(builtinGraph(job.params, 100));
+    const types = Object.values(sent).map((node) => node.class_type);
+    for (const type of ['VAELoader', 'LoraLoaderModelOnly', 'BNK_CLIPTextEncodeAdvanced', 'SAMLoader']) expect(types).toContain(type);
+    expect(Object.values(sent).find((node) => node.class_type === 'EmptyLatentImage')!.inputs).toMatchObject({ width: 864, height: 1280 });
+
+    const again = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: job.id, index: 0, sameSeed: true } });
+    expect(again.params).toEqual(job.params);
+    await until(messageId, again.id, settled);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(sent);
+
+    // 节点改回默认的以后，在那张上补做：底模、VAE、LoRA 和权重算法用那张图的
+    await t.ok('PATCH', nodeUrl(), { image: { vae: '', loraTarget: 'both', weighting: 'comfy' } });
+    const refined = await t.ok<ImageJob>('POST', imagesUrl(messageId), { refine: { jobId: job.id, index: 0, upscale: { on: false, model: '', scale: 2, denoise: 0.35 }, details: [face] } });
+    expect(refined.params).toMatchObject({ vae: 'sdxl_vae.safetensors', loraTarget: 'model', weighting: 'a1111', width: 864, height: 1280 });
+    await until(messageId, refined.id, settled);
+  });
+
+  it('权重算法、LoRA 作用在哪只能是那两种，部位重绘的每道要带 SAM（空着是不用）；预设能存自己填的尺寸，P16 之前存的预设按默认的补上', async () => {
+    expect(await t.call('PATCH', nodeUrl(), { image: { weighting: 'compel' } })).toEqual({ status: 400, body: { error: '权重算法只能是 comfy、a1111' } });
+    expect(await t.call('PATCH', nodeUrl(), { image: { loraTarget: 'clip' } })).toEqual({ status: 400, body: { error: 'LoRA 作用在哪只能是 both、model' } });
+    expect((await t.call('PATCH', nodeUrl(), { image: { vae: null } })).status).toBe(400);
+    const { sam: _sam, ...noSam } = face;
+    expect(await t.call('PATCH', nodeUrl(), { image: { details: [noSam] } })).toEqual({ status: 400, body: { error: 'SAM 模型格式不对' } });
+
+    const settings = { ...defaultImageSettings(FAMILY_DEFAULTS.IL), checkpoint: 'il-test.safetensors', ...e02 };
+    const preset = await t.ok<ImagePreset>('POST', '/image-presets', { name: 'E02', family: 'IL', settings });
+    expect(preset.settings).toMatchObject(e02);
+
+    const file = path.join(t.work, 'image-presets.json');
+    const [stored] = JSON.parse(await fs.readFile(file, 'utf8')) as ImagePreset[];
+    const { vae: _vae, loraTarget: _loraTarget, weighting: _weighting, ...older } = stored.settings;
+    await fs.writeFile(file, JSON.stringify([{ ...stored, settings: { ...older, details: [noSam] } }]));
+    expect((await t.ok<ImagePreset[]>('GET', '/image-presets'))[0].settings).toMatchObject({ vae: '', loraTarget: 'both', weighting: 'comfy', details: [{ ...face, sam: '' }] });
+  });
+
+  it('选了 A1111 的权重算法、这台 ComfyUI 没装那个插件：一张都不发，说要装哪个插件', async () => {
+    await hideNodes(['BNK_CLIPTextEncodeAdvanced']);
+    const messageId = await prepare('1girl', { weighting: 'a1111' });
+    const job = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    expect((await until(messageId, job.id, settled)).images[0]).toMatchObject({
+      status: 'failed',
+      error: '这台 ComfyUI 缺插件：object_info 里没有 BNK_CLIPTextEncodeAdvanced，要装 ComfyUI_ADV_CLIP_emb',
+    });
+    expect(await lastPrompts()).toEqual([]);
   });
 });
 
