@@ -1,4 +1,4 @@
-import { COLLAGE_CELL_SIZES, isCollageGrid } from '@media-agent/shared';
+import { ASSET_SORTS, COLLAGE_CELL_SIZES, isCollageGrid } from '@media-agent/shared';
 import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -12,7 +12,7 @@ import { pickFolder } from '../native/pickFolder';
 import { allowedPath, isInside } from '../paths';
 import { readCanvas } from '../store/canvases';
 import { importImage } from '../store/images';
-import { bool, fileName, finiteNumber, text, uuid } from './validate';
+import { bool, choice, fileName, finiteNumber, text, uuid } from './validate';
 
 // 用户刚在系统窗口里选过的文件夹：拼图和下载的图可以存进去，窗口本身就是他点开的
 const pickedFolders = new Set<string>();
@@ -68,8 +68,10 @@ export function assetRoutes(configDir: string): express.Router {
   });
 
   router.get('/assets/search', async (req, res) => {
+    // 不带排法是按文件名，见 docs/dev-plan.md 6.3
+    const sort = req.query.sort === undefined ? 'name-asc' : choice(req.query.sort, '排序方式', ASSET_SORTS);
     const query = typeof req.query.q === 'string' ? req.query.q : '';
-    res.json(await searchAssets((await readConfig(configDir)).assetFolders, query));
+    res.json(await searchAssets((await readConfig(configDir)).assetFolders, query, sort));
   });
 
   router.get('/assets/thumb', async (req, res) => {

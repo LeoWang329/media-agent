@@ -1,4 +1,4 @@
-import type { AssetFile, FolderTree } from '@media-agent/shared';
+import { ASSET_SORT_LABELS, ASSET_SORTS, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { api, assetThumbUrl } from '../api';
 import { isUnder, useAssetStore } from '../store/assetStore';
@@ -33,7 +33,7 @@ export function AssetsDialog() {
 function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
   const node = useCanvasStore((s) => (s.selectedId ? s.nodes[s.selectedId] : undefined));
   const images = useCanvasStore((s) => s.detail?.images);
-  const { roots, trees, scanning, folder, files, unreadable, query, results } = useAssetStore();
+  const { roots, trees, scanning, folder, files, unreadable, query, results, sort } = useAssetStore();
   const [typed, setTyped] = useState('');
   const [selected, setSelected] = useState<AssetFile[]>([]);
   const [limit, setLimit] = useState(PAGE);
@@ -54,7 +54,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
   useEffect(() => {
     setLimit(PAGE);
     if (grid.current) grid.current.scrollTop = 0;
-  }, [folder, query]);
+  }, [folder, query, sort]);
 
   // 槽位里的图是从哪个文件放进去的，用来标「在 N 号」
   const slotOfPath = new Map<string, number>();
@@ -318,8 +318,17 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
             <span id="asCrumb" className="mono meta">
               {crumb}
             </span>
-            <span className="meta" id="asCount">
-              {count}
+            <span className="row as-tools">
+              <span className="meta" id="asCount">
+                {count}
+              </span>
+              <select className="select select-sm" id="asSort" aria-label="排序" value={sort} onChange={(e) => useAssetStore.getState().setSort(e.target.value as AssetSort)}>
+                {ASSET_SORTS.map((value) => (
+                  <option key={value} value={value}>
+                    {ASSET_SORT_LABELS[value]}
+                  </option>
+                ))}
+              </select>
             </span>
           </div>
           <div

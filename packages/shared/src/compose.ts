@@ -1,4 +1,5 @@
-import type { Message } from './types';
+import { slotDiff } from './slotDiff';
+import type { ChatNode, Message, NodeKind, SharedSettings, TurnLimit } from './types';
 
 export type ContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
 
@@ -22,6 +23,25 @@ export function userContent(message: Message, imageUrl: (imageId: string) => str
     ]),
     { type: 'text', text: message.text },
   ];
+}
+
+export const TURN_LIMITS = [5, 10, 20, 30, 50];
+export const DEFAULT_TURN_LIMIT: TurnLimit = 'all';
+export const isTurnLimit = (value: unknown): value is TurnLimit => value === 'all' || TURN_LIMITS.includes(value as number);
+
+// 节点自己设了就按节点的，没设或选了「跟设置」按设置里的
+export const effectiveTurnLimit = (node: Pick<ChatNode, 'turnLimit'>, settings: Pick<SharedSettings, 'turnLimit'>): TurnLimit =>
+  node.turnLimit === undefined || node.turnLimit === 'follow' ? settings.turnLimit : node.turnLimit;
+
+// 只带最近 limit 轮，见 docs/dev-plan.md 5.4：发的一条 user 消息算一轮，这次发的也算。
+// 留下的第一条 user 消息改带它发出时槽位里的全部图和完整说明，编号不乱。kept 是带了几轮，dropped 是前面没带的轮数
+export function recentTurns(path: Message[], limit: TurnLimit, kind: NodeKind): { path: Message[]; kept: number; dropped: number } {
+  const starts = path.flatMap((message, i) => (message.role === 'user' ? [i] : []));
+  const dropped = limit === 'all' ? 0 : starts.length - limit;
+  if (dropped <= 0) return { path, kept: starts.length, dropped: 0 };
+  const first = path[starts[dropped]];
+  const { systemNote, attachments } = slotDiff(null, { slots: first.slotSnapshot, duration: first.duration, aspectRatio: first.aspectRatio }, kind);
+  return { path: [{ ...first, systemNote, attachments }, ...path.slice(starts[dropped] + 1)], kept: starts.length - dropped, dropped };
 }
 
 // path 是从第一条消息到本次要回复的那条 user 消息；imageUrl 把 imageId 换成发给模型的图片地址

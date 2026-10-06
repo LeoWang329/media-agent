@@ -116,8 +116,44 @@ describe('发消息带上槽位里的图', () => {
     const events = await t.stream(`${nodeUrl}/send`, { parentId: last?.id ?? null, text });
     const user = (events[0] as { message: Message }).message;
     const reply = (events.at(-1) as { message: Message }).message;
-    return { user, reply: reply.text };
+    return { user, reply: reply.text, message: reply };
   }
+
+  it('只带最近几轮：截掉的那些轮里的图补到留下的第一轮；节点自己设的盖过设置；截掉了的回复记下带了几轮；岔出的照抄', async () => {
+    const [a, b, c] = [await importImage(FIXTURES.first), await importImage(FIXTURES.second), await importImage(FIXTURES.third)];
+    expect((await t.ok('GET', '/settings')).turnLimit).toBe('all');
+    const badSetting = await t.call('PUT', '/settings', { turnLimit: 3 });
+    expect([badSetting.status, badSetting.body.error]).toEqual([400, '最多带几轮只能是 all、5、10、20、30、50']);
+    await t.ok('PUT', '/settings', { turnLimit: 5 });
+
+    await sendWith('一', { slots: [a.id, b.id] });
+    for (const text of ['二', '三', '四']) await sendWith(text, {});
+    const fifth = await sendWith('五', { slots: [a.id, b.id, c.id] });
+    expect(fifth.reply).toContain('历史消息 9 条');
+    expect(fifth.reply).toContain('请求里一共 3 张图');
+    expect(fifth.message.trimmed).toBeUndefined();
+
+    // 第一轮截掉了，它带的两张补到第二轮上，加上第五轮新加的一张
+    const sixth = await sendWith('六', {});
+    expect(sixth.reply).toContain('历史消息 9 条');
+    expect(sixth.reply).toContain('请求里一共 3 张图');
+    expect(sixth.message.trimmed).toEqual({ kept: 5, dropped: 1 });
+
+    const badNode = await t.call('PATCH', nodeUrl, { turnLimit: 7 });
+    expect([badNode.status, badNode.body.error]).toEqual([400, '最多带几轮只能是 follow、all、5、10、20、30、50']);
+    await t.ok('PATCH', nodeUrl, { turnLimit: 'all' });
+    const seventh = await sendWith('七', {});
+    expect(seventh.reply).toContain('历史消息 13 条');
+    expect(seventh.reply).toContain('请求里一共 3 张图');
+    expect(seventh.message.trimmed).toBeUndefined();
+    const fork = await t.ok<ChatNode>('POST', `${nodeUrl}/fork`, { messageId: seventh.message.id });
+    expect(fork.turnLimit).toBe('all');
+
+    await t.ok('PATCH', nodeUrl, { turnLimit: 'follow' });
+    const eighth = await sendWith('八', {});
+    expect(eighth.reply).toContain('历史消息 9 条');
+    expect(eighth.message.trimmed).toEqual({ kept: 5, dropped: 3 });
+  });
 
   it('第一条带全部图；换图只带换掉的；删图重新编号；只改时长不带图', async () => {
     const [a, b, big, d] = [await importImage(FIXTURES.first), await importImage(FIXTURES.second), await importImage(FIXTURES.big), await importImage(FIXTURES.fourth)];

@@ -1,4 +1,4 @@
-import type { AssetFile, FolderTree } from '@media-agent/shared';
+import { ASSET_SORTS, DEFAULT_ASSET_SORT, sortAssets, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
 import { create } from 'zustand';
 import { api } from '../api';
 import { trackWrite } from '../ui/saveState';
@@ -13,6 +13,7 @@ type AssetState = {
   unreadable: string | null; // 读不了这个文件夹时的原因
   query: string;
   results: AssetFile[] | null; // 搜索结果；没在搜时为 null
+  sort: AssetSort; // 网格、搜索结果、「@」选图那排、拼图窗口选图那栏都按它排
 
   load: () => Promise<void>;
   openFolder: (folder: string, refresh?: boolean) => Promise<boolean>; // 读不了时返回 false
@@ -20,10 +21,23 @@ type AssetState = {
   removeFolder: (root: string) => Promise<void>;
   rescan: (root: string) => Promise<void>;
   search: (query: string) => Promise<void>;
+  setSort: (sort: AssetSort) => void;
   refreshFolder: (folder: string) => Promise<void>; // 拼图存进库里之后，那个文件夹重新扫
 };
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
+
+const SORT_KEY = 'pc-asset-sort';
+
+// 排法记在浏览器里，下次打开资产库照上次的
+function readSort(): AssetSort {
+  try {
+    const saved = localStorage.getItem(SORT_KEY) as AssetSort | null;
+    return saved && ASSET_SORTS.includes(saved) ? saved : DEFAULT_ASSET_SORT;
+  } catch {
+    return DEFAULT_ASSET_SORT;
+  }
+}
 
 // folder 是 root 本身或它下面的子文件夹
 export const isUnder = (root: string, folder: string) => {
@@ -63,6 +77,7 @@ export const useAssetStore = create<AssetState>((set, get) => {
     unreadable: null,
     query: '',
     results: null,
+    sort: readSort(),
 
     // 打开资产库时读一遍导入过的文件夹；网格停在上次看的文件夹，没有就看第一个
     load: async () => {
@@ -84,7 +99,7 @@ export const useAssetStore = create<AssetState>((set, get) => {
       set({ folder, unreadable: null, ...(get().folder !== folder && { files: null }) });
       try {
         const files = await api<AssetFile[]>(`/assets/list?${new URLSearchParams({ folder, ...(refresh && { refresh: '1' }) })}`);
-        if (seq === listSeq) set({ files });
+        if (seq === listSeq) set({ files: sortAssets(files, get().sort) });
         return true;
       } catch (err) {
         if (seq === listSeq) set({ files: [], unreadable: (err as Error).message });
@@ -136,11 +151,23 @@ export const useAssetStore = create<AssetState>((set, get) => {
       if (!q) return set({ results: null });
       const seq = ++searchSeq;
       try {
-        const results = await api<AssetFile[]>(`/assets/search?${new URLSearchParams({ q })}`);
+        const results = await api<AssetFile[]>(`/assets/search?${new URLSearchParams({ q, sort: get().sort })}`);
         if (seq === searchSeq && get().query === q) set({ results });
       } catch (err) {
         failed(err);
       }
+    },
+
+    // 文件夹里的图已经全在手上，直接重排；搜索最多 200 条，手上的先重排，再让服务端按新排法重搜
+    setSort: (sort) => {
+      try {
+        localStorage.setItem(SORT_KEY, sort);
+      } catch {
+        // 存不了就只管这一次
+      }
+      set((s) => ({ sort, files: s.files && sortAssets(s.files, sort), results: s.results && sortAssets(s.results, sort) }));
+      const { query } = get();
+      if (query) void get().search(query);
     },
 
     refreshFolder: async (folder) => {

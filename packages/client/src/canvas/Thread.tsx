@@ -564,6 +564,11 @@ function ReplyMeta({ message, live, text }: { message: Message; live: boolean; t
           </>
         )
       )}
+      {!live && message.trimmed && (
+        <span data-testid="trimmed">
+          只带了最近 {message.trimmed.kept} 轮，前面 {message.trimmed.dropped} 轮没带
+        </span>
+      )}
     </div>
   );
 }

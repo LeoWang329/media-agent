@@ -80,6 +80,30 @@ describe('资产库', () => {
     expect(results.map((f) => f.path)).toEqual([path.join(tmp, 'one', 'Cat-1.jpg'), path.join(tmp, 'two', 'nested', 'cat-2.png')]);
   });
 
+  it('搜索按选的排法排好再取前 200 条；不带排法按文件名；排法不对返回 400', async () => {
+    // 201 张都搜得到。cat-zzz 名字排最后、修改时间最新；编号的号越小越新
+    const root = path.join(tmp, 'many');
+    await fs.mkdir(root);
+    const numbered = Array.from({ length: 200 }, (_, i) => `cat-${String(i + 1).padStart(3, '0')}.jpg`);
+    for (const [name, minute] of [...numbered.map((name, i) => [name, 200 - i] as const), ['cat-zzz.jpg', 1000] as const]) {
+      const file = path.join(root, name);
+      await fs.writeFile(file, '');
+      await fs.utimes(file, new Date(2026, 0, 1, 0, minute), new Date(2026, 0, 1, 0, minute));
+    }
+    await t.ok('POST', '/assets/folders', { path: root });
+    const search = async (sort?: string) => (await t.ok<AssetFile[]>('GET', query('/assets/search', { q: 'cat', ...(sort && { sort }) }))).map((f) => f.name);
+
+    expect(await search('time-desc')).toEqual(['cat-zzz.jpg', ...numbered.slice(0, 199)]);
+    expect(await search('time-asc')).toEqual([...numbered].reverse());
+    expect(await search('name-asc')).toEqual(numbered);
+    expect(await search()).toEqual(numbered);
+    expect(await search('name-desc')).toEqual(['cat-zzz.jpg', ...[...numbered].reverse().slice(0, 199)]);
+
+    const bad = await t.call('GET', query('/assets/search', { q: 'cat', sort: 'size' }));
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('排序方式只能是 time-desc、time-asc、name-asc、name-desc');
+  });
+
   it('缩略图长边 256；不在导入的文件夹里的路径返回 403', async () => {
     const root = path.join(tmp, 'root');
     await image(path.join(root, 'wide.jpg'), 1000, 500);

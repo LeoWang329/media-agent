@@ -11,6 +11,7 @@ import {
   type SharedSettings,
   type ThinkingSettings,
   type ThinkingUse,
+  type TurnLimit,
 } from '@media-agent/shared';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
@@ -25,13 +26,14 @@ import { SaveState, trackWrite } from '../ui/saveState';
 import { ThemeToggle } from '../ui/theme';
 import { LEVEL_LABELS, STYLE_LABELS, styleNote } from '../ui/thinking';
 import { toast } from '../ui/toast';
+import { TURN_LIMIT_CHOICES, turnLimitLabel, turnLimitOf } from '../ui/turnLimit';
 import { CheckpointsTab, ComfyTab, ImagesTab } from './SettingsComfy';
 import { FragmentsTab, TagLibraryTab } from './SettingsImage';
 import { AutodlModelsTab } from './SettingsAutodlModels';
 import { PresetsTab } from './SettingsPresets';
 import { WorkflowsTab } from './SettingsWorkflows';
 
-type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'comfy' | 'autodl-models' | 'checkpoints' | 'workflows' | 'presets' | 'taglib' | 'fragments' | 'images';
+type Tab = 'workdir' | 'models' | 'prompts' | 'format' | 'thinking' | 'chat' | 'comfy' | 'autodl-models' | 'checkpoints' | 'workflows' | 'presets' | 'taglib' | 'fragments' | 'images';
 
 const TABS: [Tab, string, IconName][] = [
   ['workdir', '工作文件夹', 'folder'],
@@ -39,6 +41,7 @@ const TABS: [Tab, string, IconName][] = [
   ['prompts', '系统提示词', 'doc'],
   ['format', '固定格式要求', 'lock'],
   ['thinking', '思考', 'brain'],
+  ['chat', '对话', 'clock'],
 ];
 
 // 生图用的几节，导航里排在「生图」下面
@@ -108,6 +111,7 @@ export function Settings() {
           {config && tab === 'prompts' && <PromptsTab key={config.workFolder} workFolder={config.workFolder} />}
           {tab === 'format' && <FormatTab />}
           {config && tab === 'thinking' && <ThinkingTab key={config.workFolder} config={config} />}
+          {config && tab === 'chat' && <ChatTab key={config.workFolder} config={config} />}
           {config && tab === 'comfy' && <ComfyTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'autodl-models' && <AutodlModelsTab key={config.workFolder} workFolder={config.workFolder} />}
           {config && tab === 'checkpoints' && <CheckpointsTab key={config.workFolder} workFolder={config.workFolder} />}
@@ -620,6 +624,54 @@ function FormatTab() {
       <pre className="ro" data-od-id="format-requirement">{texts.video}</pre>
       <h3 className="ro-title">写生图标签的那几套（开头写了「用途: 生图」的）用这份</h3>
       <pre className="ro" data-od-id="format-requirement-image">{texts.image}</pre>
+    </>
+  );
+}
+
+// 节点对话最多带几轮，见 docs/dev-plan.md 5.4
+function ChatTab({ config }: { config: Config }) {
+  const [turnLimit, setTurnLimit] = useState<TurnLimit | null>(null);
+  const saving = useRef(Promise.resolve());
+
+  useEffect(() => {
+    if (config.workFolder) api<SharedSettings>('/settings').then((s) => setTurnLimit(s.turnLimit), failed);
+  }, [config.workFolder]);
+
+  if (!config.workFolder) return <p className="muted">对话的设置存在工作文件夹里，先在「工作文件夹」里选一个。</p>;
+  if (!turnLimit) return null;
+
+  // 按选的顺序存，连着改几下最后存下的是最后选的那个
+  const change = (next: TurnLimit) => {
+    setTurnLimit(next);
+    saving.current = saving.current.then(() => trackWrite(api('/settings', { method: 'PUT', body: { turnLimit: next } })).then(() => undefined, failed));
+  };
+
+  return (
+    <>
+      <div className="st-head">
+        <div>
+          <h2>对话</h2>
+          <p>节点里每次发送，都会把前面的对话连同发过的图一起发给模型。聊得越久，发出去的越多，花的钱也越多。这里管最多带几轮。</p>
+        </div>
+        <span className="tag sx-where"><Icon name="folder" />存在工作文件夹，两台电脑共用</span>
+      </div>
+      <section className="card editor" data-od-id="chat-settings">
+        <div className="kv">
+          <div className="kv-row">
+            <label className="k" htmlFor="turnLimit">最多带几轮</label>
+            <div className="stack" style={{ gap: 4 }}>
+              <select className="select" style={{ width: 200 }} id="turnLimit" value={String(turnLimit)} onChange={(e) => change(turnLimitOf(e.target.value))}>
+                {TURN_LIMIT_CHOICES.map((limit) => (
+                  <option key={limit} value={String(limit)}>
+                    {turnLimitLabel(limit)}
+                  </option>
+                ))}
+              </select>
+              <span className="hint">你发一条算一轮，这次发的也算。截掉的那些轮里放过的图，会补到留下的第一轮里，编号不乱。每个节点能在面板顶上单独改。</span>
+            </div>
+          </div>
+        </div>
+      </section>
     </>
   );
 }

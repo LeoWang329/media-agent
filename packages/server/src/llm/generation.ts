@@ -2,8 +2,10 @@ import {
   addMessage,
   ancestorsOf,
   composeMessages,
+  effectiveTurnLimit,
   parsePromptMeta,
   parseReply,
+  recentTurns,
   thinkingLevelFor,
   thinkingOn,
   thinkingRequest,
@@ -105,10 +107,17 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const prompt = await snapshotPrompt(work, node.systemPromptName);
       // 开头的说明段不发给模型；生图节点接生图的格式要求
       const meta = parsePromptMeta(prompt.text);
-      const path = ancestorsOf(node, assistant.parentId!);
+      const settings = await readSettings(work);
+      // 设了只带最近几轮的，更前面的不发，见 docs/dev-plan.md 5.4
+      const { path, kept, dropped } = recentTurns(ancestorsOf(node, assistant.parentId!), effectiveTurnLimit(node, settings), node.kind);
       const messages = composeMessages(path, meta.body, await readFormatRequirement(node.kind), await llmImageUrls(work, canvasId, path));
-      const level = thinkingLevelFor((await readSettings(work)).thinking, 'chat');
-      assistant = { ...assistant, modelName: thinkingRequest(modelConfig, level).model, systemPromptHash: prompt.hash };
+      const level = thinkingLevelFor(settings.thinking, 'chat');
+      assistant = {
+        ...assistant,
+        modelName: thinkingRequest(modelConfig, level).model,
+        systemPromptHash: prompt.hash,
+        ...(dropped > 0 && { trimmed: { kept, dropped } }),
+      };
 
       let lastPersist = Date.now();
       const persistSoon = () => {

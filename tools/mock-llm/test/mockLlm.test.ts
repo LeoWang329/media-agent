@@ -40,7 +40,7 @@ function complete(body: object, signal?: AbortSignal) {
 }
 
 describe('mock-llm', () => {
-  it('默认回复：标题、收到几张图、说明、历史消息条数和一个六部分的提示词框', async () => {
+  it('默认回复：标题、收到几张图、说明、历史消息条数、请求里一共几张图和一个六部分的提示词框', async () => {
     const note = '参考图共 2 张，编号如下。视频时长 8 秒，画面比例 16:9。';
     const res = await complete({ messages: [SYSTEM, userMessage('写一个', note, 2)] });
     const body = (await res.json()) as { choices: { message: { content: string } }[]; usage: { completion_tokens: number } };
@@ -50,6 +50,7 @@ describe('mock-llm', () => {
     expect(text).toContain('收到 2 张图：<Picture 1>、<Picture 2>');
     expect(text).toContain(`说明：${note}`);
     expect(text).toContain('历史消息 1 条');
+    expect(text).toContain('请求里一共 2 张图');
     expect(text.match(/^<prompt>$/gm)).toHaveLength(1);
     expect(text).toContain('summary:\n[reference generation] 测试概述，引用了 <Picture 1>');
     for (const part of ['subject_definitions:', 'retention_analysis:', 'detailed_description:', 'overall_soundscape:', 'non_diegetic_music:']) {
