@@ -1,4 +1,4 @@
-import { SUPPORTED_IMAGE_EXTENSIONS, type AssetFile, type FolderTree } from '@media-agent/shared';
+import { compareAssetNames, sortAssets, SUPPORTED_IMAGE_EXTENSIONS, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
 import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -11,10 +11,6 @@ const UNSUPPORTED = new Set(['.heic', '.heif', '.gif']);
 // 超过 5 秒没扫过才重新扫
 const RESCAN_AFTER = 5000;
 export const SEARCH_LIMIT = 200;
-
-const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
-const byName = (a: { name: string; path: string }, b: { name: string; path: string }) =>
-  collator.compare(a.name, b.name) || collator.compare(a.path, b.path);
 
 const extension = (name: string) => path.extname(name).toLowerCase();
 export const isSupportedImage = (name: string) => SUPPORTED.has(extension(name));
@@ -43,8 +39,11 @@ async function indexRoot(root: string, refresh: boolean): Promise<RootIndex> {
       files.push({ path: path.join(dir, entry.name), name: entry.name });
       count += 1;
     }
-    const folders = entries.filter((e) => e.isDirectory()).sort((a, b) => collator.compare(a.name, b.name));
-    const children = await Promise.all(folders.map((e) => walk(path.join(dir, e.name))));
+    const folders = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => ({ name: e.name, path: path.join(dir, e.name) }))
+      .sort(compareAssetNames);
+    const children = await Promise.all(folders.map((folder) => walk(folder.path)));
     count += children.reduce((sum, child) => sum + child.count, 0);
     return { path: dir, name: path.basename(dir) || dir, count, children };
   };
@@ -59,6 +58,15 @@ export async function folderTree(root: string, refresh: boolean): Promise<Folder
 
 const STAT_BATCH = 32;
 
+// 一批一批查文件的大小和修改时间，查不到的（刚删掉的）不要
+async function statFiles(paths: string[]): Promise<AssetFile[]> {
+  const found: (AssetFile | null)[] = [];
+  for (let i = 0; i < paths.length; i += STAT_BATCH) {
+    found.push(...(await Promise.all(paths.slice(i, i + STAT_BATCH).map(toAssetFile))));
+  }
+  return found.filter((f): f is AssetFile => f !== null);
+}
+
 // 读文件夹出错时给人看的原因
 function unreadable(folder: string, err: NodeJS.ErrnoException): HttpError {
   if (err.code === 'ENOENT') return new HttpError(404, `找不到这个文件夹：${folder}`);
@@ -70,7 +78,7 @@ function unreadable(folder: string, err: NodeJS.ErrnoException): HttpError {
 
 const listings = new Map<string, { scannedAt: number; files: AssetFile[] }>();
 
-// 一个文件夹里（含子文件夹）的全部图片，按文件名排序。root 是它所在的导入文件夹，文件清单从 root 的索引里取
+// 一个文件夹里（含子文件夹）的全部图片，按文件名排序，网格再按选的排法在浏览器里排。root 是它所在的导入文件夹，文件清单从 root 的索引里取
 export async function listFolder(root: string, folder: string, refresh: boolean): Promise<AssetFile[]> {
   const cached = listings.get(folder);
   if (cached && !refresh && Date.now() - cached.scannedAt < RESCAN_AFTER) return cached.files;
@@ -78,17 +86,14 @@ export async function listFolder(root: string, folder: string, refresh: boolean)
     throw unreadable(folder, err);
   });
   const inside = (await indexRoot(root, refresh)).files.filter((file) => isInside(folder, file.path));
-  const found: (AssetFile | null)[] = [];
-  for (let i = 0; i < inside.length; i += STAT_BATCH) {
-    found.push(...(await Promise.all(inside.slice(i, i + STAT_BATCH).map((file) => toAssetFile(file.path)))));
-  }
-  const files = found.filter((f): f is AssetFile => f !== null).sort(byName);
+  const files = (await statFiles(inside.map((file) => file.path))).sort(compareAssetNames);
   listings.set(folder, { scannedAt: Date.now(), files });
   return files;
 }
 
-// 按文件名搜全部导入的文件夹：不区分大小写，子串匹配，最多 200 条
-export async function searchAssets(roots: string[], query: string): Promise<AssetFile[]> {
+// 按文件名搜全部导入的文件夹：不区分大小写，子串匹配，按选的排法取前 200 条。
+// 按修改时间排的要先查到每个搜到的文件的修改时间；按文件名排的先排好，只查前 200 个。不带排法是按文件名
+export async function searchAssets(roots: string[], query: string, sort: AssetSort = 'name-asc'): Promise<AssetFile[]> {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
   const matches = new Map<string, { path: string; name: string }>();
@@ -97,6 +102,8 @@ export async function searchAssets(roots: string[], query: string): Promise<Asse
       if (file.name.toLowerCase().includes(needle)) matches.set(file.path, file);
     }
   }
-  const top = [...matches.values()].sort(byName).slice(0, SEARCH_LIMIT);
-  return (await Promise.all(top.map((f) => toAssetFile(f.path)))).filter((f): f is AssetFile => f !== null);
+  const byName = [...matches.values()].sort(compareAssetNames);
+  if (sort === 'name-desc') byName.reverse();
+  const paths = sort.startsWith('time') ? [...matches.keys()] : byName.slice(0, SEARCH_LIMIT).map((file) => file.path);
+  return sortAssets(await statFiles(paths), sort).slice(0, SEARCH_LIMIT);
 }

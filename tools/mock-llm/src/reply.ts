@@ -43,11 +43,13 @@ export function planReply(messages: ChatMessage[]): MockPlan {
     if (label) pictureLabels.push(label);
   });
 
+  const allImages = messages.flatMap((m) => toParts(m.content)).filter((p) => p.type === 'image_url').length;
   const lines = [
     image ? '<title>测试图片</title>' : '<title>测试标题</title>',
     imageCount ? `收到 ${imageCount} 张图：${pictureLabels.join('、')}` : '收到 0 张图',
     `说明：${texts[0] ?? ''}`,
     `历史消息 ${messages.filter((m) => m.role !== 'system').length} 条`,
+    `请求里一共 ${allImages} 张图`,
   ];
   if (!userText.includes('只回答')) {
     const box = image ? tagBox : promptBox;

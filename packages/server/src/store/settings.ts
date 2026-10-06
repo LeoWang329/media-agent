@@ -3,10 +3,13 @@ import {
   AUTODL_IDLE_MINUTES,
   DEFAULT_AUTODL,
   DEFAULT_THINKING,
+  DEFAULT_TURN_LIMIT,
   FAMILIES,
   FAMILY_DEFAULTS,
+  isTurnLimit,
   THINKING_LEVELS,
   THINKING_USES,
+  TURN_LIMITS,
   type Family,
   type FamilyDefaults,
   type SharedSettings,
@@ -26,6 +29,7 @@ export async function readSettings(work: string): Promise<SharedSettings> {
   return {
     ...saved,
     thinking: { ...DEFAULT_THINKING, ...saved?.thinking },
+    turnLimit: saved?.turnLimit ?? DEFAULT_TURN_LIMIT,
     comfy: { lanUrl: null, ...saved?.comfy, autodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.autodl } },
     checkpoints: { ...saved?.checkpoints },
     defaults: { IL: { ...FAMILY_DEFAULTS.IL, ...saved?.defaults?.IL }, Pony: { ...FAMILY_DEFAULTS.Pony, ...saved?.defaults?.Pony } },
@@ -39,6 +43,10 @@ export function updateSettings(work: string, body: unknown): Promise<SharedSetti
   return withLock(`settings:${work}`, async () => {
     const settings = await readSettings(work);
     if ('thinking' in input) settings.thinking = { ...settings.thinking, ...parseThinking(input.thinking) };
+    if ('turnLimit' in input) {
+      if (!isTurnLimit(input.turnLimit)) throw new HttpError(400, `最多带几轮只能是 all、${TURN_LIMITS.join('、')}`);
+      settings.turnLimit = input.turnLimit;
+    }
     if ('comfy' in input) settings.comfy = parseComfy(input.comfy, settings.comfy);
     if ('checkpoints' in input) settings.checkpoints = { ...settings.checkpoints, ...parseCheckpoints(input.checkpoints) };
     if ('defaults' in input) settings.defaults = parseDefaults(input.defaults, settings.defaults);

@@ -1,13 +1,15 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
+import { E2E_ROOT } from './env';
 import {
   assetTile,
   assetsDialog,
   cards,
   filledSlots,
+  input,
   lastReply,
   newCanvasWithNode,
   panel,
@@ -199,6 +201,67 @@ test('槽位之间拖动调顺序；多选按点的先后放进槽位；换图�
   await confirmRemove.getByRole('button', { name: '取消' }).click();
   await expect(confirmRemove).toHaveCount(0);
   await expect(assetsDialog(page).locator('.as-folder').filter({ hasText: FIXTURES_DIR })).not.toHaveCount(0);
+});
+
+test('资产库按修改时间或文件名排，默认新的在前，选过的刷新后还在；搜索结果、「@」选图那排、拼图选图那栏都跟着排', async ({ page }) => {
+  // 名字的先后和修改时间的先后故意不一样：banana 最新，cherry 最旧
+  const dir = path.join(E2E_ROOT, 'sort-images');
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(dir, { recursive: true });
+  for (const [name, day] of [['sort-apple.jpg', 2], ['sort-banana.jpg', 3], ['sort-cherry.jpg', 1]] as const) {
+    const file = path.join(dir, name);
+    await sharp({ create: { width: 320, height: 240, channels: 3, background: '#888888' } }).jpeg().toFile(file);
+    await fs.utimes(file, new Date(2026, 0, day), new Date(2026, 0, day));
+  }
+  expect((await page.request.post('/api/assets/folders', { data: { path: dir } })).ok()).toBe(true);
+  await newCanvasWithNode(page, '资产库排序');
+
+  const newest = ['sort-banana.jpg', 'sort-apple.jpg', 'sort-cherry.jpg'];
+  const az = ['sort-apple.jpg', 'sort-banana.jpg', 'sort-cherry.jpg'];
+  const za = [...az].reverse();
+  const names = assetsDialog(page).getByTestId('asset-tile').locator('.tile-name');
+  const sort = assetsDialog(page).getByLabel('排序');
+  const titles = (list: Locator) => list.evaluateAll((els) => els.map((el) => el.getAttribute('title')));
+  const openSortFolder = async () => {
+    await panel(page).locator('#slotAssets').click();
+    await assetsDialog(page).locator('.as-folder').filter({ hasText: 'sort-images' }).click();
+  };
+
+  await openSortFolder();
+  await expect(sort).toHaveValue('time-desc');
+  await expect(names).toHaveText(newest);
+  await sort.selectOption({ label: '修改时间，旧的在前' });
+  await expect(names).toHaveText([...newest].reverse());
+  await sort.selectOption({ label: '文件名，A 到 Z' });
+  await expect(names).toHaveText(az);
+
+  // 搜着的时候换排法，结果跟着重排；清掉搜索，文件夹里的也是新排法
+  await assetsDialog(page).locator('#asSearch').fill('sort-');
+  await expect(assetsDialog(page).locator('#asCount')).toHaveText('3 个结果');
+  await expect(names).toHaveText(az);
+  await sort.selectOption({ label: '文件名，Z 到 A' });
+  await expect(names).toHaveText(za);
+  await assetsDialog(page).locator('#asSearch').fill('');
+  await expect(assetsDialog(page).locator('#asCount')).toHaveText('已加载 3 / 3 张');
+  await expect(names).toHaveText(za);
+  await page.keyboard.press('Escape');
+
+  await page.reload();
+  await cards(page).first().click();
+  await openSortFolder();
+  await expect(sort).toHaveValue('name-desc');
+  await expect(names).toHaveText(za);
+  await page.keyboard.press('Escape');
+
+  await input(page).click();
+  await page.keyboard.type('@');
+  await expect.poll(() => titles(page.locator('#refpick .refpick-row button'))).toEqual(za);
+  await page.keyboard.press('Escape');
+
+  await panel(page).getByRole('button', { name: '拼图' }).click();
+  const board = page.getByRole('dialog', { name: '拼图' });
+  await board.getByLabel('从哪个文件夹挑图').selectOption(dir);
+  await expect.poll(() => titles(board.locator('.cl-pick-grid button[title]'))).toEqual(za);
 });
 
 test('点槽位选「放大看」：弹窗里是画布存的那张图，能切原始大小，点图外面的空白关掉', async ({ page }) => {

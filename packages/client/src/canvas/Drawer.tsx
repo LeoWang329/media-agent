@@ -7,6 +7,7 @@ import { showMenu } from '../ui/menu';
 import { RenameInput } from '../ui/RenameInput';
 import { chatThinkingLevel, LEVEL_LABELS } from '../ui/thinking';
 import { toast } from '../ui/toast';
+import { TURN_LIMIT_CHOICES, turnLimitLabel, turnLimitOf } from '../ui/turnLimit';
 import { Dock } from './Dock';
 import { closeDrawer, drawerMenu, finishRename, selectNode, startRename, useRenaming } from './nodeActions';
 import { copiedCount, forkedAt, isUntitled, nodeCost } from './nodeInfo';
@@ -109,6 +110,7 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
   // 系统提示词只能选这种节点用的
   const usable = prompts.filter((p) => p.use === node.kind);
   const thinking = useCanvasStore((s) => s.thinking);
+  const turnLimit = useCanvasStore((s) => s.turnLimit);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const untitled = isUntitled(node);
   const cost = nodeCost(node, modelConfigs);
@@ -230,6 +232,26 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
               <option key={p.name} value={p.name}>
                 {p.name}
                 {p.family ? ` · ${p.family}` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="cfg" title="发给模型时最多带几轮对话">
+          <Icon name="clock" className="icon-sm" />
+          <select
+            id="cfgTurns"
+            aria-label="最多带几轮"
+            value={String(node.turnLimit ?? 'follow')}
+            onChange={(e) => {
+              const next = e.target.value === 'follow' ? 'follow' : turnLimitOf(e.target.value);
+              const what = next === 'follow' ? `跟设置：${turnLimitLabel(turnLimit ?? 'all')}` : next === 'all' ? '，前面的对话全部带上' : `只带最近 ${next} 轮`;
+              void patchNode(node.id, { turnLimit: next }).then((ok) => ok && toast(`从下一条消息起${what}`));
+            }}
+          >
+            <option value="follow">跟设置{turnLimit ? `（${turnLimitLabel(turnLimit)}）` : ''}</option>
+            {TURN_LIMIT_CHOICES.map((limit) => (
+              <option key={limit} value={String(limit)}>
+                {turnLimitLabel(limit)}
               </option>
             ))}
           </select>

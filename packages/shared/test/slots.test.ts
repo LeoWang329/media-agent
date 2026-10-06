@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   composeMessages,
+  effectiveTurnLimit,
   hasUnsentSettings,
   JPEG_QUALITIES,
   imageSizeFits,
@@ -8,6 +9,7 @@ import {
   needsJpeg,
   pathSnapshot,
   planResize,
+  recentTurns,
   slotDiff,
 } from '../src';
 import type { AspectRatio, ChatNode, Message } from '../src';
@@ -134,6 +136,76 @@ describe('composeMessages 带图', () => {
         { type: 'text', text: '长一点' },
       ],
     });
+  });
+});
+
+describe('只带最近几轮', () => {
+  const base = { createdAt: '2026-10-06T00:00:00.000Z', aspectRatio: '16:9' as const };
+  const user = (id: string, slots: string[], duration: number, diff: ReturnType<typeof slotDiff>): Message => ({
+    ...base,
+    id,
+    parentId: null,
+    role: 'user',
+    text: id,
+    slotSnapshot: slots,
+    duration,
+    ...diff,
+  });
+  const reply = (id: string, slots: string[], duration: number, extra: Partial<Message> = {}): Message => ({
+    ...base,
+    id,
+    parentId: null,
+    role: 'assistant',
+    text: id,
+    slotSnapshot: slots,
+    duration,
+    ...extra,
+  });
+  // 第一轮放了两张，第二轮加了一张，第三轮改了时长，第四轮什么都没改
+  const path = [
+    user('u1', ['a', 'b'], 8, slotDiff(null, settings(['a', 'b']))),
+    reply('a1', ['a', 'b'], 8),
+    user('u2', ['a', 'b', 'c'], 8, slotDiff(snapshot(['a', 'b']), settings(['a', 'b', 'c']))),
+    reply('a2', ['a', 'b', 'c'], 8),
+    reply('h2', ['a', 'b', 'c'], 8, { handwritten: true }),
+    user('u3', ['a', 'b', 'c'], 12, slotDiff(snapshot(['a', 'b', 'c']), settings(['a', 'b', 'c'], 12))),
+    reply('a3', ['a', 'b', 'c'], 12),
+    user('u4', ['a', 'b', 'c'], 12, slotDiff(snapshot(['a', 'b', 'c'], 12), settings(['a', 'b', 'c'], 12))),
+  ];
+
+  it('全带或者没超过：原样发', () => {
+    expect(recentTurns(path, 'all', 'video')).toEqual({ path, kept: 4, dropped: 0 });
+    expect(recentTurns(path, 5, 'video')).toEqual({ path, kept: 4, dropped: 0 });
+    expect(recentTurns(path, 4, 'video').path).toBe(path);
+  });
+
+  it('超过了：发的一条算一轮，从倒数第 N 条往后带；留下的第一条带上它发出时槽位里的全部图和完整说明，后面照存的发', () => {
+    const { path: sent, kept, dropped } = recentTurns(path, 2, 'video');
+    expect([kept, dropped]).toEqual([2, 2]);
+    expect(sent.map((m) => m.id)).toEqual(['u3', 'a3', 'u4']);
+    expect(sent[0]).toMatchObject({
+      systemNote: '参考图共 3 张，编号如下。视频时长 12 秒，画面比例 16:9。',
+      attachments: [
+        { picture: 1, imageId: 'a' },
+        { picture: 2, imageId: 'b' },
+        { picture: 3, imageId: 'c' },
+      ],
+      text: 'u3',
+    });
+    expect(sent[2]).toBe(path[7]);
+    // 存着的那条不改
+    expect(path[5]).toMatchObject({ systemNote: '视频时长改为 12 秒。', attachments: [] });
+
+    // 留下的第一条前面是自己写的框：框算在前一轮里，一起截掉
+    expect(recentTurns(path, 3, 'video').path.map((m) => m.id)).toEqual(['u2', 'a2', 'h2', 'u3', 'a3', 'u4']);
+    expect(recentTurns(path, 1, 'image').path).toEqual([{ ...path[7], systemNote: '参考图共 3 张，编号如下。', attachments: expect.any(Array) }]);
+  });
+
+  it('节点自己设了按节点的，没设或者跟设置按设置里的', () => {
+    expect(effectiveTurnLimit({}, { turnLimit: 20 })).toBe(20);
+    expect(effectiveTurnLimit({ turnLimit: 'follow' }, { turnLimit: 20 })).toBe(20);
+    expect(effectiveTurnLimit({ turnLimit: 'all' }, { turnLimit: 20 })).toBe('all');
+    expect(effectiveTurnLimit({ turnLimit: 5 }, { turnLimit: 'all' })).toBe(5);
   });
 });
 

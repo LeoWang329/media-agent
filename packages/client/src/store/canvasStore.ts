@@ -25,6 +25,7 @@ import {
   type SlotSettings,
   type ThinkingSettings,
   type TranslateLanguage,
+  type TurnLimit,
 } from '@media-agent/shared';
 import { create } from 'zustand';
 import { api, assetThumbUrl, postStream, uploadImage } from '../api';
@@ -39,7 +40,7 @@ export type Stream = { assistantId: string | null; text: string; reasoning: stri
 const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text: '', reasoning: '', firstTextAt: null });
 
 // image 只带要改的几项，服务端按节点原来的（没改过的按系列的默认值）补全
-type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots'>> & {
+type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit'>> & {
   image?: Partial<ImageSettings>;
 };
 
@@ -68,6 +69,7 @@ type CanvasState = {
   modelConfigs: ModelConfigWithKey[];
   prompts: PromptInfo[];
   thinking: ThinkingSettings | null; // 设置里的思考档位，打开画布时读一次
+  turnLimit: TurnLimit | null; // 设置里的最多带几轮，打开画布时读一次
   defaults: Record<Family, FamilyDefaults>; // 设置里两个系列的默认值，打开画布时读一次
   placing: Placing | null;
   flash: Flash | null;
@@ -476,6 +478,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     modelConfigs: [],
     prompts: [],
     thinking: null,
+    turnLimit: null,
     defaults: FAMILY_DEFAULTS,
     placing: null,
     flash: null,
@@ -496,7 +499,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
           api<PromptInfo[]>('/prompts'),
           api<SharedSettings>('/settings'),
         ]);
-        if (get().canvasId === canvasId) set({ detail, modelConfigs: config.modelConfigs, prompts, thinking: settings.thinking, defaults: settings.defaults });
+        if (get().canvasId === canvasId) {
+          set({ detail, modelConfigs: config.modelConfigs, prompts, thinking: settings.thinking, turnLimit: settings.turnLimit, defaults: settings.defaults });
+        }
       }),
 
     refresh: async () => {

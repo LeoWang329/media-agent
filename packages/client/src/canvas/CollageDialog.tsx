@@ -1,4 +1,4 @@
-import { COLLAGE_CELL_SIZES, DEFAULT_COLLAGE_CELL, type AssetFile, type Config, type ImageRecord } from '@media-agent/shared';
+import { COLLAGE_CELL_SIZES, DEFAULT_COLLAGE_CELL, sortAssets, type AssetFile, type Config, type ImageRecord } from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { api, assetThumbUrl, COLLAGE_DRAG_TYPE } from '../api';
 import { flattenTree, rootOf, useAssetStore } from '../store/assetStore';
@@ -59,7 +59,7 @@ function Collage() {
     if (!pickFolder) return setPickFiles([]);
     let dropped = false;
     api<AssetFile[]>(`/assets/list?${new URLSearchParams({ folder: pickFolder })}`).then(
-      (files) => !dropped && setPickFiles(files.filter((f) => f.supported)),
+      (files) => !dropped && setPickFiles(sortAssets(files.filter((f) => f.supported), useAssetStore.getState().sort)),
       (err: Error) => !dropped && (setPickFiles([]), toast(err.message, { tone: 'danger' })),
     );
     return () => {

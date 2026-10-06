@@ -302,6 +302,15 @@ type ImportedWorkflow = {               // 工作文件夹 workflows/<id>.json
 type FillTarget = { node: string; input: string };
 ```
 
+后来加的（只带最近几轮，见 5.4）：
+
+```ts
+type TurnLimit = 'all' | number;        // 节点对话最多带几轮：all 是全带，数字只能是 5、10、20、30、50
+// SharedSettings 加：turnLimit: TurnLimit，默认 all
+// ChatNode 加：turnLimit?: TurnLimit | 'follow'（没有或 follow 是跟设置）
+// Message 加（只有 assistant 消息有）：trimmed?: { kept: number; dropped: number }（真截掉了才有：带了几轮、前面几轮没带）
+```
+
 id 一律用 `crypto.randomUUID()`。
 
 ## 5. 核心规则
@@ -366,6 +375,15 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 生图节点（见 5.14）不说时长和比例：第一条消息的 note 是「参考图共 K 张，编号如下。」，K 为 0 时不加 note；之后只有槽位变了才有 note，句子同上。
 
 界面上 `systemNote` 显示成用户气泡上方的一行灰字，attachments 显示成带编号的小缩略图。
+
+只带最近几轮（后来加的）：
+
+- 设置里一个「最多带几轮」：全部、5、10、20、30、50，默认全部。每个节点在面板顶上能单独改，默认「跟设置」；新建的节点跟设置，从这里岔出的新节点照抄原节点的选择。
+- 发的一条 user 消息算一轮，这次发的也算。超过了就从倒数第 N 条 user 消息开始往后带，更前面的不发。system 消息照常在最前面。
+- 留下的第一条 user 消息，说明和图换成「节点里还没有任何消息」那种：带它发出时槽位里的全部图，note 是「参考图共 K 张，编号如下。」加时长和比例（生图节点照 5.14 不说时长和比例）。后面几条照存的发。截掉的那些轮里放过、后来不在槽位里的图就不再发。
+- 存着的 `systemNote` 和 `attachments` 不改，只在发的时候换。
+- 真截掉了的回复记下 `trimmed`，回复下面 tokens 旁边写「只带了最近 N 轮，前面 M 轮没带」。
+- 重新生成、岔出以后再发都一样；翻译和转标签只发一次，不受影响。
 
 ### 5.5 回复怎么解析
 
@@ -695,7 +713,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 右侧面板从上到下：
 
-1. 头部：标题、模型配置下拉、系统提示词下拉、对话目录按钮。对话目录浮在面板左边（画布工具条下面），当前路径上每发一次需求算一轮，列出需求前两行、时间和回复写了什么（几个方向、第一个框的标签或概述、没有提示词、失败、叫停），点一下滚到那一轮并闪一下；开没开记在浏览器里。
+1. 头部：标题、模型配置下拉、系统提示词下拉、带几轮下拉（5.4）、对话目录按钮。对话目录浮在面板左边（画布工具条下面），当前路径上每发一次需求算一轮，列出需求前两行、时间和回复写了什么（几个方向、第一个框的标签或概述、没有提示词、失败、叫停），点一下滚到那一轮并闪一下；开没开记在浏览器里。
 2. 消息列表。用户消息靠右：上方灰字 `systemNote`，气泡内文字，下方带编号的小缩略图。assistant 消息靠左：框外文字按 Markdown 渲染；每个提示词框是一个组件，标签在框顶，内容用等宽以外的可读字体、保留换行；框底一排按钮：复制、翻译（见 5.11）、星标、编辑、上传清单、沿此方向 fork。消息悬停出操作：用户消息「编辑」「从这里 fork」；assistant 消息「重新生成」「从这里 fork」；有兄弟版本时显示 `‹ 1/2 ›`。失败的消息显示错误和「重试」。
 3. 槽位区：一行 9 格，填了的显示缩略图和编号，悬停显示删除；支持 5.1 里的拖拽。右边是时长（4–15 下拉）和比例下拉。点有图的格子出菜单，第一项「放大看」：弹窗显示画布里存的那张图，先整张放进窗口，点图切换原始大小，点图外面的空白或 Esc 关掉。
 4. 输入框：Enter 发送，Shift+Enter 换行；发送中显示「停止」。第二批换成 Tiptap 编辑器，输入 @ 弹出选图窗口，选中的图在框里显示成带缩略图的小标签。
@@ -703,9 +721,10 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 ### 6.3 资产库（左栏）
 
-- 顶部：搜索框（按文件名，不区分大小写，子串匹配，搜全部导入过的文件夹，结果最多 200 条）、「导入文件夹」（弹系统窗口；非 Windows 或弹窗失败时显示路径输入框）、「拼图」（第二批）。
+- 顶部：搜索框（按文件名，不区分大小写，子串匹配，搜全部导入过的文件夹，按选的排法取前 200 条）、「导入文件夹」（弹系统窗口；非 Windows 或弹窗失败时显示路径输入框）、「拼图」（第二批）。
 - 文件夹树：每个导入的根文件夹一棵，可展开子文件夹；右键「移除」（只从库里移除，不动文件）。
-- 图片网格：当前文件夹下的图片，按文件名排序，缩略图懒加载，超过 200 张用虚拟滚动。单击选中，Ctrl/Shift 多选，双击放进下一个空槽位，拖拽到槽位区。
+- 图片网格：当前文件夹下的图片，缩略图懒加载，超过 200 张用虚拟滚动。单击选中，Ctrl/Shift 多选，双击放进下一个空槽位，拖拽到槽位区。
+- 排序：网格上方一个下拉，修改时间（新的在前）、修改时间（旧的在前）、文件名（A 到 Z）、文件名（Z 到 A），默认新的在前；修改时间一样的按文件名。选过的存在这台电脑的浏览器里，下次打开照上次的。搜索结果、「@」选图那排、拼图窗口里选图那栏都跟着这个排法。文件夹里的图服务端一次全给，浏览器自己排，换排法不用重读硬盘；搜索最多给 200 条，要服务端先排好再取。
 - 打开某个文件夹时重新扫描一次（超过 5 秒没扫过才扫），另有「刷新」按钮。
 - 只列 jpg、jpeg、png、webp；heic、heif 灰显「不支持」。
 
@@ -728,6 +747,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 词库：哪天的、多少个标签、多少个有中文、多少条别名，「更新词库」、进度和停止（5.13）。
   - 片段库（5.16）。
   - 出的图：临时文件夹的路径，能在资源管理器里打开（5.20）。
+- 后来加的：对话一节，最多带几轮（5.4），存 `settings.json`。
 
 ## 7. 服务端接口
 
@@ -748,7 +768,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            DELETE   /canvases/:id                    移到 .trash
 节点       POST     /canvases/:id/nodes              新建空节点 {x,y,kind?}，kind 不给就是 video（5.23）
            GET      /canvases/:id/nodes/:nid         完整节点
-           PATCH    /canvases/:id/nodes/:nid         {title, modelConfigId, systemPromptName, slots, duration, aspectRatio, draft, activeChildOf}
+           PATCH    /canvases/:id/nodes/:nid         {title, modelConfigId, systemPromptName, slots, duration, aspectRatio, draft, activeChildOf, turnLimit}
            DELETE   /canvases/:id/nodes/:nid         连同子节点移到 .trash
            POST     /canvases/:id/nodes/:nid/fork    {messageId, draftPrefix?} → 新节点
 消息       POST     /canvases/:id/nodes/:nid/send    {parentId, text} → SSE 流
@@ -769,8 +789,8 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
            DELETE   /assets/folders                  {path}
            POST     /assets/pick-folder              弹系统窗口 → {path} 或 501
            GET      /assets/tree?root=               子文件夹树
-           GET      /assets/list?folder=             图片列表 [{path,name,size,mtime,supported}]
-           GET      /assets/search?q=                跨全部根文件夹
+           GET      /assets/list?folder=             图片列表 [{path,name,size,mtime,supported}]，按文件名排
+           GET      /assets/search?q=&sort=          跨全部根文件夹，按 sort 排好取前 200 条；sort 是 time-desc、time-asc、name-asc、name-desc，不带是 name-asc
            GET      /assets/thumb?path=
            POST     /assets/reveal                   {path} 在资源管理器里显示
            POST     /assets/collage                  {files,rows,columns,cell,numbers,folder} → {path,folder,width,height,inLibrary}
@@ -968,6 +988,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - 统计最后一条 user 消息里的图片数和它们前面的 `<Picture N>` 标签，回复里写「收到 N 张图：<Picture 1>、<Picture 2>」；没有图写「收到 0 张图」。
 - 把最后一条 user 消息的第一个文本段（也就是 systemNote）原样写进「说明：…」。
 - 写「历史消息 M 条」，M 是请求里除 system 外的消息数。
+- 写「请求里一共 N 张图」，N 是请求里所有消息带的图加起来（测只带最近几轮时补到留下的第一轮的图，5.4）。
 - 默认输出 `<title>测试标题</title>` 和一个提示词框，框里有六个部分，`summary:` 那行写「[reference generation] 测试概述，引用了 <Picture 1>」。
 - 用户文字含「三个方向」→ 三个带 label 的框；含「只回答」→ 不输出框；含「报错」→ 同样的文字第一次请求返回 500，再请求就正常回复（测重试）；含「慢」→ 每段间隔 500 毫秒、总共 6 秒（测停止）。
 - 系统消息里写着「翻译成某种语言」（翻译提示词框）→ 不按上面几条出回复：第一行写「译文（语言）」，系统消息里带了用户的翻译要求时接「，按要求：……」，下面接用户消息原文。提示词原文含「报错」「慢」时照样按上面的约定失败一次、慢慢写。

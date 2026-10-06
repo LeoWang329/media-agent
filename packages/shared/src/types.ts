@@ -7,6 +7,9 @@ export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
 export type ThinkingUse = 'chat' | 'translate' | 'tagging';
 export type ThinkingSettings = { level: ThinkingLevel } & Record<ThinkingUse, ThinkingLevel | 'follow'>;
 
+// 节点对话发给模型时最多带几轮：all 是全带，数字是只带最近几轮，见 docs/dev-plan.md 5.4
+export type TurnLimit = 'all' | number;
+
 // 这家接口开思考的写法，见 docs/dev-plan.md 5.12
 export type ThinkingStyle = 'none' | 'reasoning-effort' | 'enable-thinking' | 'thinking-type' | 'model-switch';
 
@@ -30,9 +33,10 @@ export type ComfyTarget = 'lan' | 'autodl';
 // AutoDL 选了哪个实例（没选是 null）、空闲多久自动关机（分钟）
 export type AutodlSettings = { instanceUuid: string | null; idleMinutes: number };
 
-// 工作文件夹 settings.json，两台机器共用：思考档位、局域网 ComfyUI 地址和 AutoDL 实例、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
+// 工作文件夹 settings.json，两台机器共用：思考档位、对话最多带几轮、局域网 ComfyUI 地址和 AutoDL 实例、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
 export type SharedSettings = {
   thinking: ThinkingSettings;
+  turnLimit: TurnLimit;
   comfy: { lanUrl: string | null; autodl: AutodlSettings };
   checkpoints: Record<string, Family | null>;
   defaults: Record<Family, FamilyDefaults>;
@@ -384,6 +388,8 @@ export type ImageRecord = {
 
 // 资产库里的一个文件；supported 为假的（heic 等）只显示不能用
 export type AssetFile = { path: string; name: string; size: number; mtime: number; supported: boolean };
+// 资产库的排法：修改时间新的在前、旧的在前，文件名 A 到 Z、Z 到 A，见 docs/dev-plan.md 6.3
+export type AssetSort = 'time-desc' | 'time-asc' | 'name-asc' | 'name-desc';
 
 // 资产库文件夹树，只含文件夹；count 是这个文件夹里（含子文件夹）列得出来的图片张数
 export type FolderTree = { path: string; name: string; count: number; children: FolderTree[] };
@@ -433,6 +439,7 @@ export type Message = {
   reasoning?: string; // 接口发回来的思考原文
   thinkingMs?: number; // 从发出请求到收到第一个正文字的毫秒数；没开思考、也没收到思考原文时没有
   images?: ImageJob[]; // 生图节点出的图，按点生图的先后排
+  trimmed?: { kept: number; dropped: number }; // 只带了最近几轮时才有：带了几轮、前面几轮没带
 };
 
 // 画布上的一个节点，就是一段对话
@@ -455,6 +462,7 @@ export type ChatNode = {
   activeChildOf: Record<string, string>; // 键是父消息 id（顶层用 'root'），值是当前显示的版本
   draft: string;
   image?: ImageSettings; // 生图节点改过出图设置才有；没有时按系列的默认值
+  turnLimit?: TurnLimit | 'follow'; // 这个节点自己设的最多带几轮；没有或 follow 是跟设置
   createdAt: string;
   updatedAt: string;
 };

@@ -9,6 +9,7 @@ export * from './canvasTree';
 export * from './imageRules';
 export * from './slotDiff';
 export * from './collage';
+export * from './assetSort';
 export * from './cost';
 export * from './translate';
 export * from './thinking';

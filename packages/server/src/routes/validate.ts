@@ -106,7 +106,7 @@ const RATINGS: ImageRating[] = ['none', 'general', 'sensitive', 'explicit'];
 const LORA_TARGETS: LoraTarget[] = ['both', 'model'];
 const WEIGHTINGS: TagWeighting[] = ['comfy', 'a1111'];
 
-function choice<T extends string>(value: unknown, what: string, choices: T[]): T {
+export function choice<T extends string>(value: unknown, what: string, choices: T[]): T {
   if (!choices.includes(value as T)) throw new HttpError(400, `${what}只能是 ${choices.join('、')}`);
   return value as T;
 }
