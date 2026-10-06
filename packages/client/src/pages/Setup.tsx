@@ -3,6 +3,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
 import { isPriced, ModelForm, type ModelFormErrors, type ModelFormHandle } from '../components/ModelForm';
+import { workFolderExample } from '../platform';
 import { Icon } from '../ui/Icon';
 import { ThemeToggle } from '../ui/theme';
 import { toast } from '../ui/toast';
@@ -140,7 +141,7 @@ function WorkFolderStep({ dir, onDir, onDone }: { dir: string; onDir: (dir: stri
             ref={input}
             className={`input mono${error ? ' is-error' : ''}`}
             id="dir"
-            placeholder="D:\同步盘\提示词画布"
+            placeholder={workFolderExample}
             value={dir}
             spellCheck={false}
             onChange={(e) => {

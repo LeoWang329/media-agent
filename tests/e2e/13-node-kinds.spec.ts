@@ -17,7 +17,7 @@ test('10.3 第 17 条：「新建节点」点开选「生图节点」→ 卡片�
 
   await newNode(page);
   await expect(kinds).toHaveText(['生图 · Pony', '视频']);
-  await expect(options).toHaveText(['ref2va', 'i2v', 't2v']);
+  await expect(options).toHaveText(['ref2va', 'i2v', 't2v', 'fl2va', 'l2va']);
   await expect(panel(page).locator('#durVal')).toBeVisible();
 
   // 都不选中时，生图节点的边框和视频节点的不一样

@@ -15,9 +15,9 @@ const TO_TAGS_DOC = doc('to-tags');
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
-// 自带的提示词，列表里按这个顺序排在前面：视频的三套（参考模式、图当首帧、纯文字），生图的两套（IL、Pony）。
+// 自带的七套提示词，列表里按这个顺序排在前面：视频的五套（参考模式、图当首帧、纯文字、首尾帧、尾帧图），生图的两套（IL、Pony）。
 // 第一套是新建节点的默认。原文只维护 docs/prompts/ 里同名的那几份
-export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'il', 'pony'];
+export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'il', 'pony'];
 export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
 
 const promptsDir = (work: string) => path.join(work, 'prompts');

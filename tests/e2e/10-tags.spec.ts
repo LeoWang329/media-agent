@@ -178,7 +178,7 @@ test('设置：系统提示词分视频和生图两组，生图的标着系列�
   await page.goto('/settings#prompts');
   const list = page.locator('#pList');
   await expect(list.locator('.li-sep')).toHaveText(['写视频提示词 · 视频节点用', '写生图标签 · 生图节点用']);
-  await expect(list.locator('[data-prompt]')).toHaveText([/^ref2va/, /^i2v/, /^t2v/, /^il/, /^pony/]);
+  await expect(list.locator('[data-prompt]')).toHaveText([/^ref2va/, /^i2v/, /^t2v/, /^fl2va/, /^l2va/, /^il/, /^pony/]);
   await expect(list.locator('[data-prompt="il"] .tag-outline')).toHaveText('生图 · IL');
   await expect(list.locator('[data-prompt="pony"] .tag-outline')).toHaveText('生图 · Pony');
   await list.locator('[data-prompt="pony"]').click();

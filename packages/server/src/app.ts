@@ -105,7 +105,7 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
 
   if (clientDist) {
     app.use(express.static(clientDist));
-    app.get('/{*path}', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+    app.get('/{*path}', (_req, res) => res.sendFile(path.join(clientDist, 'index.html'), { dotfiles: 'allow' }));
   }
 
   const onError: ErrorRequestHandler = (err, _req, res, _next) => {

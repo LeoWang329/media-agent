@@ -1,6 +1,7 @@
 import { referencedPictures, type CanvasImage, type ChecklistPath } from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { api, imageThumbUrl } from '../api';
+import { fileManagerName } from '../platform';
 import { useCanvasStore } from '../store/canvasStore';
 import { copyText } from '../ui/copy';
 import { Dialog } from '../ui/Dialog';
@@ -52,7 +53,7 @@ export function UploadList({ canvasId, images, where, target, onClose }: Props) 
   const reveal = async (imageId: string, path: string) => {
     try {
       await api(`/canvases/${canvasId}/images/${imageId}/reveal`, { method: 'POST' });
-      toast(`已在资源管理器里选中 ${fileName(path)}`);
+      toast(`已在${fileManagerName}里选中 ${fileName(path)}`);
     } catch (err) {
       toast((err as Error).message, { tone: 'danger' });
     }
@@ -157,7 +158,7 @@ export function UploadList({ canvasId, images, where, target, onClose }: Props) 
                 <div className="up-acts">
                   <button type="button" className="btn btn-secondary btn-sm" disabled={!row} onClick={() => row && void reveal(id, row.path)}>
                     <Icon name="reveal" />
-                    在资源管理器里显示
+                    在{fileManagerName}里显示
                   </button>
                   <button type="button" className="btn btn-ghost btn-sm" disabled={!row} onClick={() => row && copyText(row.path, '已复制路径')}>
                     <Icon name="copy" />

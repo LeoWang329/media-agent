@@ -50,11 +50,12 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
 
   // 临时文件夹里的被清掉了用下载的那份；都不在返回 404，界面上显示「已清理」
   router.get(`${base}/:jobId/:index/file`, async (req, res) => {
-    res.sendFile((await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file);
+    res.sendFile((await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file, { dotfiles: 'allow' });
   });
 
+  // 缩略图缓存在配置目录里，macOS / Linux 上是 ~/.media-agent；send 默认把点开头的目录当隐藏文件拒掉，得放开
   router.get(`${base}/:jobId/:index/thumb`, async (req, res) => {
-    res.sendFile(await thumbnail(configDir, (await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file));
+    res.sendFile(await thumbnail(configDir, (await findImage(await place(req), String(req.params.jobId), imageIndex(req))).file), { dotfiles: 'allow' });
   });
 
   // 大图旁边显示文件在哪：临时文件夹里的、下载的那份还在不在

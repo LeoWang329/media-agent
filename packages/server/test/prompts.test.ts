@@ -21,13 +21,15 @@ const BUILTINS: PromptInfo[] = [
   { name: 'ref2va', use: 'video', family: null },
   { name: 'i2v', use: 'video', family: null },
   { name: 't2v', use: 'video', family: null },
+  { name: 'fl2va', use: 'video', family: null },
+  { name: 'l2va', use: 'video', family: null },
   { name: 'il', use: 'image', family: 'IL' },
   { name: 'pony', use: 'image', family: 'Pony' },
 ];
 
 describe('系统提示词', () => {
   it('列表、新建、读、改、删除进 .trash；名字不合法返回 400', async () => {
-    // 自带五套，视频的三套在前、参考模式排第一，生图的两套标出系列
+    // 自带七套，视频的五套在前、参考模式排第一，生图的两套标出系列
     expect(await t.ok('GET', '/prompts')).toEqual(BUILTINS);
 
     await t.ok('POST', '/prompts', { name: '英文版', text: 'english' });
@@ -53,16 +55,16 @@ describe('系统提示词', () => {
     expect((await fs.readdir(path.join(t.work, '.trash'))).some((name) => name.endsWith('-prompt-英文版.md'))).toBe(true);
   });
 
-  it('第三批之前建的工作文件夹：il、pony 补进来一次，之前删掉的视频提示词不补；删掉的 il 也不再补回来', async () => {
+  it('旧工作文件夹：fl2va、l2va、il、pony 补进来一次，之前删掉的视频提示词不补；删掉的 il 也不再补回来', async () => {
     const prompts = path.join(t.work, 'prompts');
     for (const file of ['.builtin.json', 'il.md', 'pony.md', 't2v.md']) await fs.rm(path.join(prompts, file));
 
-    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'il', 'pony']);
+    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'il', 'pony']);
     expect(await fs.readFile(path.join(prompts, 'il.md'), 'utf8')).toBe(await fs.readFile(IL_PROMPT, 'utf8'));
     expect(JSON.parse(await fs.readFile(path.join(prompts, '.builtin.json'), 'utf8'))).toEqual(BUILTINS.map((p) => p.name));
 
     await t.ok('DELETE', '/prompts/il');
-    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'pony']);
+    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'pony']);
   });
 
   it('固定格式要求：视频的取 format-requirement.md、生图的取 format-requirement-image.md，都是 --- 下面那段', async () => {

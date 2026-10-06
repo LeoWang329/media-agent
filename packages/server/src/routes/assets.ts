@@ -34,7 +34,8 @@ export function assetRoutes(configDir: string): express.Router {
 
   // start 是窗口一打开停在哪个文件夹
   router.post('/assets/pick-folder', async (req, res) => {
-    if (process.platform !== 'win32') throw new HttpError(501, '这个系统不能弹窗选择，请直接填写路径');
+    // 有系统选文件夹窗口的只有 Windows 和 macOS
+    if (process.platform !== 'win32' && process.platform !== 'darwin') throw new HttpError(501, '这个系统不能弹窗选择，请直接填写路径');
     const picked = await pickFolder(typeof req.body?.start === 'string' ? req.body.start : undefined);
     if (picked) pickedFolders.add(path.resolve(picked));
     res.json({ path: picked });
@@ -77,7 +78,8 @@ export function assetRoutes(configDir: string): express.Router {
   router.get('/assets/thumb', async (req, res) => {
     const file = await allowedPath(configDir, req.query.path);
     if (!isSupportedImage(file)) throw new HttpError(415, '不支持这种图片格式');
-    res.sendFile(await thumbnail(configDir, file));
+    // send 默认把路径里以点开头的目录当隐藏文件拒掉，而缩略图缓存就在 ~/.media-agent 下面，得放开
+    res.sendFile(await thumbnail(configDir, file), { dotfiles: 'allow' });
   });
 
   return router;

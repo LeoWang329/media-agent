@@ -18,6 +18,7 @@ import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
 import { ComfyPill } from '../components/ComfyPill';
 import { isPriced, ModelForm } from '../components/ModelForm';
+import { fileManagerName } from '../platform';
 import { confirmBox } from '../ui/confirm';
 import { fmtNum } from '../ui/copy';
 import { Dialog } from '../ui/Dialog';
@@ -162,7 +163,7 @@ function WorkdirTab({ config, onConfig }: { config: Config; onConfig: (config: C
   const open = async () => {
     try {
       await api('/work-folder/open', { method: 'POST' });
-      toast(`已在资源管理器里打开 ${config.workFolder}`);
+      toast(`已在${fileManagerName}里打开 ${config.workFolder}`);
     } catch (err) {
       failed(err);
     }
@@ -200,7 +201,7 @@ function WorkdirTab({ config, onConfig }: { config: Config; onConfig: (config: C
           </button>
           {config.workFolder && (
             <button type="button" className="btn btn-ghost" id="wdOpen" onClick={() => void open()}>
-              <Icon name="external" />在资源管理器里打开
+              <Icon name="external" />在{fileManagerName}里打开
             </button>
           )}
         </div>

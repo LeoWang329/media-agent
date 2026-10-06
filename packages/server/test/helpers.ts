@@ -28,7 +28,9 @@ export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve
 export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'autodl' | 'models'> = {}) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'media-agent-test-'));
   const work = path.join(tmp, 'work');
-  const configDir = path.join(tmp, 'config');
+  // 配置目录故意用点开头：macOS / Linux 上真实的配置目录就是 ~/.media-agent，
+  // 这样缩略图缓存这类放在配置目录下的文件才会走和线上一样的路径形态
+  const configDir = path.join(tmp, '.config');
   const mockLlm = await listen(createMockLlmApp());
   let app = createApp({ configDir, ...options });
   let server = await listen(app);
