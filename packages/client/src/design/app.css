@@ -149,7 +149,7 @@ h3 { font-size: var(--fs-h3); line-height: 1.4; font-weight: 600; letter-spacing
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r);
   font-size: 13.5px; transition: border-color .15s, box-shadow .15s;
 }
-html[data-theme="dark"] .input, html[data-theme="dark"] .textarea, html[data-theme="dark"] .select { background: color-mix(in oklch, var(--bg) 70%, var(--surface)); }
+html[data-theme="dark"] .input, html[data-theme="dark"] .textarea, html[data-theme="dark"] .select { background-color: color-mix(in oklch, var(--bg) 70%, var(--surface)); }
 .input::placeholder, .textarea::placeholder { color: color-mix(in oklch, var(--muted) 80%, transparent); }
 .input:hover, .textarea:hover, .select:hover { border-color: color-mix(in oklch, var(--fg) 20%, var(--border)); }
 .input:focus, .textarea:focus, .select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
