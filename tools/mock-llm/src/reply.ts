@@ -52,7 +52,8 @@ export function planReply(messages: ChatMessage[]): MockPlan {
     `请求里一共 ${allImages} 张图`,
   ];
   if (!userText.includes('只回答')) {
-    const box = image ? tagBox : promptBox;
+    const segments = segmentCount(messages);
+    const box = image ? tagBox : (summary: string, label?: string) => promptBox(summary, label, segments);
     const boxes = userText.includes('三个方向')
       ? ['一', '二', '三'].map((n) => box(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
       : [box('测试概述')];
@@ -62,14 +63,25 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   return { reply: lines.join('\n'), userText, fail: userText.includes('报错'), slow: userText.includes('慢') };
 }
 
-function promptBox(summary: string, label?: string): string {
-  return [
-    label ? `<prompt label="${label}">` : '<prompt>',
+// 视频节点的长视频分几段：看最近一次说时长的说明，写了「分 N 段生成」就是 N 段，没写是 1 段
+function segmentCount(messages: ChatMessage[]): number {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== 'user') continue;
+    const note = toParts(message.content).find((part) => part.type === 'text');
+    const said = note?.type === 'text' ? note.text.match(/视频时长(?:改为)? \d+ 秒(?:，分 (\d+) 段生成)?/) : null;
+    if (said) return Number(said[1] ?? 1);
+  }
+  return 1;
+}
+
+// 分段时每段都是一份完整的提示词，段与段之间单独一行 |
+function promptBox(summary: string, label?: string, segments = 1): string {
+  const segment = (n: number) => [
     'subject_definitions:',
     '<Subject 1> 是 <Picture 1> 里的测试主体。',
     '',
     'summary:',
-    `[reference generation] ${summary}，引用了 <Picture 1>`,
+    `[reference generation] ${summary}${segments > 1 ? `，第 ${n} 段` : ''}，引用了 <Picture 1>`,
     '',
     'retention_analysis:',
     '<Subject 1>（出现在 [Shot 1]）：fully_preserved - 测试主体保留。',
@@ -83,8 +95,9 @@ function promptBox(summary: string, label?: string): string {
     '',
     'non_diegetic_music:',
     'N/A',
-    '</prompt>',
-  ].join('\n');
+  ];
+  const body = Array.from({ length: segments }, (_, i) => segment(i + 1).join('\n')).join('\n|\n');
+  return [label ? `<prompt label="${label}">` : '<prompt>', body, '</prompt>'].join('\n');
 }
 
 function tagBox(_summary: string, label?: string): string {

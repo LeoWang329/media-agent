@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createAutodl, type Autodl, type AutodlOptions } from './comfy/autodl';
 import { createImageJobs, type ImageJobs } from './comfy/jobs';
 import { createModelTransfers } from './comfy/models';
+import { createVideoJobs, type VideoJobs } from './comfy/videoJobs';
 import { maskConfig, readConfig, requireWorkFolder, updateConfig } from './config';
 import { HttpError } from './httpError';
 import { testConnection } from './llm/testConnection';
@@ -17,6 +18,7 @@ import { imageRoutes } from './routes/images';
 import { modelRoutes } from './routes/models';
 import { promptRoutes } from './routes/prompts';
 import { tagRoutes } from './routes/tags';
+import { videoRoutes } from './routes/videos';
 import { workflowRoutes } from './routes/workflows';
 import { readSettings, updateSettings } from './store/settings';
 import { workFolderStatus } from './store/workFolder';
@@ -34,9 +36,11 @@ export type AppOptions = {
   models?: { pollMs?: number };
 };
 
-// 出图任务和 AutoDL 挂在 app.locals 上：服务启动后接着取没出完的图，退出时关 AutoDL，测试收尾时断开
+// 出图、生成视频任务和两台 AutoDL 挂在 app.locals 上：服务启动后接着取没出完的图和视频，退出时关 AutoDL，测试收尾时断开
 export const imageJobsOf = (app: express.Express) => app.locals.imageJobs as ImageJobs;
 export const autodlOf = (app: express.Express) => app.locals.autodl as Autodl;
+export const videoJobsOf = (app: express.Express) => app.locals.videoJobs as VideoJobs;
+export const videoAutodlOf = (app: express.Express) => app.locals.videoAutodl as Autodl;
 
 export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOURCES, autodl: autodlOptions, models: modelOptions }: AppOptions): express.Express {
   const app = express();
@@ -44,10 +48,14 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   app.use(express.json({ limit: '20mb' }));
   const api = express.Router();
   const autodl = createAutodl(configDir, autodlOptions);
+  const videoAutodl = createAutodl(configDir, autodlOptions, 'videos');
   const imageJobs = createImageJobs(configDir, autodl);
+  const videoJobs = createVideoJobs(configDir, videoAutodl);
   const models = createModelTransfers(autodl, modelOptions);
   app.locals.autodl = autodl;
   app.locals.imageJobs = imageJobs;
+  app.locals.videoAutodl = videoAutodl;
+  app.locals.videoJobs = videoJobs;
 
   api.get('/config', async (_req, res) => {
     res.json(maskConfig(await readConfig(configDir)));
@@ -56,7 +64,10 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   // 换了 AutoDL 的 Token，重新查一次实例
   api.put('/config', async (req, res) => {
     res.json(maskConfig(await updateConfig(configDir, req.body)));
-    if (req.body && 'autodlToken' in req.body) void autodl.refresh();
+    if (req.body && 'autodlToken' in req.body) {
+      void autodl.refresh();
+      void videoAutodl.refresh();
+    }
   });
 
   api.get('/settings', async (_req, res) => {
@@ -66,7 +77,10 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   // 换了 AutoDL 实例、改了空闲多久关机，马上照新的来
   api.put('/settings', async (req, res) => {
     res.json(await updateSettings(await requireWorkFolder(configDir), req.body));
-    if (req.body && 'comfy' in req.body) void autodl.refresh();
+    if (req.body && 'comfy' in req.body) {
+      void autodl.refresh();
+      void videoAutodl.refresh();
+    }
   });
 
   api.get('/work-folder', async (_req, res) => {
@@ -93,10 +107,11 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   api.use(tagRoutes(configDir, tagSources));
   api.use(fragmentRoutes(configDir));
   api.use(presetRoutes(configDir));
-  api.use(comfyRoutes(configDir, autodl));
+  api.use(comfyRoutes(configDir, autodl, videoAutodl));
   api.use(modelRoutes(models));
   api.use(workflowRoutes(configDir));
   api.use(imageRoutes(configDir, imageJobs));
+  api.use(videoRoutes(configDir, videoJobs));
 
   api.use(() => {
     throw new HttpError(404, '没有这个接口');
@@ -126,6 +141,9 @@ export function startServer(options: AppOptions & { port: number }): Promise<{ s
       imageJobsOf(app)
         .resume()
         .catch((err) => console.error('接着取没出完的图失败', err));
+      videoJobsOf(app)
+        .resume()
+        .catch((err) => console.error('接着取没出完的视频失败', err));
       resolve({ server, app });
     });
   });

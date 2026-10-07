@@ -6,7 +6,7 @@ import { generatedThumb } from '../canvas/imageActions';
 import { splitError } from '../canvas/nodeInfo';
 import { tokens } from '../canvas/tokens';
 import { UploadList } from '../canvas/UploadDialog';
-import { ComfyPill } from '../components/ComfyPill';
+import { ComfyPill, VideoPill } from '../components/ComfyPill';
 import { TagChip } from '../tags/TagChip';
 import { composeBox, useTagChecks } from '../tags/tagStore';
 import { confirmBox } from '../ui/confirm';
@@ -144,6 +144,7 @@ export function Home() {
         <Link className="brand" to="/"><span className="brand-mark"><Icon name="logo" /></span>提示词画布</Link>
         <span className="spacer" />
         <ComfyPill />
+        <VideoPill />
         <Link
           className={`path-pill hide-sm${view === 'error' ? ' is-error' : ''}`}
           to={workdirLink}

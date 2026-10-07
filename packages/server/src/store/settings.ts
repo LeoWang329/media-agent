@@ -10,6 +10,7 @@ import {
   THINKING_LEVELS,
   THINKING_USES,
   TURN_LIMITS,
+  type AutodlSettings,
   type Family,
   type FamilyDefaults,
   type SharedSettings,
@@ -30,7 +31,12 @@ export async function readSettings(work: string): Promise<SharedSettings> {
     ...saved,
     thinking: { ...DEFAULT_THINKING, ...saved?.thinking },
     turnLimit: saved?.turnLimit ?? DEFAULT_TURN_LIMIT,
-    comfy: { lanUrl: null, ...saved?.comfy, autodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.autodl } },
+    comfy: {
+      lanUrl: null,
+      ...saved?.comfy,
+      autodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.autodl },
+      videoAutodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.videoAutodl },
+    },
     checkpoints: { ...saved?.checkpoints },
     defaults: { IL: { ...FAMILY_DEFAULTS.IL, ...saved?.defaults?.IL }, Pony: { ...FAMILY_DEFAULTS.Pony, ...saved?.defaults?.Pony } },
   };
@@ -76,7 +82,7 @@ function parseThinking(value: unknown): Partial<ThinkingSettings> {
   return result;
 }
 
-// 局域网那台的地址：空着就是没填；去掉末尾的斜杠。AutoDL 选的实例和空闲多久关机，只改带了的项
+// 局域网那台的地址：空着就是没填；去掉末尾的斜杠。出图、生成视频用的 AutoDL 实例和空闲多久关机，只改带了的项；两台不能选同一个，见 docs/dev-plan.md 5.25
 function parseComfy(value: unknown, current: SharedSettings['comfy']): SharedSettings['comfy'] {
   const fields = object(value, 'ComfyUI 设置');
   const result = { ...current };
@@ -87,24 +93,30 @@ function parseComfy(value: unknown, current: SharedSettings['comfy']): SharedSet
     if (trimmed && !/^https?:\/\/[^\s/]+$/i.test(trimmed)) throw new HttpError(400, 'ComfyUI 地址要像 http://192.168.1.20:8188 这样，不带后面的路径');
     result.lanUrl = trimmed || null;
   }
-  if ('autodl' in fields) {
-    const autodl = object(fields.autodl, 'AutoDL 设置');
-    const next = { ...current.autodl };
-    if ('instanceUuid' in autodl) {
-      if (autodl.instanceUuid !== null && typeof autodl.instanceUuid !== 'string') throw new HttpError(400, 'AutoDL 实例格式不对');
-      next.instanceUuid = (autodl.instanceUuid as string | null)?.trim() || null;
-    }
-    if ('idleMinutes' in autodl) {
-      const minutes = autodl.idleMinutes;
-      const { min, max } = AUTODL_IDLE_MINUTES;
-      if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < min || minutes > max) {
-        throw new HttpError(400, `空闲多久自动关机要填 ${min} 到 ${max} 之间的整数分钟`);
-      }
-      next.idleMinutes = minutes;
-    }
-    result.autodl = next;
+  if ('autodl' in fields) result.autodl = parseAutodl(fields.autodl, current.autodl);
+  if ('videoAutodl' in fields) result.videoAutodl = parseAutodl(fields.videoAutodl, current.videoAutodl);
+  if (result.autodl.instanceUuid && result.autodl.instanceUuid === result.videoAutodl.instanceUuid) {
+    throw new HttpError(400, '出图和生成视频不能用同一台 AutoDL 实例');
   }
   return result;
+}
+
+function parseAutodl(value: unknown, current: AutodlSettings): AutodlSettings {
+  const autodl = object(value, 'AutoDL 设置');
+  const next = { ...current };
+  if ('instanceUuid' in autodl) {
+    if (autodl.instanceUuid !== null && typeof autodl.instanceUuid !== 'string') throw new HttpError(400, 'AutoDL 实例格式不对');
+    next.instanceUuid = (autodl.instanceUuid as string | null)?.trim() || null;
+  }
+  if ('idleMinutes' in autodl) {
+    const minutes = autodl.idleMinutes;
+    const { min, max } = AUTODL_IDLE_MINUTES;
+    if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < min || minutes > max) {
+      throw new HttpError(400, `空闲多久自动关机要填 ${min} 到 ${max} 之间的整数分钟`);
+    }
+    next.idleMinutes = minutes;
+  }
+  return next;
 }
 
 // 底模文件名 → 系列；null 是两个系列都不是

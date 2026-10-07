@@ -8,6 +8,8 @@
 
 第三批加两样：一是全局控制模型要不要思考、思考多深；二是生图：在生图节点里让模型写 Danbooru 标签提示词（底模是 IL 或 Pony 系列），能用中文搜标签、手动改，再接 ComfyUI 出图（局域网里的那台，或 AutoDL Art 上租的实例）。视频还是只出提示词。
 
+第四批：视频节点的提示词框能直接生成视频。用 AutoDL Art 上另一台跑「MINIMAX-H3提速500高画质」应用的实例，跑内置的长视频流程：分段生成、每段开头原样接上一段结尾，先低分辨率生成、再放大重采一遍。时长能到 60 秒，超过 15 秒的由模型在一个框里按段写。为什么这么定见 `docs/requirements-interview-video.md` 的「第二步」。
+
 ## 2. 技术选型
 
 | 部分 | 选择 | 原因 |
@@ -312,6 +314,39 @@ type TurnLimit = 'all' | number;        // 节点对话最多带几轮：all 是
 // Message 加（只有 assistant 消息有）：trimmed?: { kept: number; dropped: number }（真截掉了才有：带了几轮、前面几轮没带）
 ```
 
+第四批加的（生成视频，见 5.24 到 5.28）：
+
+```ts
+type VideoSettings = {                  // 视频节点的生成设置，存在 node.video；没有时用默认值
+  megapixels: number;                   // 一采大小（百万像素）：0.3、0.4、0.5、0.6、0.8、1，默认 0.4
+  upscale: 1.5 | 2;                     // 放大倍数，默认 2
+  seed: number | null;                  // null 是每次随机
+};
+// SharedSettings.comfy 加：videoAutodl: { instanceUuid: string | null; idleMinutes: number }（生成视频用的那台，默认没选、空闲 15 分钟关机）
+// Message.videos 原来留的字段改成 VideoJob[]
+type VideoJob = {                       // 点一次「生成视频」出的一条
+  id: string; promptIndex: number; createdAt: string;
+  rev?: number;
+  source?: { jobId: string };           // 「同样参数再来」「只换种子再来」照着哪条
+  params: {                             // 发出去的全部参数，再来照这个发
+    segments: string[];                 // 每段的提示词
+    seconds: number;                    // 写这条回复时的时长
+    frames: { total: number; chunk: number; overlap: number };  // 整条、每段、相邻两段重叠几帧
+    aspectRatio: Exclude<AspectRatio, 'auto'>;
+    megapixels: number; width: number; height: number;          // 一采
+    upscale: number; finalWidth: number; finalHeight: number;   // 出片
+    model: string;                      // 主模型文件名
+  };
+  seed: number;
+  promptId?: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
+  file?: string;                        // 临时文件夹里的视频，相对工作文件夹，用 / 隔开
+  bytes?: number; ms?: number;          // 文件多大、从开始跑到出完用了多久
+  savedPath?: string;                   // 下载到哪
+  error?: string;
+};
+```
+
 id 一律用 `crypto.randomUUID()`。
 
 ## 5. 核心规则
@@ -546,12 +581,12 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 开发者 Token 只存本机 `config.json`，和模型密钥一样不进工作文件夹；实例 uuid 和空闲多久关机（默认 15 分钟）存 `settings.json`。
   - 填了 Token 后列出账号下的实例（`POST https://www.autodl.art/api/v1/adl_dev/dev/instance/pro/list`，请求头 `Authorization: <Token>`），选一个。显卡和每小时的价格从各自的快照里取，价格的单位是千分之一元。
   - 状态用 `GET …/pro/status`：`running` 是开着，`shutdown` 是关了。运行中时从 `GET …/pro/snapshot` 取 6006 端口的访问地址（`service_6006_domain`，只有域名和端口，前面加 `https://`），当 ComfyUI 地址用。
-  - AutoDL 出错时 HTTP 也是 200，看返回的 `code`：Token 不对是 `AuthorizeFailed`，实例不存在是 `RecordNotFoundError`，`msg` 是原话。余额不够的 `code` 文档没写，按原话里有没有「余额」认。
+  - AutoDL 出错时 HTTP 也是 200，看返回的 `code`：Token 不对是 `AuthorizeFailed`，实例不存在是 `RecordNotFoundError`，`msg` 是原话。余额不够的 `code` 文档没写，按原话里有没有「余额」认。开机时那台主机没有空闲显卡的也没写，按原话里有没有「资源不足」，或者同时说到「GPU、显卡」和「不足、不够、占满、没有空闲」认，说余额的不算。
   - 出图时实例关着：先开机（`POST …/pro/power_on`，`{instance_uuid, payload: "gpu"}`），每 5 秒查一次状态；变成运行中以后，再等到 ComfyUI 的 `/system_stats` 能通，然后发任务。超过 5 分钟没好算失败。界面上显示「正在开机，等了 N 秒」。
   - 设置里和出图设置里都能手动开机、关机（`POST …/pro/power_off`）。正在开机时点「别开了」：等着开机的图算叫停，已经发出的开机请求等它开好后马上关掉。
   - 自动关机：实例开着，程序这边最后一个任务结束后空闲到设定的分钟数，就关机。实例不是程序开的、程序这边也没出过图的，从程序看到它开着时算起。到点时先看一眼 ComfyUI 的队列（`GET /queue`）：里面有任务（比如在 ComfyUI 网页上直接出的图）就不关，过一分钟再看；队列空了，从最后一次看到有任务时起再空闲到设定的分钟数才关。看不了队列（ComfyUI 连不上）照常关。服务退出时（Ctrl+C、关掉窗口），这次开机是程序开的、又没见它关掉，先发关机请求再退出。程序没开着时管不了，所以界面上要一直看得到实例开着。
   - 访问地址要不要另外鉴权、ComfyUI 是不是开机就自己起来、跑在哪个端口，文档没写。P11 开工前先用用户的真实例核对，结果写进 P11 的报告。
-  - 出错要说清是哪种，带上 AutoDL 返回的原话：Token 不对、实例不存在、余额不够开不了机、开机超时。
+  - 出错要说清是哪种，带上 AutoDL 返回的原话：Token 不对、实例不存在、余额不够开不了机、开机超时。主机没有空闲显卡的，提示去设置里另选一台（出图那台还可以先用局域网那台），也可以过一会再开。
 
 ### 5.18 工作流（第三批）
 
@@ -683,6 +718,85 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 卡片：视频节点标「视频」，生图节点照旧标「生图 · IL」这样带系列。生图节点的卡片边框用紫色，选中时照旧是选中的样子。紫色是新加的，明暗两套都要。首页最近动过的节点卡片不改。
 - 设置的系统提示词列表里，两组的说明改成「写视频提示词 · 视频节点用」「写生图标签 · 生图节点用」。
 - 生图节点里用户消息下面只写带了几张图，不写时长和比例（这两样不发给模型）。
+
+### 5.24 长视频的分段写法（第四批）
+
+为什么这么定见 `docs/requirements-interview-video.md`「第二步」已定第 5 条。
+
+- 视频节点的时长能选 4 到 60 秒。超过 15 秒的分几段生成：16 到 30 秒 2 段，31 到 45 秒 3 段，46 到 60 秒 4 段。
+- 时长中间的数字点开是个小窗，能直接填，也能点 15、30、45、60；超过 15 秒的，时长旁边写「分 4 段」。
+- 发给模型的说明：时长超过 15 秒时写「视频时长 60 秒，分 4 段生成，每段约 15 秒，相邻两段重叠约 1 秒。」，改了时长写「视频时长改为 60 秒，分 4 段生成。」每段多长按 5.26 的算法。
+- 固定格式要求（`docs/prompts/format-requirement.md`）加一条：分段时一个框里按顺序写全部几段，每段都是一份完整的提示词，段与段之间单独一行、只写一个 `|`；每段按这一段的时长写，切镜时间从这一段开头算；每段开头接着上一段结尾的画面写，人物在哪、朝哪、在做什么、镜头在哪都和上一段结尾一样，不要一开头就换地方或机位；人物外貌、服装、画风的写法每段一字不差；一句台词可以跨切镜，但不能跨段，每句台词都在同一段里说完。
+- 五套视频提示词不改：工作文件夹里那几份是第一次用时复制过去的，改 `docs/prompts/` 里的到不了；固定格式要求每次现读，写在那里每个节点都生效。五套里说的「视频时长」，分段时由上面这条说明是指这一段的时长。
+- 解析：框里单独一行只有 `|` 的地方切开，每段去掉首尾空行；没有这种行就是一段。框的显示、复制、翻译、打星照旧，`|` 那行原样显示。
+
+### 5.25 生成视频用的那台 AutoDL（第四批）
+
+- 设置「ComfyUI 和 AutoDL」里加「生成视频用的实例」：从账号下的实例里选一个（和出图那台共用一个列表、一个 Token），和空闲多久自动关机（默认 15 分钟）。存 `settings.json` 的 `comfy.videoAutodl`。不能和出图那台选同一个，选了返回 400。
+- 排在出图那台下面，也是选实例、状态和开机关机、空闲多久自动关机三行。另一台选了的实例在列表里灰掉，后面写「（出图在用）」或「（生成视频在用）」。
+- 开机、关机、空闲自动关机、服务退出时关机、开机超时，规则照 5.17，两台各管各的。视频在跑、在等开机时算忙，不会被空闲关机。
+- 顶上多一个视频那台的状态，没选时不显示；点开能开机、关机，跟出图那台一样。
+- 只用 AutoDL，不支持局域网那台：H3 要 32 GB 显存的卡。
+
+### 5.26 内置的长视频流程（第四批）
+
+- 程序拼 ComfyUI 的 API 格式，照 `docs/workflows/h3-long-video.json`（实例上的 U37）的两遍生成，不要只给 ComfyUI 界面看的预览和说明节点：
+  - 主模型 `UNETLoader`（`minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors`）→ `ModelAttentionBackend`（comfy kitchen attention）→ `MiniMaxLowVRAMAttention`（8）→ `MiniMaxChunkFeedForward`（8、4096）。文字编码 `CLIPLoader`（`qwen3vl_32b_minimax_h3_int8_convrot.safetensors`，minimax），视频、音频各一个 `VAELoader`。
+  - `MMH3ReferenceMultiPrompt`：几段提示词用 `\n|\n` 连起来，一采宽高，整条帧数，编完卸掉文字编码器。`MMH3CondSelect` 取第一段给 `BasicGuider`。
+  - 一采 `MMH3LoopingSampler`：`RandomNoise`、`KSamplerSelect`（euler）、`BasicScheduler`（beta，10 步），每段帧数、重叠帧数，接缝用 mask 原样带上一段结尾（画面 1.0、声音 0.9）。
+  - `LTXVSeparateAVLatent` → `MinimaxH3LatentUpscaler3D`（不解码放大，按目标宽高放，宽高是程序算好的出片宽高）→ `LTXVConcatAVLatent`（声音用一采的）。
+  - 二采 `MMH3LoopingSampler`：同样的分段，`BasicScheduler` beta 3 步、去噪 0.2。
+  - `VAEDecodeAudio`（一采的声音）+ `MMH3StreamingSave`（一段一段解码直接写 mp4，存到那台 ComfyUI 的 `output/media-agent/`）。
+- 帧数：H3 的帧数只能是 17 的倍数加 5。重叠固定 22 帧（0.92 秒）。段数 N 是框里切出来的段数，最多 4 段，多了不发，说「这个框分了 5 段，最多 4 段」。每段帧数 =（时长 × 24 + (N − 1) × 22）÷ N，取最近的 17 的倍数加 5，最多 362（15.08 秒）、最少 107。整条帧数 = N × 每段帧数 − (N − 1) × 22。60 秒 4 段是 1382 帧，57.6 秒；15 秒 1 段是 362 帧。
+- 一采宽高照 ComfyUI 自带的 `ResolutionSelector` 算：宽 = √(一采大小 × 1024² × 宽比 ÷ 高比)，高 = √(一采大小 × 1024² × 高比 ÷ 宽比)，各取最近的 32 的倍数。16:9、0.4 是 864×480。比例是「自动」的按 16:9。出片宽高 = 一采宽高 × 放大倍数，各取最近的 32 的倍数，正好一半的往大取（0.4、放大 1.5 是 1312×736），用目标宽高的方式（`target dimensions`）传给 `MinimaxH3LatentUpscaler3D`，界面上写的就是出来的大小。U37 用的是按倍数放；按目标宽高放在 P19 的真机测试里跑过，出来的大小对。
+- 一采、二采用同一个种子。
+- 发之前照 5.18 对照 `/object_info`，缺的节点说要装哪个插件。
+- P19 只生成不带图的：这条回复带了图的，说「带图的生成视频还没做」，不发。P20 接参考图和首帧。
+
+### 5.27 生成视频任务（第四批）
+
+- 视频节点的提示词框上加「生成视频」。点了：服务端按这个框、这条回复的时长和比例、节点现在的生成设置拼参数，建一个 `VideoJob` 挂到这条回复的 `videos`，状态是排队，存盘后返回；然后等视频那台开好（关着的先开机，照 5.17），`POST /prompt`。
+- 一个框能生成好几次，每次一条。
+- 进度：视频那台也开一个 WebSocket（`client_id` 和出图共用）。从 `executing` 的节点号知道在做哪步：编码提示词、一采、放大、二采、存文件；一采、二采的 `progress` 是这一段第几步、共几步，步数变小了就是到了下一段。前端显示「一采 第 2/4 段 5/10 步」和跑了多久。进度不存盘。
+- 出完：从 `/history` 找到 `MMH3StreamingSave` 出的 mp4，`/view` 下载，存进工作文件夹 `video-temp/YYYY-MM-DD/HHmmss-<种子>.mp4`。那台 output 里的那份不删。
+- 叫停、出错的说法、服务重启后接着等，照 5.19。
+- 「同样参数再来」用同一个种子，「只换种子再来」随机一个，参数都照那一条的。
+- 生成设置在节点面板里，放在生图节点放出图设置的地方：一个按钮，上面写着出片多大，比如「出片 1728×960」；点开改一采大小（下拉，每项带出这个比例下的宽高）、放大倍数（1.5 或 2）、种子（每次随机或固定一个数），下面也写出片多大。每个节点各存一份。
+
+### 5.28 出的视频（第四批）
+
+- 框下面列出这个框生成的视频，按生成的先后。没出完的写在做什么（排第几、正在开机、编码提示词、一采 第 2/4 段 5/10 步、放大、二采、存文件）和跑了多久，能叫停；出完的是能播放的视频，写着出片宽高、多长、多大、种子、用了多久，能下载、同样参数再来、只换种子再来、删掉；失败的写原因。
+- 下载照 5.20：弹系统窗口选文件夹（和出的图共用上次那个文件夹），复制过去，文件名 `<节点标题>-<种子>.mp4`，重名加序号；下载过的标「已下载」。视频不进资产库，不问要不要导入。
+- 删掉：临时文件直接删，下载过的那份不动；没出完的先叫停。临时文件清掉了的，下载过就播下载的那份，没下载过显示「已清理」。
+- 岔出去的节点、手动改提示词生成的新版本，都不带原来的视频。
+
+### 5.29 视频任务小窗（第四批）
+
+- 画布页顶上视频那台的状态旁边加一个「视频任务」按钮，有在做或排着的时候写条数，比如「视频任务 2」。没选生成视频那台时不显示。
+- 点开是个小窗，列出所有画布的视频任务。上面是在做的和排着的，按点生成的先后；下面是这次开程序以后完了的（出完、失败、已叫停），新的在上，最多 10 条。
+- 每条写：画布名、节点标题、第几个框、多长、出片宽高；在做什么（等开机、排第几、编码提示词、一采 第 1/2 段 4/10 步、放大、二采、存文件）、跑了多久、预计还要多久。在做的和排着的能叫停。点一条跳到那个画布、那个节点，框下面那条视频闪一下。
+- 预计还要多久：每条出完记下各步用了多久（编码提示词、一采每步、放大、二采每步、存文件），存在工作文件夹的 `video-timings.json`，同样出片大小、同样段数的只留最近 5 条。估的时候用最近一条同样大小、同样段数的：还没到的步照那条的用时，正在做的一采、二采按剩下的步数乘那条每步的用时。排着的再加上前面每条剩下的。没有能比的写「第一次出这个大小，估不出」。
+- 服务端：`GET /api/video-jobs` 返回在做的、排着的和这次开程序以后完了的，带画布名和节点标题；之后的变化照旧走 `GET /api/video-jobs/events`。框下面那条照旧。
+
+### 5.30 重拍一截（第四批）
+
+试验和量出来的数在 `docs/reports/reshoot-segment.md`，试验用的流程在 `outputs/reshoot/run.mts`（`fastGraph` 重拍整段，`midGraph` 重拍段中间一截）。
+
+- 每条视频出的时候都存一采、二采的结果：流程里加两个 `MiniMaxH3NativeLatentCheckpointSaveT8Advanced`，分别接一采、二采的输出，文件名前缀 `media_agent_<jobId>_pass1`、`media_agent_<jobId>_pass2`，存在视频那台的 `output/MiniMaxH3/latent_checkpoints/` 下。出完从 `/history` 拿到两个路径，记进 VideoJob 的 `latents`。存一次约 1 秒。两段 30 秒、出 1312×736 的一共约 108MB（一采 32MB、二采 75MB），60 秒、出 1728×960 的估计 0.5GB 左右。
+- 删掉视频时，那台开着就经 SSH 删掉这两个文件；关着的记进工作文件夹的 `video-latents-trash.json`，下次开机删。
+- 视频下面一条时间条，按段画好分隔，拖选一截。起止对齐到潜空间帧，约 0.15 秒一格；下面写「重拍 8.0 到 11.0 秒，在第 1 段」。拖的时候视频跟着跳到那一帧。
+- 选好后能改种子（默认随机）和这一截所在段的提示词（默认原来的；跨两段的两段都能改），参考图沿用原片的。点「重拍这一截」建一个新的 VideoJob，`parent` 是原来那条，`range` 是起止帧，照常排队、显示进度、能叫停。
+- 服务端拼重拍的流程：
+  - 读回原来那条的一采、二采存档。
+  - 找出这一截落在哪几窗里，只把这几窗从存档里切出来算（`MMH3TrimAV`），从窗口开头切，分窗和原片对得上。
+  - 遮罩：这一截白（重画），别的黑（保留），画面和声音用同一个；两遍的 `overlap_strength_audio` 都用 1。
+  - 一采在切出来的一采存档上按遮罩生成。二采的输入是原片二采切出来的同几窗，只把重画的潜空间帧换成新一采放大后的（`LatentCut`、`ReplaceVideoLatentFrames`），再按同一个遮罩细化。
+  - 拼回去：前后没动的部分从存档接上（`MMH3ConcatAV`，`trim_b_latents` 7，去掉重叠的 7 个潜空间帧）。声音用新一采的，只有这一截是新的。
+  - 新的整条一采、二采也存成存档，这一版上还能再选一截重拍。
+- 出完挂在原视频下面，作为它的一个版本：「原片」「重拍 8.0 到 11.0 秒」……点一下切换播放，每个版本都能下载、删掉。删原片时一起删它的各个版本。
+- 存档没了（换了实例、实例被释放、被删了），点重拍时说「那台上没有这条的存档了，只能整条重出」。
+- 只在我们这套长视频流程上能用。
+- 重拍的那截只看得到前后接上的画面，那里看不到的东西可能和别处对不上，界面不另外提示。
 
 ## 6. 界面
 
@@ -841,9 +955,19 @@ ComfyUI    GET      /comfy/status?target=lan|autodl  局域网那台连不连得
            POST     /image-temp/open                 在资源管理器里打开临时文件夹，还没有就先建
            POST     /images/tagger                   {canvasId, imageId} 或 {canvasId, nodeId, messageId, jobId, index} → 反推出的标签
            GET      /image-jobs/events               SSE，见下面
+视频       POST     /canvases/:id/nodes/:nid/messages/:mid/videos   {promptIndex} 或 {again: {jobId, sameSeed}} → VideoJob（第四批）
+           POST     /canvases/:id/nodes/:nid/messages/:mid/videos/:jobId/stop
+           DELETE   /canvases/:id/nodes/:nid/messages/:mid/videos/:jobId
+           GET      /canvases/:id/nodes/:nid/messages/:mid/videos/:jobId/file       视频文件，临时文件清掉了用下载的那份，都不在 404；支持 Range，能拖进度条
+           POST     /videos/download                 {folder?, item: {canvasId, nodeId, messageId, jobId}} → {path}
+           GET      /video-jobs/events               SSE，见下面
+           GET      /comfy/video/status              生成视频那台的 AutoDL 状态
+           POST     /comfy/video/power               {on} 开机或关机
 ```
 
 出图事件（`/image-jobs/events`，第三批）：`{type:'job', canvasId, nodeId, messageId, job}`（任务或其中一张的状态变了，发整个任务）、`{type:'progress', jobId, index, step, total}`、`{type:'queue', jobId, index, position}`、`{type:'autodl', state, since, idleLeftMs, …}`（AutoDL 实例的整个状态，新连上的页面先收到一次）。
+
+视频事件（`/video-jobs/events`，第四批）：`{type:'job', canvasId, nodeId, messageId, job}`、`{type:'progress', jobId, stage, chunk, chunks, step, steps}`（stage 是 encode、pass1、upscale、pass2、save）、`{type:'queue', jobId, position}`、`{type:'removed', canvasId, nodeId, messageId, jobId}`（删掉了一条）、`{type:'autodl', …}`（生成视频那台的整个状态，新连上的页面先收到一次）。
 
 SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（send 和 edit 先发这个）、`{type:'assistant-start', message}`、`{type:'delta', text}`、`{type:'done', message}`（含解析结果和 usage）、`{type:'error', message}`。第三批加 `{type:'reasoning', text}`，是思考原文的一段（5.12）。服务端收到流的每一段就落盘一次 `text`（节流 1 秒），中断后再打开也能看到已收到的部分。
 
@@ -981,6 +1105,42 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 完成标准：10.3 第 15 条；用户做 11.3 第 5 条。
 
+### 第四批：生成视频
+
+### P19 长视频生成（不带图）
+
+做：5.24 到 5.28，不带图的部分。
+
+完成标准：10.4 第 1 到 4 条；用户做 11.4 第 1 条。
+
+### P19b 视频任务小窗
+
+做：5.29。
+
+完成标准：10.4 第 7 条。
+
+### P19c 重拍一截
+
+做：5.30。假的 ComfyUI 加上存档存取、切开、拼接、遮罩这几个节点。
+
+完成标准：10.4 第 8 条；用户做 11.4 第 3 条。
+
+### P20 参考图和首帧
+
+开工前：查 `MMH3ReferenceMultiPrompt` 怎么收几张参考图、首帧图接在哪，补进 5.26。
+
+做：参考模式（ref2va）写的回复，槽位的图都当参考图，每段都带；一图当首帧（i2v）写的，用第一张当开头，比例是「自动」的按这张图；首尾帧、尾帧两种说还不支持。
+
+完成标准：10.4 第 5 条；用户做 11.4 第 2 条。
+
+### P21 主模型和 LoRA
+
+开工前：开生成视频那台，看它的 `extra_model_paths.yaml`，定自己传的 LoRA 放哪，补进 5.22。
+
+做：生成设置里能换主模型、挂 LoRA（几个都行，各带强度，能按名字搜，接 `LoraLoaderModelOnly`）；设置「AutoDL 上的模型」能切到生成视频那台，那台只能传 LoRA。
+
+完成标准：10.4 第 6 条。
+
 ## 9. 测试
 
 ### 9.1 mock-llm
@@ -1017,6 +1177,12 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
   - 内置流程拼出的 JSON：IL 和 Pony 的 clip skip、LoRA 串联、放大（重画和不重画）、部位重绘（框和轮廓、自己写的提示词）、出完的图上补做；P15 加 ControlNet（提取和不提取、union 的类型、几个串起来、放大重画也用、部位重绘不用）；P16 加 E02 的几样；P17 加画风、图生图。
   - 导入工作流自动找填值位置：一个 KSampler、KSamplerAdvanced、两个候选、普通格式文件。
   - 种子依次加 1；临时文件名和下载文件名。
+- 第四批：
+  - 时长分几段：15、16、30、31、45、46、60 秒；发给模型的说明带不带段数。
+  - 框切成几段：有 `|` 行、没有、`|` 两边有空行、行里夹着 `|` 的不切。
+  - 帧数：60 秒 4 段 1382、15 秒 1 段 362、20 秒 2 段、4 秒、段数比时长该有的少。
+  - 一采和出片宽高：16:9 的 0.3 到 1 几档对上 ComfyUI 那张表，9:16、1:1、自动；放大 1.5 和 2。
+  - 拼出的 JSON：几段提示词连起来、两个 `MMH3LoopingSampler` 的帧数和步数、放大倍数、种子、输出到 `media-agent/`。
 
 ### 9.3 服务端集成测试（vitest + supertest，用临时工作文件夹）
 
@@ -1041,6 +1207,11 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
   - 预设：增删改，名字重了 409。
   - 节点类型：新建生图节点用 `il`；生图节点换成视频用的系统提示词返回 400；没有类型的老节点按提示词归类；岔出来的和原节点同一种。
   - 往 AutoDL 传模型（对 mock 的假 SSH 服务）：从电脑传先写成 `.part` 再改名；停了删掉半截的；空间不够不开始；同名不带换掉的 409；给链接下，`huggingface.co` 换成 `hf-mirror.com`；删除；路径带 `..` 返回 400；快照里的密码不出现在任何返回里。
+- 第四批：
+  - 生成视频那台：选成出图那台返回 400；生成时自动开机，空闲到点关机，和出图那台互不影响。
+  - 生成视频任务对 mock-comfyui 的全过程：排队、开机、各步进度、完成，mp4 出现在 `video-temp/当天/`；叫停排队的和正在跑的；几种失败的说法；服务重启后接着等；同样参数再来、只换种子再来；删掉；下载。
+  - 没选生成视频那台、框分了 5 段、回复带了图（P19）返回 400；缺 MMH3 节点时不发。
+  - 视频文件接口：带 Range 的请求回 206；临时文件清掉了用下载的那份。
 
 ### 9.4 端到端（Playwright，对 mock-llm）
 
@@ -1059,6 +1230,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 - AutoDL 的几个接口（list、status、snapshot、power_on、power_off）：一个实例，开机 2 秒后变运行中，6006 的访问地址指回 mock 自己。
 - 假的 SSH 服务（ssh2 的 Server）：快照里的 `ssh_command`、`root_password` 指向它。那台的文件落到 mock 的临时文件夹；能执行的命令只认程序发的几种（`cat >` 收文件、看剩余空间、取大小、列文件、建文件夹、改名、删、curl 下载），curl 下 127.0.0.1 的地址真去取，`hf-mirror.com` 给一个假文件，Civitai 和 HuggingFace 本站连不上。
 - 收到的每个 `/prompt` 请求体和 `/upload/image` 的文件都记下来，测试用 `GET /_last-prompts`、`GET /_uploads` 取，断言程序拼的 JSON 和传上去的图。
+- 第四批：`/object_info` 加上长视频流程用到的节点（主模型、文字编码、两个 VAE 的文件名照 AutoDL 那台）。收到有 `MMH3LoopingSampler` 的任务时按长视频跑：先「编码提示词」，一采每段 10 步、二采每段 3 步（照流程里 `BasicScheduler` 的步数），段数按 `MMH3ReferenceMultiPrompt` 里的提示词数，再「存文件」；每步多久能配，默认 40 毫秒。出的是一个很小的真 mp4（放在 mock 的 fixtures 里，VP9 编码，Playwright 带的 Chromium 能播；真的 H3 出的是 H.264），`/view` 按 `video/mp4` 给。提示词含「慢」「报错」「显存」的规矩同出图，出错在一采第 1 段第 2 步。AutoDL 有两台实例：出图那台和生成视频那台，各开各的。
 
 ## 10. 端到端用例
 
@@ -1113,6 +1285,17 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 18. （P16）出图设置里部位重绘那道选用 SAM，权重算法选 A1111，VAE 单独选一个，LoRA 只作用在画图的模型上，尺寸自己填 864×1280 → 生图 → mock 收到的 JSON 里有 `SAMLoader`、`BNK_CLIPTextEncodeAdvanced`、`VAELoader`、`LoraLoaderModelOnly`，`EmptyLatentImage` 是 864×1280。
 19. （P17）起图选图生图 → `KSampler` 的 denoise 是 0.6；加一个画风 → 有 `IPAdapterAdvanced`。
 
+### 10.4 第四批
+
+1. 设置里选生成视频用的实例：出图那台在列表里灰掉，写着「出图在用」；选 mock 的第二台 → 顶上多出视频那台的状态，写着已关机。
+2. 视频节点的系统提示词换成 `t2v`，时长调到 60 → 发「写一个」→ 用户消息下面的说明里有「分 4 段生成」→ 框里是 4 段 → 点「生成视频」→ 先写正在开机，再走编码提示词、一采 第 1/4 段、放大、二采、存文件 → 出完是能播放的视频，写着 1728×960、57.6 秒 → 文件在 `video-temp/当天/` 里 → mock 收到的 JSON 里提示词是 4 段，一采 864×480，两个 `MMH3LoopingSampler` 每段 362 帧、重叠 22 帧。
+3. 生成设置里一采大小改成 0.3、种子固定 → 写着「出片 1472×832」→ 生成 → JSON 里是 736×416、种子是那个数 → 「只换种子再来」→ 种子不一样。框改成含「慢」的 → 生成 → 一采时叫停 → 标「已叫停」；含「报错」的写失败原因 → 删掉一条，临时文件也没了。
+4. 下载一条 → 文件名是「节点标题-种子.mp4」，标「已下载」。槽位放了图的回复点生成视频 → 提示带图的还没做（P20 起改成 10.4 第 5 条）。
+5. （P20）参考模式写的、槽位两张图 → 生成视频 → mock 收到传上去的两张图，JSON 里参考图接进 `MMH3ReferenceMultiPrompt`；一图当首帧写的 → 首帧接上了，比例自动的按这张图；首尾帧写的 → 提示还不支持。
+6. （P21）生成设置里挂一个 LoRA，强度 0.8 → JSON 里有 `LoraLoaderModelOnly`；设置「AutoDL 上的模型」切到生成视频那台，传一个 LoRA → 生成设置里搜得到。
+7. （P19b）两个画布各点一次生成视频，框里一个含「慢」→ 顶上写「视频任务 2」→ 点开，一条在做、写着一采第几段第几步，一条排第 1，都写着跑了多久；第一次出这个大小写「估不出」→ 叫停排着的那条，它挪到下面「完了的」里、标已叫停 → 点在做的那条，跳到那个画布、那个节点 → 出完以后再生成一条同样大小的，写着预计还要多久。
+8. （P19c）生成一条两段的视频 → mock 收到的 JSON 里有两个存档节点 → 出完在时间条上拖选第 8 到 11 秒 → 下面写「重拍 8.0 到 11.0 秒，在第 1 段」→ 改种子、点「重拍这一截」→ mock 收到的 JSON 读回两个存档、只切第 1 窗、遮罩 192 帧黑 72 帧白 98 帧黑 → 出完原视频下面多一个版本「重拍 8.0 到 11.0 秒」，能切换播放、能下载 → 在这一版上再选一截重拍，读回的是这一版的存档 → 删掉原片，各版本和 mock 上的存档都没了；mock 上把存档删掉再点重拍 → 提示只能整条重出。
+
 ## 11. 手动验收（用户用真模型做）
 
 ### 11.1 第一批
@@ -1142,6 +1325,12 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 6. 另一台机器打开同一个工作文件夹：生图节点、出过的图、片段库、词库、导入的工作流都在。
 7. 往 AutoDL 那台从电脑传一个 LoRA，给 hf-mirror 的链接下一个 `hand_yolov8s.pt`，出图设置里都能选，用手那道部位重绘出一张；删掉一个。
 
+### 11.4 第四批
+
+1. 设置里选「A」做生成视频用的实例。视频节点用 `t2v`、时长 60，让模型写一条 1 分钟的，点生成视频：自动开机，大约半小时出完，能播放；接缝处画面和声音接得上；空闲到点自动关机。
+2. （P20）参考模式带两张人物图写一条 30 秒的，生成后人物前后一致；一图当首帧的从那张图开始。
+3. （P19c）用「A」出一条两段 30 秒的，在时间条上挑一截不满意的重拍：大约 6 分钟出完；重拍的那截前后接得上，别的地方和原片一样；在重拍出来的这一版上再重拍一截也行。
+
 ## 12. 给实现 agent 的约定
 
 - 只做本计划写的；觉得该加的先问用户，不要自作主张加守卫、警告、功能。
@@ -1153,7 +1342,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 ## 13. 预留和以后
 
-- 接第三方接口生成视频：`Message.videos` 已留字段；每个提示词框以后加「生成」按钮，结果挂在框下；发起生成时用这条消息的 `slotSnapshot` 按编号上传画布副本。做法可以照生图的出图任务（5.19）。
+- 接第三方接口生成视频：第四批先接了 AutoDL 上的 H3（5.24 到 5.28），`Message.videos` 用上了；以后接别家的照这个做。
 - 视频和音频参考：以后在节点上加 `videoSlots`（3 个）和 `audioSlots`（3 个），编号各自独立，不影响图片编号。
 - 复制时按平台写法转换 `<Picture N>`：以后在 `shared/src/exportFormat.ts` 加转换函数，复制按钮按设置里选的平台调用。
 - 按画面内容搜图、节点提示词对比、节点搜索、清晰度设置：不做预留。

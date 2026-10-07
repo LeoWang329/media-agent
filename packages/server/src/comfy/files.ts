@@ -1,4 +1,4 @@
-import { downloadFileName, tempFileName, tempFolderName, type JobImage } from '@media-agent/shared';
+import { downloadFileName, tempFileName, tempFolderName, videoDownloadName, videoTempFileName, type JobImage, type VideoJob } from '@media-agent/shared';
 import fs, { constants } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -11,17 +11,30 @@ export async function saveTemp(work: string, data: Uint8Array, seed: number, whe
   return `image-temp/${folder}/${name}`;
 }
 
-// 下载：复制到选好的文件夹，文件名 <节点标题>-<种子>.png
-export async function copyToFolder(source: string, folder: string, title: string, seed: number): Promise<string> {
-  const name = await writeNew(folder, downloadFileName(title, seed), (target) => fs.copyFile(source, target, constants.COPYFILE_EXCL));
-  return path.join(folder, name);
+// 出的视频存工作文件夹 video-temp/当天/，write 往给的路径写，见 docs/dev-plan.md 5.27
+export async function saveVideoTemp(work: string, seed: number, write: (target: string) => Promise<void>, when = new Date()): Promise<string> {
+  const folder = tempFolderName(when);
+  const dir = path.join(work, 'video-temp', folder);
+  await fs.mkdir(dir, { recursive: true });
+  const name = await writeNew(dir, videoTempFileName(when, seed), write);
+  return `video-temp/${folder}/${name}`;
+}
+
+// 下载：复制到选好的文件夹，文件名 <节点标题>-<种子>.png，视频是 .mp4
+export const copyToFolder = (source: string, folder: string, title: string, seed: number) => copyAs(source, folder, downloadFileName(title, seed));
+export const copyVideoToFolder = (source: string, folder: string, title: string, seed: number) => copyAs(source, folder, videoDownloadName(title, seed));
+
+async function copyAs(source: string, folder: string, name: string): Promise<string> {
+  const saved = await writeNew(folder, name, (target) => fs.copyFile(source, target, constants.COPYFILE_EXCL));
+  return path.join(folder, saved);
 }
 
 // 重名的换成 -2、-3，写的时候不覆盖已有的文件
 async function writeNew(dir: string, name: string, write: (target: string) => Promise<void>): Promise<string> {
-  const base = name.replace(/\.png$/, '');
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
   for (let i = 1; ; i += 1) {
-    const candidate = i === 1 ? name : `${base}-${i}.png`;
+    const candidate = i === 1 ? name : `${base}-${i}${ext}`;
     try {
       await write(path.join(dir, candidate));
       return candidate;
@@ -31,10 +44,12 @@ async function writeNew(dir: string, name: string, write: (target: string) => Pr
   }
 }
 
-// 这张图现在在哪：临时文件夹里的还在就用它，被清掉了用下载的那份，都不在是 null（界面上显示「已清理」）
-export async function imageFile(work: string, image: JobImage): Promise<string | null> {
+// 这张图现在在哪：临时文件夹里的还在就用它，被清掉了用下载的那份，都不在是 null（界面上显示「已清理」）。视频也一样
+export async function imageFile(work: string, image: Pick<JobImage, 'file' | 'savedPath'>): Promise<string | null> {
   for (const file of [image.file && path.join(work, image.file), image.savedPath]) {
     if (file && (await fs.stat(file).catch(() => null))?.isFile()) return file;
   }
   return null;
 }
+
+export const videoFile = (work: string, job: VideoJob) => imageFile(work, job);

@@ -9,6 +9,7 @@ import {
   parentKey,
   slotDiff,
   TURN_LIMITS,
+  videoSettingsOf,
   type ChatNode,
   type ImageSettings,
   type Message,
@@ -327,6 +328,7 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase
   }
   // 节点存的出图设置里没有的项（后来加的）用系列的默认值补上
   if (body.image !== undefined) next.image = v.imageSettings(body.image, { ...imageBase!, ...node.image });
+  if (body.video !== undefined) next.video = v.videoSettings(body.video, videoSettingsOf(node.video));
   if (body.activeChildOf !== undefined) {
     const entries = Object.entries((body.activeChildOf ?? {}) as Record<string, unknown>);
     next.activeChildOf = { ...node.activeChildOf };

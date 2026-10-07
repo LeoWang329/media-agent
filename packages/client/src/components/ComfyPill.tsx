@@ -2,6 +2,7 @@ import type { AutodlInstance, AutodlState, ComfyStatus } from '@media-agent/shar
 import { useEffect, useState, type MouseEvent } from 'react';
 import { Link } from 'react-router';
 import { idleMinutesLeft, useComfyStore, watchImageJobs, type AutodlNow } from '../store/comfyStore';
+import { useVideoStore, watchVideoJobs } from '../store/videoStore';
 import { confirmBox } from '../ui/confirm';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
@@ -32,7 +33,7 @@ export function useNow(ticking: boolean): number {
 export const secondsSince = (since: number | null, now: number) => Math.max(0, Math.round((now - (since ?? now)) / 1000));
 
 // 程序这边正在用 AutoDL 做什么，比如「出图、传模型」
-const busyText = (autodl: AutodlState) => autodl.busyWith.map((what) => ({ images: '出图', models: '传模型' })[what]).join('、');
+const busyText = (autodl: AutodlState) => autodl.busyWith.map((what) => ({ images: '出图', models: '传模型', videos: '生成视频' })[what]).join('、');
 
 // 出图用哪台 ComfyUI、现在什么状态，画布、首页、设置三页都挂着。AutoDL 开着就在扣钱，开着时用醒目的样子，
 // 用局域网那台时 AutoDL 也开着，另外标出来。点开切换、开机关机、重新读底模列表
@@ -124,6 +125,106 @@ function pillLabel(target: 'lan' | 'autodl', status: ComfyStatus | null, autodl:
   }
 }
 
+// 生成视频用的那台现在什么状态：没选时不显示；点开能开机关机，跟出图那台一样，见 docs/dev-plan.md 5.25
+export function VideoPill() {
+  const autodl = useVideoStore((s) => s.autodl);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const now = useNow(autodl?.state === 'booting');
+
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState === 'visible') void useVideoStore.getState().checkAutodl();
+    };
+    check();
+    const timer = setInterval(check, CHECK_MS);
+    const stopWatching = watchVideoJobs();
+    return () => {
+      clearInterval(timer);
+      stopWatching();
+    };
+  }, []);
+
+  if (!autodl || autodl.state === 'unset') return null;
+  const label = videoPillLabel(autodl, now);
+  return (
+    <>
+      <button
+        type="button"
+        className={`cf-pill ${label.cls}`}
+        id="videoPill"
+        data-od-id="video-autodl-status"
+        title="生成视频用的 AutoDL 实例。点开开机关机"
+        onClick={(e) => {
+          if (anchor) return setAnchor(null);
+          setAnchor(e.currentTarget.getBoundingClientRect());
+          void useVideoStore.getState().checkAutodl();
+        }}
+      >
+        {label.spin ? <span className="spinner" /> : <span className={`dot ${label.dot ?? ''}`} />}
+        <span className="cf-txt">{label.text}</span>
+        {label.sub && <span className="cf-sub">{label.sub}</span>}
+        <Icon name="chev-down" className="icon-sm" />
+      </button>
+      {anchor && <VideoPanel anchor={anchor} onClose={() => setAnchor(null)} />}
+    </>
+  );
+}
+
+function videoPillLabel(autodl: AutodlNow, now: number): PillLabel {
+  switch (autodl.state) {
+    case 'unknown':
+      return { cls: 'is-down', dot: 'dot-danger', text: '视频那台查不到状态' };
+    case 'booting':
+      return { cls: 'is-booting', spin: true, text: '视频那台正在开机', sub: `等了 ${secondsSince(autodl.since, now)} 秒` };
+    case 'stopping':
+      return { cls: '', spin: true, text: '视频那台正在关机' };
+    case 'failed':
+      return { cls: 'is-down', dot: 'dot-danger', text: '视频那台开机失败' };
+    case 'running':
+      return { cls: 'is-running', dot: 'dot-warn', text: '视频那台运行中', sub: autodl.busyWith.length ? `正在${busyText(autodl)}` : `${idleMinutesLeft(autodl) ?? autodl.idleMinutes} 分钟后自动关机` };
+    default:
+      return { cls: '', text: '视频那台已关机', sub: '点生成视频时自动开机' };
+  }
+}
+
+function VideoPanel({ anchor, onClose }: { anchor: DOMRect; onClose: () => void }) {
+  const autodl = useVideoStore((s) => s.autodl);
+  return (
+    <Popover anchor={anchor} className="cf-pop" odId="video-autodl-popover" label="生成视频用的 AutoDL 实例" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#videoPill'))}>
+      <div className="cf-pop-head">
+        <b>生成视频用的 AutoDL 实例</b>
+        <span className="meta">只用来生成视频，和出图那台各开各的</span>
+      </div>
+      <div className="cf-src-body">
+        {autodl?.instance && <span className="meta">{instanceLine(autodl.instance)}</span>}
+        <span className="cf-src-state">
+          <AutodlStateView autodl={autodl} where="panel" />
+        </span>
+        {autodl?.error && (autodl.state === 'failed' || autodl.state === 'unknown') && <span className="cf-err">{autodl.error}</span>}
+        {autodl && autodl.state !== 'unset' && autodl.state !== 'unknown' && (
+          <span className="cf-src-acts">
+            <PowerButton autodl={autodl} small askOff={onClose} use="videos" />
+            <span className="meta">
+              空闲 <span className="mono">{autodl.idleMinutes}</span> 分钟自动关机
+            </span>
+          </span>
+        )}
+      </div>
+      <p className="cf-note">
+        <Icon name="info" className="icon-sm" />
+        <span>程序关掉以后就管不了实例了。看到它还开着又不用，先点关机再关程序。</span>
+      </p>
+      <div className="cf-pop-foot">
+        <span className="grow" />
+        <Link className="btn btn-ghost btn-sm" to={{ pathname: '/settings', hash: 'comfy' }} onClick={onClose}>
+          <Icon name="gear" />
+          设置
+        </Link>
+      </div>
+    </Popover>
+  );
+}
+
 function ComfyPanel({ anchor, onClose }: { anchor: DOMRect; onClose: () => void }) {
   const target = useComfyStore((s) => s.target);
   const status = useComfyStore((s) => s.status);
@@ -200,19 +301,26 @@ function ComfyPanel({ anchor, onClose }: { anchor: DOMRect; onClose: () => void 
   );
 }
 
+// 出图那台和生成视频那台：开机关机走哪个接口、关机前怎么问
+const POWER = {
+  images: { power: (on: boolean) => useComfyStore.getState().power(on), title: '关掉 AutoDL 实例？', next: '下次出图' },
+  videos: { power: (on: boolean) => useVideoStore.getState().power(on), title: '关掉生成视频用的 AutoDL 实例？', next: '下次生成视频' },
+};
+
 // 开机、现在关机、别开了。按钮放在 label 里，点了不能顺带选中那一项。
 // 给了 askOff 的，关机前先问一句；问之前调它（顶上的小窗先收起来，不然会画进确认框里）
-export function PowerButton({ autodl, small, askOff }: { autodl: AutodlNow; small?: boolean; askOff?: () => void }) {
+export function PowerButton({ autodl, small, askOff, use = 'images' }: { autodl: AutodlNow; small?: boolean; askOff?: () => void; use?: keyof typeof POWER }) {
   const size = small ? ' btn-sm' : '';
+  const { power, title, next } = POWER[use];
   const run = (on: boolean) => (e: MouseEvent) => {
     e.preventDefault();
     void (async () => {
       if (!on && askOff && autodl.state === 'running') {
         askOff();
-        const ok = await confirmBox({ title: '关掉 AutoDL 实例？', body: '关机后不再按秒扣显卡的钱，只收系统盘的钱。下次出图要重新开机，等一两分钟。', ok: '关机' });
+        const ok = await confirmBox({ title, body: `关机后不再按秒扣显卡的钱，只收系统盘的钱。${next}要重新开机，等一两分钟。`, ok: '关机' });
         if (!ok) return;
       }
-      await useComfyStore.getState().power(on);
+      await power(on);
     })();
   };
   if (autodl.state === 'running') {

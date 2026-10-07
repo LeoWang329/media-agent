@@ -704,7 +704,7 @@ describe('E02 的几样', () => {
 
   it('默认的不记；都打开：记进这一组，流程里换成单独的 VAE、只作用在画图模型上的 LoRA、A1111 的编码、SAM，尺寸 864×1280；同样参数再来、补做照用', async () => {
     const options = await t.ok<ComfyOptions>('GET', '/comfy/options');
-    expect(options.vaes).toEqual(['sdxl_vae.safetensors']);
+    expect(options.vaes).toContain('sdxl_vae.safetensors');
 
     const plainId = await prepare('1girl');
     const plain = await t.ok<ImageJob>('POST', imagesUrl(plainId), { promptIndex: 0 });

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { createMockLlmApp } from '../../../tools/mock-llm/src/app';
-import { autodlOf, createApp, imageJobsOf, type AppOptions } from '../src/app';
+import { autodlOf, createApp, imageJobsOf, videoAutodlOf, videoJobsOf, type AppOptions } from '../src/app';
 
 export function listen(app: express.Express): Promise<Server> {
   return new Promise((resolve) => {
@@ -75,10 +75,12 @@ export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'aut
     modelConfigs: [{ id: 'mock', name: 'mock', baseUrl: `${urlOf(mockLlm)}/v1`, apiKey: 'test', model: 'mock-model', imageLongSide: 1600 }],
   });
 
-  // 关掉服务、出图任务的连接和 AutoDL 的计时
+  // 关掉服务、出图和生成视频任务的连接、两台 AutoDL 的计时
   async function shutdown() {
     imageJobsOf(app).close();
     autodlOf(app).close();
+    videoJobsOf(app).close();
+    videoAutodlOf(app).close();
     await close(server);
   }
 
@@ -94,6 +96,8 @@ export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'aut
     addImage,
     imageJobs: () => imageJobsOf(app),
     autodl: () => autodlOf(app),
+    videoJobs: () => videoJobsOf(app),
+    videoAutodl: () => videoAutodlOf(app),
     // 模拟程序重启：同一个本机配置目录、同一个工作文件夹，换一个新的服务
     async restart() {
       await shutdown();

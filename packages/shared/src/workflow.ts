@@ -3,13 +3,21 @@ import type { ComfyGraph, FillTarget, ImageJobParams, ImportedWorkflow, Workflow
 
 export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 
-// 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个。部位重绘用前三个，ControlNet 的提取用 AIO_Preprocessor，A1111 的权重算法用最后一个
+// 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个。部位重绘用前三个，ControlNet 的提取用 AIO_Preprocessor，A1111 的权重算法用 BNK_CLIPTextEncodeAdvanced；
+// 后面的是长视频流程用的，见 docs/dev-plan.md 5.26
 export const PLUGIN_OF: Record<string, string> = {
   FaceDetailer: 'ComfyUI-Impact-Pack',
   SAMLoader: 'ComfyUI-Impact-Pack',
   UltralyticsDetectorProvider: 'ComfyUI-Impact-Subpack',
   AIO_Preprocessor: 'comfyui_controlnet_aux',
   BNK_CLIPTextEncodeAdvanced: 'ComfyUI_ADV_CLIP_emb',
+  MMH3ReferenceMultiPrompt: 'ComfyUI-MMH3Tools',
+  MMH3CondSelect: 'ComfyUI-MMH3Tools',
+  MMH3LoopingSampler: 'ComfyUI-MMH3Tools',
+  MMH3StreamingSave: 'ComfyUI-MMH3Tools',
+  MiniMaxLowVRAMAttention: 'ComfyUI-KJNodes',
+  MiniMaxChunkFeedForward: 'ComfyUI-KJNodes',
+  MinimaxH3LatentUpscaler3D: 'Comfyui_Minimax_h3_latent_Upscaler',
 };
 export const DETAILER_NODES = ['FaceDetailer', 'UltralyticsDetectorProvider'];
 

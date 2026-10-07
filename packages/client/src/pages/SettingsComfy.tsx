@@ -14,7 +14,8 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
 import { AutodlStateView, gpuText, instanceLine, PowerButton, vramText } from '../components/ComfyPill';
-import { useComfyStore } from '../store/comfyStore';
+import { useComfyStore, type AutodlNow } from '../store/comfyStore';
+import { useVideoStore } from '../store/videoStore';
 import { CommitInput, CommitTextarea, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
 import { fmtSize } from '../ui/format';
 import { Icon } from '../ui/Icon';
@@ -211,12 +212,15 @@ const idleMinutes = (text: string) => {
   return Number.isInteger(n) && n >= AUTODL_IDLE_MINUTES.min && n <= AUTODL_IDLE_MINUTES.max ? n : null;
 };
 
-// AutoDL 实例：开发者 Token 只存本机；选哪个实例、空闲多久自动关机存工作文件夹；状态和开机关机，见 docs/dev-plan.md 5.17
+// AutoDL 实例：开发者 Token 只存本机；出图、生成视频各选哪个实例、空闲多久自动关机存工作文件夹；状态和开机关机，
+// 见 docs/dev-plan.md 5.17、5.25。两台共用一个 Token、一个实例列表
 function AutodlCard() {
   const autodl = useComfyStore((s) => s.autodl);
+  const videoAutodl = useVideoStore((s) => s.autodl);
   const [tokenSet, setTokenSet] = useState<boolean | null>(null);
   const [token, setToken] = useState('');
   const [chosen, setChosen] = useState<AutodlSettings | null>(null);
+  const [chosenVideo, setChosenVideo] = useState<AutodlSettings | null>(null);
   const [instances, setInstances] = useState<AutodlInstance[] | null>(null);
   const [listError, setListError] = useState('');
 
@@ -234,8 +238,12 @@ function AutodlCard() {
       setTokenSet(Boolean(config.autodlToken));
       if (config.autodlToken) void loadInstances();
     }, failed);
-    api<SharedSettings>('/settings').then((settings) => setChosen(settings.comfy.autodl), failed);
+    api<SharedSettings>('/settings').then((settings) => {
+      setChosen(settings.comfy.autodl);
+      setChosenVideo(settings.comfy.videoAutodl);
+    }, failed);
     void useComfyStore.getState().checkAutodl();
+    void useVideoStore.getState().checkAutodl();
   }, []);
 
   // 存好后输入框清空，不再显示
@@ -249,6 +257,7 @@ function AutodlCard() {
       setTokenSet(true);
       void loadInstances();
       void useComfyStore.getState().checkAutodl();
+      void useVideoStore.getState().checkAutodl();
     } catch (err) {
       failed(err);
     }
@@ -263,8 +272,17 @@ function AutodlCard() {
     }
   };
 
+  const saveVideoAutodl = async (patch: Partial<AutodlSettings>) => {
+    try {
+      setChosenVideo((await putSettings({ comfy: { videoAutodl: patch } })).comfy.videoAutodl);
+      void useVideoStore.getState().checkAutodl();
+    } catch (err) {
+      failed(err);
+    }
+  };
+
   const listed = instances ?? [];
-  const missing = chosen?.instanceUuid && !listed.some((instance) => instance.uuid === chosen.instanceUuid);
+  const rows = { instances: listed, tokenSet, listError };
   return (
     <section className="card editor" style={{ marginTop: 16 }} data-od-id="comfy-autodl">
       <div className="row-between" style={{ marginBottom: 10 }}>
@@ -305,57 +323,109 @@ function AutodlCard() {
             <span className="hint">在 AutoDL 控制台「设置 → 开发者 Token」里拿。存好后输入框会清空，不再显示，另一台电脑要各填一次。</span>
           </div>
         </div>
-        <div className="kv-row">
-          <span className="k">实例</span>
-          <div className="stack" style={{ gap: 6 }}>
-            <select className="select" id="adInst" value={chosen?.instanceUuid ?? ''} disabled={!chosen} onChange={(e) => void saveAutodl({ instanceUuid: e.target.value || null })}>
-              {!chosen?.instanceUuid && <option value="">{tokenSet ? '选一个实例' : '先填 Token'}</option>}
-              {missing && <option value={chosen.instanceUuid!}>{chosen.instanceUuid}（账号下没列出来）</option>}
-              {listed.map((instance) => (
-                <option key={instance.uuid} value={instance.uuid}>
-                  {instanceOption(instance)}
-                </option>
-              ))}
-            </select>
-            <span className={`hint${listError ? ' is-error' : ''}`}>{listError || '填了 Token 后列出账号下的实例。ComfyUI 要跑在实例的 6006 端口上。'}</span>
-          </div>
-        </div>
-        <div className="kv-row">
-          <span className="k">状态</span>
-          <div className="stack" style={{ gap: 8 }}>
-            <div className="row" style={{ flexWrap: 'wrap' }} id="adState">
-              <AutodlStateView autodl={autodl} where="settings" />
-            </div>
-            {autodl?.error && (autodl.state === 'failed' || autodl.state === 'unknown') && <div className="cf-err">{autodl.error}</div>}
-            {autodl && autodl.state !== 'unset' && autodl.state !== 'unknown' && (
-              <div className="row">
-                <PowerButton autodl={autodl} />
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="kv-row">
-          <span className="k">空闲多久自动关机</span>
-          <div className="stack" style={{ gap: 6 }}>
-            <div className="input-group" style={{ width: 160 }}>
-              <CommitInput
-                className="input mono"
-                id="adIdle"
-                type="number"
-                min={AUTODL_IDLE_MINUTES.min}
-                max={AUTODL_IDLE_MINUTES.max}
-                value={String(chosen?.idleMinutes ?? '')}
-                parse={idleMinutes}
-                disabled={!chosen}
-                onCommit={(v) => void saveAutodl({ idleMinutes: Number(v) })}
-              />
-              <span className="mf-unit">分钟</span>
-            </div>
-            <span className="hint">程序最后一个出图任务结束后开始算。程序是开着的才管得到；按 Ctrl+C 关程序时，如果实例是程序开的，会先关机再退出。程序没开时管不了，记得自己看一眼。</span>
-          </div>
-        </div>
+        <InstanceRows
+          {...rows}
+          prefix="ad"
+          use="images"
+          chosen={chosen}
+          autodl={autodl}
+          taken={chosenVideo?.instanceUuid ?? null}
+          hint="填了 Token 后列出账号下的实例。ComfyUI 要跑在实例的 6006 端口上。"
+          idleHint="程序最后一个出图任务结束后开始算。程序是开着的才管得到；按 Ctrl+C 关程序时，如果实例是程序开的，会先关机再退出。程序没开时管不了，记得自己看一眼。"
+          onSave={(patch) => void saveAutodl(patch)}
+        />
+      </div>
+      <div className="row-between" style={{ margin: '18px 0 10px' }}>
+        <h3>生成视频用的实例</h3>
+      </div>
+      <div className="kv" data-od-id="comfy-video-autodl">
+        <InstanceRows
+          {...rows}
+          prefix="vd"
+          use="videos"
+          chosen={chosenVideo}
+          autodl={videoAutodl}
+          taken={chosen?.instanceUuid ?? null}
+          hint="视频节点点「生成视频」时用这台，要选装着 H3 的实例（32 GB 显存的卡），不能和出图那台是同一个。没选的话视频节点只写提示词。"
+          idleHint="这台最后一条视频生成完后开始算，和出图那台各算各的。一条一分钟的视频大约要半小时。"
+          onSave={(patch) => void saveVideoAutodl(patch)}
+        />
       </div>
     </section>
+  );
+}
+
+type InstanceRowsProps = {
+  prefix: 'ad' | 'vd';
+  use: 'images' | 'videos';
+  chosen: AutodlSettings | null;
+  autodl: AutodlNow | null;
+  instances: AutodlInstance[];
+  tokenSet: boolean | null;
+  listError: string;
+  taken: string | null; // 另一台选的实例，这里不能再选
+  hint: string;
+  idleHint: string;
+  onSave: (patch: Partial<AutodlSettings>) => void;
+};
+
+// 一台的三行：选哪个实例、现在的状态和开机关机、空闲多久自动关机
+function InstanceRows({ prefix, use, chosen, autodl, instances, tokenSet, listError, taken, hint, idleHint, onSave }: InstanceRowsProps) {
+  const missing = chosen?.instanceUuid && !instances.some((instance) => instance.uuid === chosen.instanceUuid);
+  const other = use === 'images' ? '生成视频' : '出图';
+  return (
+    <>
+      <div className="kv-row">
+        <span className="k">实例</span>
+        <div className="stack" style={{ gap: 6 }}>
+          <select className="select" id={`${prefix}Inst`} value={chosen?.instanceUuid ?? ''} disabled={!chosen} onChange={(e) => onSave({ instanceUuid: e.target.value || null })}>
+            {!chosen?.instanceUuid && <option value="">{tokenSet ? '选一个实例' : '先填 Token'}</option>}
+            {missing && <option value={chosen.instanceUuid!}>{chosen.instanceUuid}（账号下没列出来）</option>}
+            {instances.map((instance) => (
+              <option key={instance.uuid} value={instance.uuid} disabled={instance.uuid === taken}>
+                {instanceOption(instance)}
+                {instance.uuid === taken ? `（${other}在用）` : ''}
+              </option>
+            ))}
+          </select>
+          <span className={`hint${listError ? ' is-error' : ''}`}>{listError || hint}</span>
+        </div>
+      </div>
+      <div className="kv-row">
+        <span className="k">状态</span>
+        <div className="stack" style={{ gap: 8 }}>
+          <div className="row" style={{ flexWrap: 'wrap' }} id={`${prefix}State`}>
+            <AutodlStateView autodl={autodl} where="settings" />
+          </div>
+          {autodl?.error && (autodl.state === 'failed' || autodl.state === 'unknown') && <div className="cf-err">{autodl.error}</div>}
+          {autodl && autodl.state !== 'unset' && autodl.state !== 'unknown' && (
+            <div className="row">
+              <PowerButton autodl={autodl} use={use} />
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="kv-row">
+        <span className="k">空闲多久自动关机</span>
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="input-group" style={{ width: 160 }}>
+            <CommitInput
+              className="input mono"
+              id={`${prefix}Idle`}
+              type="number"
+              min={AUTODL_IDLE_MINUTES.min}
+              max={AUTODL_IDLE_MINUTES.max}
+              value={String(chosen?.idleMinutes ?? '')}
+              parse={idleMinutes}
+              disabled={!chosen}
+              onCommit={(v) => onSave({ idleMinutes: Number(v) })}
+            />
+            <span className="mf-unit">分钟</span>
+          </div>
+          <span className="hint">{idleHint}</span>
+        </div>
+      </div>
+    </>
   );
 }
 

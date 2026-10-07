@@ -16,7 +16,7 @@ import {
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, promptUrl } from '../api';
-import { ComfyPill } from '../components/ComfyPill';
+import { ComfyPill, VideoPill } from '../components/ComfyPill';
 import { isPriced, ModelForm } from '../components/ModelForm';
 import { fileManagerName } from '../platform';
 import { confirmBox } from '../ui/confirm';
@@ -82,6 +82,7 @@ export function Settings() {
         <span className="hide-sm">设置</span>
         <span className="spacer" />
         <ComfyPill />
+        <VideoPill />
         <SaveState idle="改动自动写入" />
         <ThemeToggle />
         <Link className="btn btn-ghost" to="/"><Icon name="home" /><span className="hide-sm">回首页</span></Link>

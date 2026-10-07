@@ -4,6 +4,9 @@ import {
   SIZE_LIMITS,
   TRANSLATE_LANGUAGES,
   UPSCALE_SCALES,
+  VIDEO_DURATION,
+  VIDEO_MEGAPIXELS,
+  VIDEO_UPSCALES,
   type AspectRatio,
   type CanvasNodeLayout,
   type ControlSettings,
@@ -17,6 +20,7 @@ import {
   type TagWeighting,
   type TranslateLanguage,
   type UpscaleSettings,
+  type VideoSettings,
 } from '@media-agent/shared';
 import { HttpError } from '../httpError';
 
@@ -82,8 +86,10 @@ export function slots(value: unknown): string[] {
   return value;
 }
 
+// 视频节点的时长，超过 15 秒的分段生成，见 docs/dev-plan.md 5.24
 export function duration(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 4 || value > 15) throw new HttpError(400, '时长要是 4 到 15 的整数');
+  const { min, max } = VIDEO_DURATION;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) throw new HttpError(400, `时长要是 ${min} 到 ${max} 的整数`);
   return value;
 }
 
@@ -175,6 +181,17 @@ function between(value: unknown, what: string, min: number, max: number): number
 function oneOf(value: unknown, what: string, choices: number[]): number {
   if (!choices.includes(value as number)) throw new HttpError(400, `${what}只能是 ${choices.join('、')}`);
   return value as number;
+}
+
+// 视频节点的生成设置只改带了的项：一采大小、放大倍数、种子，见 docs/dev-plan.md 5.27
+export function videoSettings(value: unknown, base: VideoSettings): VideoSettings {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, '生成设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const next = { ...base };
+  if (fields.megapixels !== undefined) next.megapixels = oneOf(fields.megapixels, '一采大小', VIDEO_MEGAPIXELS);
+  if (fields.upscale !== undefined) next.upscale = oneOf(fields.upscale, '放大倍数', VIDEO_UPSCALES);
+  if (fields.seed !== undefined) next.seed = fields.seed === null ? null : integer(fields.seed, '种子', 0);
+  return next;
 }
 
 // 放大：开关、放大模型、倍数、重绘强度，见 docs/dev-plan.md 5.21

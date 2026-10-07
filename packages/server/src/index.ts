@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { autodlOf, startServer } from './app';
+import { autodlOf, startServer, videoAutodlOf } from './app';
 import { defaultConfigDir } from './config';
 import { openExternal } from './native/openExternal';
 
@@ -13,18 +13,16 @@ const { app } = await startServer({
   clientDist: serveClient ? fileURLToPath(new URL('../../client/dist', import.meta.url)) : undefined,
 });
 
-// 按 Ctrl+C、关掉窗口时：这次 AutoDL 是程序开的，先关机再退出，见 docs/dev-plan.md 5.17。再按一次 Ctrl+C 不等了直接退
+// 按 Ctrl+C、关掉窗口时：出图、生成视频那两台 AutoDL 哪台是程序开的，先关机再退出，见 docs/dev-plan.md 5.17。再按一次 Ctrl+C 不等了直接退
 let exiting = false;
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {
     if (exiting) process.exit(1);
     exiting = true;
-    void autodlOf(app)
-      .exit()
-      .then((said) => {
-        if (said) console.log(said);
-        process.exit(0);
-      });
+    void Promise.all([autodlOf(app).exit(), videoAutodlOf(app).exit()]).then((said) => {
+      for (const line of said) if (line) console.log(line);
+      process.exit(0);
+    });
   });
 }
 

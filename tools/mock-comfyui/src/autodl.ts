@@ -2,19 +2,23 @@ import express from 'express';
 import { MOCK_SSH_PASSWORD } from './ssh';
 
 // 假的 AutoDL Art 开发者接口，返回的样子照真的，见 docs/dev-plan.md 9.5。
-// 一个实例，开始是关着的；开机后 bootMs 变成运行中，关机后 stopMs 变成关机。6006 的访问地址指回 mock 自己，
-// 所以开机后连的还是这个假的 ComfyUI
+// 两个实例：出图用的那台和生成视频用的那台，开始都是关着的；开机后 bootMs 变成运行中，关机后 stopMs 变成关机，各开各的。
+// 6006 的访问地址都指回 mock 自己，所以开机后连的还是这个假的 ComfyUI
 
 export const MOCK_AUTODL_PATH = '/autodl/api/v1/adl_dev/dev/instance/pro';
 export const MOCK_AUTODL_TOKEN = 'mock-autodl-token';
 export const MOCK_AUTODL_UUID = 'pro-mock00000001';
+export const MOCK_AUTODL_VIDEO_UUID = 'pro-mock00000002';
+
+type InstanceState = { status: string; startedAt: string | null; stoppedAt: string | null };
 
 // sshCommand 给快照里的 ssh_command，指向假的 SSH
 export type MockAutodlOptions = { bootMs?: number; stopMs?: number; sshCommand?: () => string };
 export type MockAutodl = {
   router: express.Router;
-  // 测试用：实例现在的状态、收到的开机关机请求；fail 里放了的，下一次这个接口按它返回错误
-  instance: { status: string; startedAt: string | null; stoppedAt: string | null };
+  // 测试用：出图那台（instance）、按 uuid 的两台现在的状态、收到的开机关机请求；fail 里放了的，下一次这个接口按它返回错误
+  instance: InstanceState;
+  instances: Record<string, InstanceState>;
   calls: { action: string; body: unknown }[];
   fail: Partial<Record<'power_on' | 'power_off' | 'status' | 'list', { code: string; msg: string }>>;
   close(): void;
@@ -24,7 +28,8 @@ const time = (iso: string | null) => ({ Time: iso ?? '0001-01-01T00:00:00Z', Val
 
 export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () => 'ssh -p 10000 root@mock' }: MockAutodlOptions = {}): MockAutodl {
   const router = express.Router();
-  const instance: MockAutodl['instance'] = { status: 'shutdown', startedAt: null, stoppedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() };
+  const off = (): InstanceState => ({ status: 'shutdown', startedAt: null, stoppedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() });
+  const instances: Record<string, InstanceState> = { [MOCK_AUTODL_UUID]: off(), [MOCK_AUTODL_VIDEO_UUID]: off() };
   const calls: MockAutodl['calls'] = [];
   const fail: MockAutodl['fail'] = {};
   const timers = new Set<NodeJS.Timeout>();
@@ -36,28 +41,31 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
     timers.add(timer);
   };
 
-  const app = { application_uuid: 'MockApp001', current_version: '1.0', application_name: 'ComfyUI-测试', logo: '' };
-  const item = () => ({
+  const apps: Record<string, { application_uuid: string; current_version: string; application_name: string; logo: string }> = {
+    [MOCK_AUTODL_UUID]: { application_uuid: 'MockApp001', current_version: '1.0', application_name: 'ComfyUI-测试', logo: '' },
+    [MOCK_AUTODL_VIDEO_UUID]: { application_uuid: 'MockApp002', current_version: '1.0', application_name: 'H3-测试', logo: '' },
+  };
+  const item = (uuid: string) => ({
     created_at: '2026-10-01T10:00:00+08:00',
-    uuid: MOCK_AUTODL_UUID,
+    uuid,
     machine_id: 'mock',
     machine_alias: 'mock',
     region_sign: 'west-D',
     region_name: '西北B区',
-    status: instance.status,
+    status: instances[uuid].status,
     sub_status: '',
-    status_at: instance.startedAt ?? instance.stoppedAt,
+    status_at: instances[uuid].startedAt ?? instances[uuid].stoppedAt,
     start_mode: 'gpu',
     is_desktop: false,
     charge_type: 'payg',
     req_gpu_amount: 1,
     expired_at: time(null),
-    started_at: time(instance.startedAt),
-    stopped_at: time(instance.stoppedAt),
+    started_at: time(instances[uuid].startedAt),
+    stopped_at: time(instances[uuid].stoppedAt),
     name: '',
     timed_shutdown_at: time(null),
     gpu_spec_uuid: 'v-32g-p',
-    cg_application_info: app,
+    cg_application_info: apps[uuid],
   });
 
   // 出错时 HTTP 也是 200，看 code
@@ -74,15 +82,17 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
       return refuse(res, error);
     }
     const uuid = req.method === 'GET' ? req.query.instance_uuid : req.body?.instance_uuid;
-    if (action !== 'list' && uuid !== MOCK_AUTODL_UUID) return refuse(res, { code: 'RecordNotFoundError', msg: '未查询到相关实例' });
+    if (action !== 'list' && !(typeof uuid === 'string' && uuid in instances)) return refuse(res, { code: 'RecordNotFoundError', msg: '未查询到相关实例' });
     next();
   });
+  const instanceOf = (req: express.Request) => instances[String(req.method === 'GET' ? req.query.instance_uuid : req.body?.instance_uuid)];
 
   router.post('/list', (_req, res) => {
-    reply(res, { list: [item()], page_index: 1, page_size: 100, offset: 0, max_page: 1, result_total: 1, page: 1 });
+    const list = Object.keys(instances).map(item);
+    reply(res, { list, page_index: 1, page_size: 100, offset: 0, max_page: 1, result_total: list.length, page: 1 });
   });
 
-  router.get('/status', (_req, res) => reply(res, instance.status));
+  router.get('/status', (req, res) => reply(res, instanceOf(req).status));
 
   router.get('/snapshot', (req, res) => {
     reply(res, {
@@ -98,11 +108,12 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
       service_6006_domain: req.headers.host,
       service_6006_port: 6006,
       service_6006_port_protocol: 'http',
-      cg_application_info: app,
+      cg_application_info: apps[String(req.query.instance_uuid)],
     });
   });
 
-  router.post('/power_on', (_req, res) => {
+  router.post('/power_on', (req, res) => {
+    const instance = instanceOf(req);
     if (instance.status === 'shutdown') {
       instance.status = 'starting';
       later(() => {
@@ -114,7 +125,8 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
     reply(res, null);
   });
 
-  router.post('/power_off', (_req, res) => {
+  router.post('/power_off', (req, res) => {
+    const instance = instanceOf(req);
     if (instance.status === 'running') {
       instance.status = 'shutting_down';
       later(() => {
@@ -128,7 +140,8 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
 
   return {
     router,
-    instance,
+    instance: instances[MOCK_AUTODL_UUID],
+    instances,
     calls,
     fail,
     close() {

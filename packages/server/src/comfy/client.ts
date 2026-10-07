@@ -1,4 +1,9 @@
 import type { ComfyGraph } from '@media-agent/shared';
+import { createWriteStream } from 'node:fs';
+import fs from 'node:fs/promises';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream } from 'node:stream/web';
 
 // 调 ComfyUI 自带的接口，见 docs/dev-plan.md 5.17、5.19。出错时 message 直接给用户看，带上原话
 
@@ -76,9 +81,9 @@ function describeRejection(body: { error?: { message?: string; details?: string 
 }
 
 // 执行时出的错：有 out of memory 的说显存不够
-export function describeExecutionError(data: Record<string, unknown>): string {
+export function describeExecutionError(data: Record<string, unknown>, what = '出图'): string {
   const text = String(data.exception_message ?? '').trim();
-  return /out of memory/i.test(text) ? `显存不够：${text}` : `出图出错（${String(data.node_type ?? '')}）：${text}`;
+  return /out of memory/i.test(text) ? `显存不够：${text}` : `${what}出错（${String(data.node_type ?? '')}）：${text}`;
 }
 
 // 还没出完或者 ComfyUI 不认识这个 id 时是 null
@@ -92,6 +97,21 @@ export async function viewImage(url: string, ref: ImageRef): Promise<Buffer> {
   const res = await call(url, `/view?${query}`, {}, 120_000);
   if (!res.ok) throw new ComfyError(`取图失败：ComfyUI 返回 ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
+}
+
+// 取出的视频，边下边写进 file（不能已经有这个文件）；视频有几十 MB，不整个读进内存。没下完的删掉
+export async function saveView(url: string, ref: ImageRef, file: string): Promise<void> {
+  const query = new URLSearchParams({ filename: ref.filename, subfolder: ref.subfolder, type: ref.type });
+  const res = await call(url, `/view?${query}`, {}, 30 * 60_000);
+  if (!res.ok || !res.body) throw new ComfyError(`取视频失败：ComfyUI 返回 ${res.status}`);
+  const out = createWriteStream(file, { flags: 'wx' });
+  try {
+    await pipeline(Readable.fromWeb(res.body as ReadableStream<Uint8Array>), out);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw err;
+    await fs.rm(file, { force: true });
+    throw new ComfyError(`取视频没取完：${(err as Error).message}`);
+  }
 }
 
 // 传一张图给 ComfyUI（放进它的 input 文件夹，同名的换掉），返回 LoadImage 要填的名字

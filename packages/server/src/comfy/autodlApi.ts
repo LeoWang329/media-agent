@@ -5,9 +5,15 @@ import type { AutodlInstance } from '@media-agent/shared';
 
 export const AUTODL_API = 'https://www.autodl.art/api/v1/adl_dev/dev/instance/pro';
 
-// AutoDL 那边出的错，接口里按 502 回
+// AutoDL 那边出的错，接口里按 502 回。noGpu：开机时那台主机没有空闲的显卡
 export class AutodlError extends Error {
   status = 502;
+  noGpu: boolean;
+
+  constructor(message: string, noGpu = false) {
+    super(message);
+    this.noGpu = noGpu;
+  }
 }
 
 export type AutodlAccess = { api: string; token: string };
@@ -50,7 +56,14 @@ async function call<T>({ api, token }: AutodlAccess, method: 'GET' | 'POST', act
     // 不是 JSON 的原样报出去
   }
   if (res.ok && reply.code === 'Success') return reply.data as T;
-  throw new AutodlError(describe(reply, `${res.status} ${text.slice(0, 300)}`));
+  throw new AutodlError(describe(reply, `${res.status} ${text.slice(0, 300)}`), noFreeGpu(reply));
+}
+
+// 那台主机没有空闲的显卡：code 文档没写，按原话里说的认；说的是余额的不算
+function noFreeGpu(reply: Reply<unknown>): boolean {
+  const said = `${reply.code ?? ''} ${reply.msg ?? ''}`;
+  if (/余额|欠费|balance/i.test(said)) return false;
+  return /资源不足/.test(said) || (/GPU|显卡/i.test(said) && /不足|不够|占满|没有空闲|无空闲|售罄|insufficient|not enough|unavailable/i.test(said));
 }
 
 // 出错时 HTTP 也是 200，看 code：Token 不对是 AuthorizeFailed，实例不存在是 RecordNotFoundError；余额不够的 code 文档没写，按原话里有没有「余额」认

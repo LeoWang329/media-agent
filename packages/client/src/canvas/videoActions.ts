@@ -1,0 +1,102 @@
+import { isLiveVideo, type VideoJob, type VideoJobEvent } from '@media-agent/shared';
+import { api } from '../api';
+import { useCanvasStore } from '../store/canvasStore';
+import { useVideoStore } from '../store/videoStore';
+import { trackWrite } from '../ui/saveState';
+import { toast } from '../ui/toast';
+import { selectNode } from './nodeActions';
+
+// 视频节点上生成视频的操作：生成、再来、叫停、删掉，和服务端推来的变化，见 docs/dev-plan.md 5.27、5.28
+
+export type VideoPlace = { nodeId: string; messageId: string };
+
+const jobsUrl = ({ nodeId, messageId }: VideoPlace) => `/canvases/${useCanvasStore.getState().canvasId}/nodes/${nodeId}/messages/${messageId}/videos`;
+
+// 播放的地址：临时文件清掉了服务端给下载的那份
+export const videoSrc = (place: VideoPlace, job: VideoJob) => `/api${jobsUrl(place)}/${job.id}/file`;
+
+const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
+
+// 服务端回来的一条放进节点：已有的换掉，没有的接在后面；比节点里的旧就不要
+export function putVideo({ nodeId, messageId }: VideoPlace, job: VideoJob) {
+  useCanvasStore.setState((s) => {
+    const node = s.nodes[nodeId];
+    const message = node?.messages[messageId];
+    if (!message) return {};
+    const jobs = message.videos ?? [];
+    const known = jobs.find((j) => j.id === job.id);
+    if ((known?.rev ?? 0) > (job.rev ?? 0)) return {};
+    const videos = known ? jobs.map((j) => (j.id === job.id ? job : j)) : [...jobs, job];
+    return { nodes: { ...s.nodes, [nodeId]: { ...node, messages: { ...node.messages, [messageId]: { ...message, videos } } } } };
+  });
+}
+
+function dropVideo({ nodeId, messageId }: VideoPlace, jobId: string) {
+  useCanvasStore.setState((s) => {
+    const node = s.nodes[nodeId];
+    const message = node?.messages[messageId];
+    if (!message?.videos?.some((j) => j.id === jobId)) return {};
+    const videos = message.videos.filter((j) => j.id !== jobId);
+    return { nodes: { ...s.nodes, [nodeId]: { ...node, messages: { ...node.messages, [messageId]: { ...message, videos } } } } };
+  });
+}
+
+// 这个页面看着还在生成的：出完、失败时说一声
+const watching = new Set<string>();
+
+function finished(nodeId: string, job: VideoJob) {
+  if (job.status === 'failed') return toast(`这条视频没生成出来：${job.error ?? ''}`, { tone: 'danger', ms: 6000 });
+  const { selectedId, nodes } = useCanvasStore.getState();
+  if (job.status === 'done' && selectedId !== nodeId && nodes[nodeId]) {
+    toast(`「${nodes[nodeId].title}」的视频生成好了`, { action: '去看看', onAction: () => selectNode(nodeId) });
+  }
+}
+
+// /video-jobs/events 推来的：别的画布的不管
+export function onVideoEvent(event: VideoJobEvent) {
+  if ((event.type !== 'job' && event.type !== 'removed') || event.canvasId !== useCanvasStore.getState().canvasId) return;
+  if (event.type === 'removed') return dropVideo(event, event.jobId);
+  putVideo(event, event.job);
+  if (isLiveVideo(event.job)) watching.add(event.job.id);
+  else if (watching.delete(event.job.id)) finished(event.nodeId, event.job);
+}
+
+async function start(place: VideoPlace, body: unknown): Promise<void> {
+  try {
+    // 生成设置是先改界面再排队存的：等刚改的存好再发
+    await useCanvasStore.getState().patchesSaved();
+    const job = await trackWrite(api<VideoJob>(jobsUrl(place), { method: 'POST', body }));
+    putVideo(place, job);
+    if (isLiveVideo(job)) watching.add(job.id);
+    const running = useVideoStore.getState().autodl?.state === 'running';
+    toast(running ? '开始生成，一分钟的视频大约要半小时' : '生成视频用的 AutoDL 实例关着，先开机，开好了再生成。开机一般要一两分钟');
+  } catch (err) {
+    failed(err);
+  }
+}
+
+// 点「生成视频」：按这条回复的时长、比例和节点现在的生成设置生成这个框
+export const generateVideo = (place: VideoPlace, promptIndex: number) => start(place, { promptIndex });
+
+// 同样参数再来（同一个种子）、只换种子再来
+export const againVideo = (place: VideoPlace, job: VideoJob, sameSeed: boolean) => start(place, { again: { jobId: job.id, sameSeed } });
+
+export async function stopVideo(place: VideoPlace, job: VideoJob) {
+  try {
+    const stopped = await trackWrite(api<VideoJob>(`${jobsUrl(place)}/${job.id}/stop`, { method: 'POST' }));
+    putVideo(place, stopped);
+    toast(stopped.status === 'stopped' ? '叫停了' : '让 ComfyUI 停了，正在跑的这一步走完就停');
+  } catch (err) {
+    failed(err);
+  }
+}
+
+export async function removeVideo(place: VideoPlace, job: VideoJob) {
+  try {
+    await trackWrite(api(`${jobsUrl(place)}/${job.id}`, { method: 'DELETE' }));
+    dropVideo(place, job.id);
+    toast(job.savedPath ? '删掉了，下载过的那份还在' : '删掉了');
+  } catch (err) {
+    failed(err);
+  }
+}

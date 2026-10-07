@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMockComfy, type MockComfy } from '../../../tools/mock-comfyui/src/app';
-import { MOCK_AUTODL_PATH, MOCK_AUTODL_TOKEN, MOCK_AUTODL_UUID } from '../../../tools/mock-comfyui/src/autodl';
+import { MOCK_AUTODL_PATH, MOCK_AUTODL_TOKEN, MOCK_AUTODL_UUID, MOCK_AUTODL_VIDEO_UUID } from '../../../tools/mock-comfyui/src/autodl';
 import { sleep, startTestApp, type TestApp } from './helpers';
 
 // AutoDL：Token 和实例的设置、列实例、出图时自动开机、空闲到点自动关机、手动开关机、开机失败、退出时关机，见 docs/dev-plan.md 5.17。
@@ -106,7 +106,7 @@ describe('AutoDL', () => {
     expect(config).toMatchObject({ comfyTarget: 'autodl', autodlToken: '******' });
     expect(await readJsonFile(path.join(t.configDir, 'config.json'))).toMatchObject({ comfyTarget: 'autodl', autodlToken: MOCK_AUTODL_TOKEN });
     const shared = await readJsonFile(path.join(t.work, 'settings.json'));
-    expect(shared.comfy).toEqual({ lanUrl: null, autodl: { instanceUuid: MOCK_AUTODL_UUID, idleMinutes: 15 } });
+    expect(shared.comfy).toEqual({ lanUrl: null, autodl: { instanceUuid: MOCK_AUTODL_UUID, idleMinutes: 15 }, videoAutodl: { instanceUuid: null, idleMinutes: 15 } });
     expect(JSON.stringify(shared)).not.toContain(MOCK_AUTODL_TOKEN);
 
     // 打码的那串是没改，空着是清掉
@@ -122,6 +122,7 @@ describe('AutoDL', () => {
     expect((await t.ok('PUT', '/settings', { comfy: { autodl: { idleMinutes: 30 } } })).comfy).toEqual({
       lanUrl: comfyUrl,
       autodl: { instanceUuid: MOCK_AUTODL_UUID, idleMinutes: 30 },
+      videoAutodl: { instanceUuid: null, idleMinutes: 15 },
     });
   });
 
@@ -146,6 +147,7 @@ describe('AutoDL', () => {
         startedAt: null,
         stoppedAt: expect.any(String),
       },
+      expect.objectContaining({ uuid: MOCK_AUTODL_VIDEO_UUID, name: 'H3-测试' }),
     ]);
 
     // 选了实例才查得到状态
@@ -257,6 +259,22 @@ describe('AutoDL', () => {
     const slow = await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 });
     const timedOut = await settledJob(slow.id);
     expect(timedOut.images[0].error).toBe('AutoDL 开机失败：等了 2 秒还没开好：实例状态一直是「starting」。可以再试一次，或者先用局域网那台');
+  });
+
+  it('开机时那台主机没有空闲的显卡：提示另选一台；说余额不足的不算', async () => {
+    await useAutodl();
+    mock.autodl.fail.power_on = { code: 'GpuNotEnough', msg: '主机GPU不足，请稍后再试' };
+    const job = await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 });
+    const failed = await settledJob(job.id);
+    expect(failed.images[0].error).toBe(
+      'AutoDL 开机失败：这台所在的主机没有空闲的显卡，AutoDL 返回「主机GPU不足，请稍后再试」（GpuNotEnough）。去设置里另选一台实例，或者先用局域网那台，也可以过一会再开',
+    );
+    expect(imageErrorKind(failed.images[0].error!)).toBe('boot');
+
+    mock.autodl.fail.power_on = { code: 'Failed', msg: '账户余额不足，无法开启GPU实例' };
+    const poor = await settledJob((await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 })).id);
+    expect(poor.images[0].error).toContain('余额不够，开不了机');
+    expect(poor.images[0].error).not.toContain('显卡');
   });
 
   it('退出时：这次是程序开的机就关掉；不是程序开的不管', async () => {

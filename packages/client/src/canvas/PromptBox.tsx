@@ -9,6 +9,8 @@ import { Icon, type IconName } from '../ui/Icon';
 import { toast } from '../ui/toast';
 import { closeRefPicker, openRefPicker, useOverlays } from './overlays';
 import { promptBody } from './tokens';
+import { generateVideo } from './videoActions';
+import { VideoJobs } from './VideoJobs';
 
 type Props = {
   node: ChatNode;
@@ -31,6 +33,8 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
   // 没收尾的框不在解析出来的提示词里，打星和手动改都对不上号
   const editable = !ro && !writing && !incomplete;
   const imgs = message.slotSnapshot;
+  // 视频节点的框能生成视频，框下面挂着生成的视频，见 docs/dev-plan.md 5.27
+  const video = node.kind === 'video';
 
   if (editing) {
     return <BoxEditor node={node} message={message} index={index} label={label} text={text} busy={busy} versions={versions} onClose={() => setEditing(false)} />;
@@ -50,6 +54,18 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
         <span className={`pb-label${label ? '' : ' is-plain'}`}>{label || '提示词'}</span>
         <div className="pb-actions">
           {act('copy', '复制', 'copy', () => copyText(text, `已复制提示词（${fmtNum(text.length)} 字）`))}
+          {video && editable && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              data-act="genVideo"
+              title="按这条回复的时长、比例和节点的生成设置，在生成视频用的 AutoDL 实例上生成"
+              onClick={() => void generateVideo({ nodeId: node.id, messageId: message.id }, index)}
+            >
+              <Icon name="film" />
+              <span className="lbl">生成视频</span>
+            </button>
+          )}
           {!writing &&
             !incomplete &&
             act('translate', '翻译', 'translate', () => useOverlays.setState({ translate: { nodeId: node.id, messageId: message.id, promptIndex: index, label } }))}
@@ -102,6 +118,7 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
           叫停时还没写完，这条提示词不完整
         </div>
       )}
+      {video && !writing && !incomplete && <VideoJobs node={node} message={message} promptIndex={index} text={text} ro={ro} />}
     </div>
   );
 }

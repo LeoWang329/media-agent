@@ -7,6 +7,7 @@ import {
   isSupportedImageName,
   pathSnapshot,
   switchVersion as switchVersionInTree,
+  videoSettingsOf,
   withTranslation,
   type CanvasDetail,
   type CanvasImage,
@@ -17,6 +18,7 @@ import {
   type FamilyDefaults,
   type ImageRecord,
   type ImageSettings,
+  type VideoSettings,
   type ModelConfigWithKey,
   type NodeKind,
   type PromptInfo,
@@ -39,9 +41,10 @@ export type Stream = { assistantId: string | null; text: string; reasoning: stri
 
 const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text: '', reasoning: '', firstTextAt: null });
 
-// image 只带要改的几项，服务端按节点原来的（没改过的按系列的默认值）补全
+// image、video 只带要改的几项，服务端按节点原来的（没改过的按默认值）补全
 type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit'>> & {
   image?: Partial<ImageSettings>;
+  video?: Partial<VideoSettings>;
 };
 
 export const MAX_SLOTS = 9;
@@ -239,8 +242,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
   const applyPatch = (nodeId: string, patch: NodePatch): Promise<void> => {
     const keys = Object.keys(patch);
     keys.forEach((key) => countQueued(`${nodeId}:${key}`, 1));
-    const { image, ...fields } = patch;
-    changeNode(nodeId, (node) => ({ ...node, ...fields, ...(image && { image: { ...nodeImageSettings(node), ...image } }) }));
+    const { image, video, ...fields } = patch;
+    changeNode(nodeId, (node) => ({
+      ...node,
+      ...fields,
+      ...(image && { image: { ...nodeImageSettings(node), ...image } }),
+      ...(video && { video: { ...videoSettingsOf(node.video), ...video } }),
+    }));
     const run = patchQueue.then(async () => {
       let server: ChatNode;
       try {

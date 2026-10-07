@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { AssetsDialog } from '../canvas/AssetsDialog';
 import { CollageDialog } from '../canvas/CollageDialog';
-import { DownloadDialog } from '../canvas/DownloadDialog';
+import { DownloadDialog, VideoDownloadDialog } from '../canvas/DownloadDialog';
 import { Drawer } from '../canvas/Drawer';
 import { GenSettingsDialog } from '../canvas/GenSettings';
 import { Graph } from '../canvas/Graph';
@@ -16,11 +16,13 @@ import { SysPromptDialog } from '../canvas/SysPromptDialog';
 import { TranslateDialog } from '../canvas/TranslateDialog';
 import { BoxTagEditor, WriteTagsEditor } from '../canvas/BoxTagEditor';
 import { UploadDialog } from '../canvas/UploadDialog';
+import { onVideoEvent } from '../canvas/videoActions';
 import { ZoomDialog } from '../canvas/ZoomDialog';
 import { fitAll, useView, zoomBy } from '../canvas/view';
-import { ComfyPill } from '../components/ComfyPill';
+import { ComfyPill, VideoPill } from '../components/ComfyPill';
 import { useCanvasStore } from '../store/canvasStore';
 import { watchImageJobs } from '../store/comfyStore';
+import { watchVideoJobs } from '../store/videoStore';
 import { clockSeconds } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { showMenu, type MenuItem } from '../ui/menu';
@@ -62,8 +64,9 @@ export function Canvas() {
     return () => document.body.classList.remove('ws', 'drawer-open');
   }, []);
 
-  // 出图的变化：框下面的图、卡片上的进度跟着变
+  // 出图、生成视频的变化：框下面的图和视频、卡片上的进度跟着变
   useEffect(() => watchImageJobs(onImageEvent), []);
+  useEffect(() => watchVideoJobs(onVideoEvent), []);
 
   useEffect(() => {
     document.body.classList.toggle('drawer-open', Boolean(selectedId));
@@ -251,9 +254,10 @@ export function Canvas() {
         </button>
       </div>
 
-      {/* 缩放旁边：出图用哪台 ComfyUI，一直看得到 */}
+      {/* 缩放旁边：出图用哪台 ComfyUI、生成视频那台，一直看得到 */}
       <div className="ws-float ws-comfy">
         <ComfyPill />
+        <VideoPill />
       </div>
 
       <Drawer />
@@ -269,6 +273,7 @@ export function Canvas() {
       <GenSettingsDialog />
       <ImageViewer />
       <DownloadDialog />
+      <VideoDownloadDialog />
     </>
   );
 }

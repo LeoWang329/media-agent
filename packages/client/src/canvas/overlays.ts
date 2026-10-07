@@ -26,6 +26,9 @@ export type ImageTarget = { nodeId: string; messageId: string; jobId: string; in
 // 下载窗口：要下的几张，文件名用节点标题加种子
 export type DownloadTarget = { nodeId: string; title: string; items: (ImageTarget & { seed: number })[] };
 
+// 下载一条视频：哪条回复的哪一条，文件名用节点标题加种子
+export type VideoDownloadTarget = { nodeId: string; messageId: string; jobId: string; title: string; seed: number };
+
 type Overlays = {
   assets: { mode: AssetsMode; slot?: number } | null;
   upload: UploadTarget | null;
@@ -38,6 +41,7 @@ type Overlays = {
   genSettings: string | null; // 出图设置：哪个节点的
   viewer: ImageTarget | null; // 看大图和参数
   download: DownloadTarget | null;
+  videoDownload: VideoDownloadTarget | null;
   // 引用图片的小窗贴着哪儿弹；images：手动改提示词时只能挑这条回复带的图
   refpick: { left: number; top: number; images?: string[] } | null;
 };
@@ -54,6 +58,7 @@ export const CLOSED_OVERLAYS = {
   genSettings: null,
   viewer: null,
   download: null,
+  videoDownload: null,
   refpick: null,
 } satisfies Overlays;
 

@@ -33,11 +33,11 @@ export type ComfyTarget = 'lan' | 'autodl';
 // AutoDL 选了哪个实例（没选是 null）、空闲多久自动关机（分钟）
 export type AutodlSettings = { instanceUuid: string | null; idleMinutes: number };
 
-// 工作文件夹 settings.json，两台机器共用：思考档位、对话最多带几轮、局域网 ComfyUI 地址和 AutoDL 实例、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
+// 工作文件夹 settings.json，两台机器共用：思考档位、对话最多带几轮、局域网 ComfyUI 地址和 AutoDL 实例（出图的、生成视频的）、底模属于哪个系列（底模文件名 → 系列，null 是两个都不是）、各系列的默认出图参数
 export type SharedSettings = {
   thinking: ThinkingSettings;
   turnLimit: TurnLimit;
-  comfy: { lanUrl: string | null; autodl: AutodlSettings };
+  comfy: { lanUrl: string | null; autodl: AutodlSettings; videoAutodl: AutodlSettings };
   checkpoints: Record<string, Family | null>;
   defaults: Record<Family, FamilyDefaults>;
 };
@@ -283,9 +283,9 @@ export type AutodlInstance = {
 // AutoDL 实例现在怎样，见 docs/dev-plan.md 5.17。
 // unset 是还没填 Token 或没选实例；unknown 是查不到，原因在 error；failed 是程序开机没开成，原因在 error，下次开机前一直留着。
 // raw 是 AutoDL 返回的状态原文；since 是这次开机从什么时候开始等；upSince 是从什么时候开着的；
-// idleLeftMs 是还有多久自动关机，程序这边在用它（busyWith 不空）或者没开着是 null；busyWith 是程序这边正在用它做什么：出图、传模型；
+// idleLeftMs 是还有多久自动关机，程序这边在用它（busyWith 不空）或者没开着是 null；busyWith 是程序这边正在用它做什么：出图、传模型、生成视频；
 // byApp 是这次开机是程序开的
-export type AutodlBusy = 'images' | 'models';
+export type AutodlBusy = 'images' | 'models' | 'videos';
 export type AutodlState = {
   state: 'unset' | 'unknown' | 'off' | 'booting' | 'running' | 'stopping' | 'failed';
   raw: string | null;
@@ -298,6 +298,57 @@ export type AutodlState = {
   error: string | null;
   instance: AutodlInstance | null;
 };
+
+// 视频节点的生成设置，存在 node.video，见 docs/dev-plan.md 5.27：一采大小（百万像素）、放大倍数、种子（null 是每次随机）
+export type VideoSettings = { megapixels: number; upscale: number; seed: number | null };
+
+// 生成视频发出去的全部参数，「同样参数再来」照这个发，见 docs/dev-plan.md 5.26。
+// seconds 是写这条回复时的时长；frames 是整条、每段、相邻两段重叠几帧；width、height 是一采的，finalWidth、finalHeight 是出片的
+export type VideoJobParams = {
+  segments: string[];
+  seconds: number;
+  frames: { total: number; chunk: number; overlap: number };
+  aspectRatio: Exclude<AspectRatio, 'auto'>;
+  megapixels: number;
+  width: number;
+  height: number;
+  upscale: number;
+  finalWidth: number;
+  finalHeight: number;
+  model: string;
+};
+
+// 点一次「生成视频」出的一条，挂在 assistant 消息的 videos 里，见 docs/dev-plan.md 5.27。
+// source 是照着哪条再来的；file 是临时文件夹里的视频，相对工作文件夹、用 / 隔开；bytes 是文件多大，ms 是从开始跑到出完用了多久，savedPath 是下载到哪。
+// rev 每改一次加一，前端拿它丢掉旧的
+export type VideoJob = {
+  id: string;
+  rev?: number;
+  promptIndex: number;
+  createdAt: string;
+  source?: { jobId: string };
+  params: VideoJobParams;
+  seed: number;
+  promptId?: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
+  file?: string;
+  bytes?: number;
+  ms?: number;
+  savedPath?: string;
+  error?: string;
+};
+
+// 生成视频在做哪一步：编码提示词、一采、放大、二采、存文件
+export type VideoStage = 'encode' | 'pass1' | 'upscale' | 'pass2' | 'save';
+
+// GET /api/video-jobs/events 推的事件：一条的状态变了发整条，删掉了发 removed；进度和排在第几不存盘，chunk 从 1 数，还没到一采、二采时是 0；
+// 生成视频那台的状态变了发整个状态
+export type VideoJobEvent =
+  | { type: 'job'; canvasId: string; nodeId: string; messageId: string; job: VideoJob }
+  | { type: 'removed'; canvasId: string; nodeId: string; messageId: string; jobId: string }
+  | { type: 'progress'; jobId: string; stage: VideoStage; chunk: number; chunks: number; step: number; steps: number }
+  | { type: 'queue'; jobId: string; position: number }
+  | ({ type: 'autodl' } & AutodlState);
 
 // 出完的一张图在哪：哪条回复、哪一组、第几张。卡片和首页拿它拼缩略图的地址
 export type GeneratedRef = { messageId: string; jobId: string; index: number; seed: number; starred: boolean };
@@ -432,7 +483,7 @@ export type Message = {
   translations?: PromptTranslation[];
   editedFromMessageId?: string;
   handwritten?: boolean; // 自己写的框（生图节点的「写标签」），没调模型
-  videos?: { promptIndex: number; path: string; createdAt: string; meta: Record<string, unknown> }[];
+  videos?: VideoJob[]; // 视频节点生成的视频，按点生成的先后排
   usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string; // 生成失败时的错误，text 为空
   stopped?: boolean; // 生成到一半被叫停，text 是叫停前收到的部分
@@ -462,6 +513,7 @@ export type ChatNode = {
   activeChildOf: Record<string, string>; // 键是父消息 id（顶层用 'root'），值是当前显示的版本
   draft: string;
   image?: ImageSettings; // 生图节点改过出图设置才有；没有时按系列的默认值
+  video?: VideoSettings; // 视频节点改过生成设置才有；没有时用默认值
   turnLimit?: TurnLimit | 'follow'; // 这个节点自己设的最多带几轮；没有或 follow 是跟设置
   createdAt: string;
   updatedAt: string;

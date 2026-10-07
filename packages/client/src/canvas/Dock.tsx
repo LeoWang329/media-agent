@@ -5,8 +5,10 @@ import {
   IMAGE_SIZES,
   imageSizeFits,
   roundSize,
+  segmentCount,
   SIZE_LIMITS,
   slotDiff,
+  VIDEO_DURATION,
   type AspectRatio,
   type ChatNode,
   type PromptMeta,
@@ -27,6 +29,7 @@ import { copyOnlyNote, processedNote } from './imageInfo';
 import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
+import { DurationPop, VideoGenButton } from './VideoSettings';
 
 const RATIOS: AspectRatio[] = ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'auto'];
 
@@ -84,33 +87,43 @@ export function Dock({ node }: { node: ChatNode }) {
   );
 }
 
-// 视频节点：时长和比例
+// 视频节点：时长和比例，旁边是生成设置。时长点数字能直接填，超过 15 秒写上分几段，见 docs/dev-plan.md 5.24
 function VideoParams({ node }: { node: ChatNode }) {
+  const [durationAt, setDurationAt] = useState<DOMRect | null>(null);
+  const { min, max } = VIDEO_DURATION;
+  const setDuration = (duration: number) => void useCanvasStore.getState().patchNode(node.id, { duration });
+  const segments = segmentCount(node.duration);
   return (
     <>
       <div className="param">
         <span className="meta">时长</span>
         <div className="stepper" data-od-id="duration-stepper">
-          <button
-            type="button"
-            id="durDown"
-            aria-label="减少一秒"
-            disabled={node.duration <= 4}
-            onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.max(4, node.duration - 1) })}
-          >
+          <button type="button" id="durDown" aria-label="减少一秒" disabled={node.duration <= min} onClick={() => setDuration(Math.max(min, node.duration - 1))}>
             −
           </button>
-          <output id="durVal">{node.duration} 秒</output>
-          <button
-            type="button"
-            id="durUp"
-            aria-label="增加一秒"
-            disabled={node.duration >= 15}
-            onClick={() => void useCanvasStore.getState().patchNode(node.id, { duration: Math.min(15, node.duration + 1) })}
-          >
+          <button type="button" className="dur-val" id="durVal" title="点开直接填时长" onClick={(e) => setDurationAt(durationAt ? null : e.currentTarget.getBoundingClientRect())}>
+            {node.duration} 秒
+          </button>
+          <button type="button" id="durUp" aria-label="增加一秒" disabled={node.duration >= max} onClick={() => setDuration(Math.min(max, node.duration + 1))}>
             +
           </button>
         </div>
+        {segments > 1 && (
+          <span className="meta" id="durSegs" title="超过 15 秒的分段生成，模型在一个框里按段写好">
+            分 {segments} 段
+          </span>
+        )}
+        {durationAt && (
+          <DurationPop
+            anchor={durationAt}
+            value={node.duration}
+            onPick={(seconds) => {
+              setDurationAt(null);
+              setDuration(seconds);
+            }}
+            onClose={() => setDurationAt(null)}
+          />
+        )}
       </div>
       <div className="param">
         <span className="meta">比例</span>
@@ -129,6 +142,7 @@ function VideoParams({ node }: { node: ChatNode }) {
           ))}
         </select>
       </div>
+      <VideoGenButton node={node} />
     </>
   );
 }

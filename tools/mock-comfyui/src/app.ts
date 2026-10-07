@@ -11,6 +11,7 @@ import { createMockSsh, type MockSsh } from './ssh';
 // 假的 ComfyUI，接口和推送的样子照真的，见 docs/dev-plan.md 9.5。
 // 正面提示词含「慢」的每步走得慢（测叫停），含「报错」的跑到一半出错，含「显存」的报显存不够。
 // 出的图多大：有 ImageScale 的按它，不然按空白画布，不然按 LoadImage 那张传上来的图。
+// 有 MMH3LoopingSampler 的按长视频跑，出的是 fixtures/video.mp4，提示词的规矩同上，见 runVideo。
 // 假的 AutoDL 接口也挂在这里，见 ./autodl；它上面的 SSH 见 ./ssh，要另外 listen
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
@@ -19,18 +20,26 @@ type Run = { task: Task; samplerId: string; timer?: NodeJS.Timeout; started: [st
 type ImageRef = { filename: string; subfolder: string; type: string };
 type HistoryEntry = {
   prompt: [number, string, Graph, { client_id: string }, string[]];
-  outputs: Record<string, { images: ImageRef[] }>;
+  outputs: Record<string, { images: ImageRef[]; animated?: boolean[] }>;
   status: { status_str: 'success' | 'error'; completed: boolean; messages: [string, Record<string, unknown>][] };
 };
 
-export type MockComfyOptions = { stepMs?: number; slowStepMs?: number; autodl?: MockAutodlOptions };
+// videoStepMs 是长视频每一步多久，一采、二采每段都要走好几步，比出图的快
+export type MockComfyOptions = { stepMs?: number; slowStepMs?: number; videoStepMs?: number; autodl?: MockAutodlOptions };
 export type MockComfy = { server: http.Server; autodl: MockAutodl; ssh: MockSsh; close(): Promise<void> };
 
 const STEPS = 5;
 
+// 长视频出的是这个很小的真 mp4（VP9，Playwright 带的 Chromium 也能播）
+const VIDEO = fs.readFileSync(new URL('../fixtures/video.mp4', import.meta.url));
+
 const MODELS = {
   checkpoints: ['il-test.safetensors', 'pony-test.safetensors'],
-  vae: ['sdxl_vae.safetensors'],
+  // 后两个和下面三样是长视频用的，文件名照 AutoDL 上 H3 那台
+  vae: ['sdxl_vae.safetensors', 'minimax_h3_audio_vae_fp32.safetensors', 'minimax_h3_video_vae_fp16.safetensors'],
+  unet: ['minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors'],
+  textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors'],
+  latentUpscale: ['minimax_h3_latent_upscaler_3d_bf16.safetensors'],
   loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
   schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
@@ -121,6 +130,32 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   FaceDetailer: node({}, ['IMAGE']),
   DWPreprocessor: node({}, ['IMAGE']),
   'WD14Tagger|pysssss': node({ model: combo(MODELS.tagger) }, ['STRING'], true),
+  // 长视频流程用的，下拉项照 H3 那台
+  UNETLoader: node({ unet_name: combo(MODELS.unet), weight_dtype: combo(['default', 'fp8_e4m3fn', 'fp8_e4m3fn_fast', 'fp8_e5m2']) }, ['MODEL']),
+  ModelAttentionBackend: node({ model: ['MODEL'], attention: comboV3(['pytorch attention', 'comfy kitchen attention']) }, ['MODEL']),
+  MiniMaxLowVRAMAttention: node({ model: ['MODEL'], head_chunks: ['INT', {}] }, ['MODEL']),
+  MiniMaxChunkFeedForward: node({ model: ['MODEL'], chunks: ['INT', {}], seq_threshold: ['INT', {}] }, ['MODEL']),
+  CLIPLoader: node({ clip_name: combo(MODELS.textEncoder), type: combo(['stable_diffusion', 'ltxv', 'minimax']) }, ['CLIP'], false, { device: combo(['default', 'cpu']) }),
+  MMH3ReferenceMultiPrompt: node(
+    { clip: ['CLIP'], vae: ['VAE'], audio_vae: ['VAE'], width: ['INT', {}], height: ['INT', {}], length: ['INT', {}], ref_image_size: comboV3(['match', 'max']), prompts: ['STRING', {}] },
+    ['MMH3_COND_SET', 'LATENT', 'INT', 'IMAGE'],
+  ),
+  MMH3CondSelect: node({ cond_set: ['MMH3_COND_SET'], index: ['INT', {}] }, ['CONDITIONING', 'STRING']),
+  BasicGuider: node({ model: ['MODEL'], conditioning: ['CONDITIONING'] }, ['GUIDER']),
+  RandomNoise: node({ noise_seed: ['INT', {}] }, ['NOISE']),
+  KSamplerSelect: node({ sampler_name: comboV3(MODELS.samplers) }, ['SAMPLER']),
+  BasicScheduler: node({ model: ['MODEL'], scheduler: comboV3(['simple', 'beta', 'normal']), steps: ['INT', {}], denoise: ['FLOAT', {}] }, ['SIGMAS']),
+  MMH3LoopingSampler: node(
+    { noise: ['NOISE'], guider: ['GUIDER'], sampler: ['SAMPLER'], sigmas: ['SIGMAS'], cond_set: ['MMH3_COND_SET'], latent: ['LATENT'], carry: comboV3(['mask', 'keyframe']) },
+    ['LATENT', 'INT', 'STRING'],
+    false,
+    { vae: ['VAE'], denoise_mask_mode: comboV3(['max', 'min', 'mean', 'last']) },
+  ),
+  LTXVSeparateAVLatent: node({ av_latent: ['LATENT'] }, ['LATENT', 'LATENT']),
+  MinimaxH3LatentUpscaler3D: node({ latent: ['*'], model_name: comboV3(MODELS.latentUpscale), device: comboV3(['cuda', 'rocm', 'cpu']), precision: comboV3(['fp32', 'fp16', 'bf16']) }, ['*']),
+  LTXVConcatAVLatent: node({ video_latent: ['LATENT'], audio_latent: ['LATENT'] }, ['LATENT']),
+  VAEDecodeAudio: node({ samples: ['LATENT'], vae: ['VAE'] }, ['AUDIO']),
+  MMH3StreamingSave: node({ latent: ['LATENT'], vae: ['VAE'], filename_prefix: ['STRING', {}] }, ['STRING'], true, { video_encoder: comboV3(['auto', 'libx264', 'h264_nvenc']) }),
 };
 
 // 往 AutoDL 那台传的模型也列进下拉，跟真的 ComfyUI 读 extra_model_paths.yaml 一样
@@ -211,7 +246,7 @@ async function drawImage(width: number, height: number, seed: number, positive: 
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autodlOptions }: MockComfyOptions = {}): MockComfy {
+export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs = 40, autodl: autodlOptions }: MockComfyOptions = {}): MockComfy {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
   const ssh = createMockSsh();
@@ -229,6 +264,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   const queue: Task[] = [];
   const history = new Map<string, HistoryEntry>();
   const images = new Map<string, Buffer>();
+  const videos = new Set<string>();
   const uploads = new Map<string, Buffer>();
   // 测试用：假装没装的节点类型，object_info 里不列，发来的任务也不收
   const hidden = new Set<string>();
@@ -237,6 +273,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   const prompts: unknown[] = [];
   let current: Run | null = null;
   let counter = 0;
+  let videoCounter = 0;
 
   const sendTo = (clientId: string, type: string, data: Record<string, unknown>) => {
     for (const [ws, id] of clients) if (id === clientId) ws.send(JSON.stringify({ type, data }));
@@ -273,6 +310,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     if (current || !queue.length) return;
     const task = queue.shift()!;
     const { graph } = task;
+    if (findNode(graph, 'MMH3LoopingSampler')) return runVideo(task);
     const samplerId = findNode(graph, 'KSampler') ?? findNode(graph, 'FaceDetailer') ?? Object.keys(graph)[0];
     const sampler = graph[samplerId];
     const positive = textAbove(graph, sampler.inputs.positive);
@@ -333,6 +371,100 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
       current = null;
       sendTo(task.clientId, 'executing', { node: outputId, display_node: outputId, prompt_id: task.id });
       sendTo(task.clientId, 'executed', { node: outputId, display_node: outputId, output: { images: [ref] }, prompt_id: task.id });
+      sendTo(task.clientId, 'execution_success', success);
+      sendTo(task.clientId, 'executing', { node: null, prompt_id: task.id });
+      broadcastStatus();
+      runNext();
+    };
+    run.timer = setTimeout(tick, wait);
+  }
+
+  // 长视频，见 docs/dev-plan.md 9.5：先编码提示词，按节点号的先后跑两个 MMH3LoopingSampler，
+  // 每个跑提示词的段数那么多段，每段的步数是它接的 BasicScheduler 的；一采后面照真的先解码声音，再放大，二采完存文件。
+  // 提示词含「慢」「报错」「显存」的规矩同出图，出错在一采第 1 段第 2 步
+  function runVideo(task: Task) {
+    const { graph } = task;
+    const of = (type: string) =>
+      Object.keys(graph)
+        .filter((id) => graph[id].class_type === type)
+        .sort((a, b) => Number(a) - Number(b));
+    const encodeId = of('MMH3ReferenceMultiPrompt')[0];
+    const text = String(graph[encodeId]?.inputs.prompts ?? '');
+    const chunks = text.split('\n').filter((line) => line.trim() === '|').length + 1;
+    const wait = text.includes('慢') ? slowStepMs : videoStepMs;
+    const failure = text.includes('显存') ? 'CUDA out of memory. Tried to allocate 20.00 GiB' : text.includes('报错') ? 'mock-comfyui：提示词含「报错」，按约定出错' : null;
+    const [pass1, pass2] = of('MMH3LoopingSampler');
+    const stepsOf = (id: string) => Number(linked(graph, graph[id].inputs.sigmas)?.inputs.steps ?? 3);
+    const saveId = of('MMH3StreamingSave')[0] ?? pass2 ?? pass1;
+    // 每一项是推一条消息，推完等一步
+    const events: [string, Record<string, unknown>][] = [];
+    const executing = (id: string | undefined) => {
+      if (id) events.push(['executing', { node: id, display_node: id, prompt_id: task.id }]);
+    };
+    executing(encodeId);
+    executing(of('UNETLoader')[0]);
+    for (const [index, id] of [pass1, pass2].entries()) {
+      if (!id) continue;
+      executing(id);
+      for (let chunk = 0; chunk < chunks; chunk += 1) {
+        for (let step = 1; step <= stepsOf(id); step += 1) events.push(['progress', { value: step, max: stepsOf(id), prompt_id: task.id, node: id }]);
+      }
+      if (index === 0) {
+        executing(of('VAEDecodeAudio')[0]);
+        executing(of('MinimaxH3LatentUpscaler3D')[0]);
+      }
+    }
+    executing(saveId);
+
+    const start = { prompt_id: task.id, timestamp: Date.now() };
+    const run: Run = { task, samplerId: pass1, started: [['execution_start', start]] };
+    current = run;
+    sendTo(task.clientId, 'execution_start', start);
+    sendTo(task.clientId, 'execution_cached', { nodes: [], prompt_id: task.id, timestamp: Date.now() });
+    broadcastStatus();
+
+    let sent = 0;
+    const tick = () => {
+      if (current !== run) return;
+      const [type, data] = events[sent];
+      sent += 1;
+      sendTo(task.clientId, type, data);
+      if (failure && type === 'progress' && data.node === pass1 && data.value === 2) {
+        const error = {
+          prompt_id: task.id,
+          node_id: pass1,
+          node_type: 'MMH3LoopingSampler',
+          executed: [],
+          exception_message: failure,
+          exception_type: failure.includes('CUDA') ? 'torch.OutOfMemoryError' : 'RuntimeError',
+          traceback: [],
+          current_inputs: {},
+          current_outputs: {},
+          timestamp: Date.now(),
+        };
+        record(task, {}, false, [...run.started, ['execution_error', error]]);
+        current = null;
+        sendTo(task.clientId, 'execution_error', error);
+        sendTo(task.clientId, 'executing', { node: null, prompt_id: task.id });
+        broadcastStatus();
+        runNext();
+        return;
+      }
+      if (sent < events.length) {
+        run.timer = setTimeout(tick, wait);
+        return;
+      }
+      // 照 MMH3StreamingSave：filename_prefix 最后一个斜杠前面是子文件夹，文件名后面加 5 位序号
+      const prefix = String(graph[saveId]?.inputs.filename_prefix ?? 'video');
+      const slash = prefix.lastIndexOf('/');
+      videoCounter += 1;
+      const ref = { filename: `${prefix.slice(slash + 1)}_${String(videoCounter).padStart(5, '0')}.mp4`, subfolder: prefix.slice(0, Math.max(0, slash)), type: 'output' };
+      videos.add(ref.filename);
+      const output = { images: [ref], animated: [true] };
+      const success = { prompt_id: task.id, timestamp: Date.now() };
+      record(task, { [saveId]: output }, true, [...run.started, ['execution_success', success]]);
+      current = null;
+      sendTo(task.clientId, 'executed', { node: saveId, display_node: saveId, output, prompt_id: task.id });
       sendTo(task.clientId, 'execution_success', success);
       sendTo(task.clientId, 'executing', { node: null, prompt_id: task.id });
       broadcastStatus();
@@ -420,7 +552,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     if (run && (!wanted || wanted === run.task.id)) {
       clearTimeout(run.timer);
       current = null;
-      const data = { prompt_id: run.task.id, node_id: run.samplerId, node_type: 'KSampler', executed: [], timestamp: Date.now() };
+      const data = { prompt_id: run.task.id, node_id: run.samplerId, node_type: run.task.graph[run.samplerId]?.class_type ?? 'KSampler', executed: [], timestamp: Date.now() };
       record(run.task, {}, false, [...run.started, ['execution_interrupted', data]]);
       sendTo(run.task.clientId, 'execution_interrupted', data);
       sendTo(run.task.clientId, 'executing', { node: null, prompt_id: run.task.id });
@@ -436,6 +568,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
   });
 
   app.get('/view', (req, res) => {
+    if (req.query.type === 'output' && videos.has(String(req.query.filename))) {
+      res.type('video/mp4').send(VIDEO);
+      return;
+    }
     const data = req.query.type === 'temp' || req.query.type === 'output' ? images.get(String(req.query.filename)) : undefined;
     if (!data) {
       res.status(404).end();
@@ -466,9 +602,9 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, autodl: autod
     res.json(prompts);
   });
 
-  // 测试用：假的 AutoDL 实例现在的状态、收到过的开机关机请求
+  // 测试用：假的 AutoDL 实例（出图那台，和按 uuid 的两台）现在的状态、收到过的开机关机请求
   app.get('/_autodl', (_req, res) => {
-    res.json({ instance: autodl.instance, calls: autodl.calls });
+    res.json({ instance: autodl.instance, instances: autodl.instances, calls: autodl.calls });
   });
 
   // 测试用：假的 SSH 收到的命令、那台还剩多少空间；能改剩多少

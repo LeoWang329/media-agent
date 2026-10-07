@@ -11,8 +11,8 @@ export type ForkChain = {
   draft: string;
 };
 
-// 出的图属于出图的那个节点，复制消息时不带过去，免得两个节点删同一个临时文件、等同一个任务
-const withoutImages = ({ images: _, ...message }: Message): Message => message;
+// 出的图和视频属于出它的那个节点，复制消息时不带过去，免得两个节点删同一个临时文件、等同一个任务
+const withoutImages = ({ images: _, videos: __, ...message }: Message): Message => message;
 
 // 从 assistant 消息 fork：链含这条消息；从 user 消息 fork：链到它的上一条，它的文字放进输入框。
 // 只复制链上的消息，id 和 parentId 不变

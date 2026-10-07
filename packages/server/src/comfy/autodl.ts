@@ -6,7 +6,8 @@ import { AUTODL_API, AutodlError, comfyAddress, findInstance, instanceStatus, li
 import { queueState, systemStats } from './client';
 
 // AutoDL 实例的开机、关机、空闲自动关机，见 docs/dev-plan.md 5.17。
-// 状态变了推给 /image-jobs/events；只在有人问、正在开机关机、空闲到点时查 AutoDL，平时不一直查
+// 状态变了推给 /image-jobs/events；只在有人问、正在开机关机、空闲到点时查 AutoDL，平时不一直查。
+// 出图那台和生成视频那台各建一个，各管各的，见 docs/dev-plan.md 5.25
 
 // 时间都能调小：测试里不用真等 5 秒一查、几分钟才关
 export type AutodlOptions = { api?: string; pollMs?: number; bootTimeoutMs?: number; minuteMs?: number };
@@ -20,11 +21,25 @@ export class BootCancelled extends Error {
 
 type Target = AutodlAccess & { uuid: string };
 
+// 出图那台存在设置的 comfy.autodl，生成视频那台存在 comfy.videoAutodl；name 用在提示里
+export type AutodlRole = 'images' | 'videos';
+// noGpu 是开机时那台主机没有空闲显卡时怎么办
+const ROLES = {
+  images: { key: 'autodl', name: 'AutoDL 实例', choose: '选好实例', lan: '，或者先用局域网那台', noGpu: '去设置里另选一台实例，或者先用局域网那台，也可以过一会再开' },
+  videos: { key: 'videoAutodl', name: '生成视频用的 AutoDL 实例', choose: '选好生成视频用的实例', lan: '', noGpu: '去设置里把「生成视频用的实例」换成另一台，也可以过一会再开' },
+} as const;
+
 export type Autodl = ReturnType<typeof createAutodl>;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 5000, bootTimeoutMs = 5 * 60_000, minuteMs = 60_000 }: AutodlOptions = {}) {
+export function createAutodl(
+  configDir: string,
+  { api = AUTODL_API, pollMs = 5000, bootTimeoutMs = 5 * 60_000, minuteMs = 60_000 }: AutodlOptions = {},
+  role: AutodlRole = 'images',
+) {
+  const { key, name, choose, lan, noGpu } = ROLES[role];
+  const unset = `先在设置里填 AutoDL 的开发者 Token、${choose}`;
   let state: AutodlState = {
     state: 'unset',
     raw: null,
@@ -57,7 +72,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
   // 本机的 Token、工作文件夹里选的实例和空闲多久关机。换了实例，前一个的事都不算了
   async function target(): Promise<Target | null> {
     const { workFolder, autodlToken } = await readComfyConfig(configDir);
-    const settings = workFolder ? (await readSettings(workFolder)).comfy.autodl : DEFAULT_AUTODL;
+    const settings = workFolder ? (await readSettings(workFolder)).comfy[key] : DEFAULT_AUTODL;
     if (settings.instanceUuid !== uuid) {
       uuid = settings.instanceUuid;
       url = null;
@@ -141,7 +156,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
   async function startBoot(signal: AbortSignal): Promise<string> {
     if (stopping) await stopping.done.catch(() => {});
     const t = await target();
-    if (!t) throw new AutodlError('先在设置里填 AutoDL 的开发者 Token、选好实例');
+    if (!t) throw new AutodlError(unset);
     const started = Date.now();
     const waited = bootTimeoutMs >= 60_000 ? `${Math.round(bootTimeoutMs / 60_000)} 分钟` : `${Math.round(bootTimeoutMs / 1000)} 秒`;
     const late = () => Date.now() - started >= bootTimeoutMs;
@@ -159,18 +174,20 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
       while (raw !== 'running') {
         if (raw === 'shutdown' && !sent) {
           if (signal.aborted) throw new BootCancelled();
-          await powerOn(t, t.uuid);
+          await powerOn(t, t.uuid).catch((err: unknown) => {
+            throw err instanceof AutodlError && err.noGpu ? new AutodlError(`这台所在的主机没有空闲的显卡，${err.message}。${noGpu}`) : err;
+          });
           sent = true;
           publish({ byApp: true });
         }
-        if (late()) throw new AutodlError(`等了 ${waited}还没开好：实例状态一直是「${raw}」。可以再试一次，或者先用局域网那台`);
+        if (late()) throw new AutodlError(`等了 ${waited}还没开好：实例状态一直是「${raw}」。可以再试一次${lan}`);
         await sleep(pollMs);
         raw = await instanceStatus(t, t.uuid);
         publish({ raw });
       }
       url = await comfyAddress(t, t.uuid);
       for (let problem = await unreachable(url); problem && !signal.aborted; problem = await unreachable(url)) {
-        if (late()) throw new AutodlError(`等了 ${waited}还没开好：实例开了，但上面的 ComfyUI 一直连不上（${problem}）。可以再试一次，或者先用局域网那台`);
+        if (late()) throw new AutodlError(`等了 ${waited}还没开好：实例开了，但上面的 ComfyUI 一直连不上（${problem}）。可以再试一次${lan}`);
         await sleep(pollMs);
       }
       // 点了「别开了」以后才开好的，马上关掉
@@ -231,7 +248,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
   // 设置里、顶上的状态里点的开机关机，都不等开好、关好。正在开机时点关机就是「别开了」
   async function power(on: boolean): Promise<AutodlState> {
     const t = await target();
-    if (!t) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好实例');
+    if (!t) throw new HttpError(400, unset);
     if (on) {
       if (!boot && state.state !== 'running') publish({ state: 'booting', since: Date.now(), error: null });
       void ensureReady().catch(() => {});
@@ -283,7 +300,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
       return;
     }
     await shutDown(t).done.catch((err: Error) => {
-      console.error('AutoDL 空闲自动关机失败', err);
+      console.error(`${name}空闲自动关机失败`, err);
       publish({ error: `空闲自动关机没关成：${err.message}` });
     });
   }
@@ -319,7 +336,7 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
   // 传模型用：选的那个实例的 SSH 地址和密码，每次现查
   async function ssh(): Promise<SshAccess> {
     const t = await target();
-    if (!t) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好实例');
+    if (!t) throw new HttpError(400, unset);
     return sshAccess(t, t.uuid);
   }
 
@@ -346,9 +363,9 @@ export function createAutodl(configDir: string, { api = AUTODL_API, pollMs = 500
     if (!t) return null;
     try {
       await powerOff(t, t.uuid);
-      return 'AutoDL 实例是程序开的，已经让它关机了';
+      return `${name}是程序开的，已经让它关机了`;
     } catch (err) {
-      return `AutoDL 实例没关掉：${(err as Error).message}。去 AutoDL 控制台关一下`;
+      return `${name}没关掉：${(err as Error).message}。去 AutoDL 控制台关一下`;
     }
   }
 

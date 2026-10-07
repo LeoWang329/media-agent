@@ -1,5 +1,6 @@
 import type { AspectRatio, Attachment, ChatNode, Message, PromptMeta } from './types';
 import { activePath } from './versionTree';
+import { segmentCount, segmentSeconds } from './video';
 
 export type SlotSettings = { slots: string[]; duration: number; aspectRatio: AspectRatio };
 
@@ -8,6 +9,14 @@ export type SlotDiff = { systemNote?: string; attachments: Attachment[] };
 export const aspectRatioText = (ratio: AspectRatio) => (ratio === 'auto' ? '自动' : ratio);
 
 const pictureList = (numbers: number[]) => numbers.map((n) => `<Picture ${n}>`).join('、');
+
+// 时长超过 15 秒的分几段生成，说明里写上，见 docs/dev-plan.md 5.24
+function settingsNote(duration: number, ratio: AspectRatio): string {
+  const segments = segmentCount(duration);
+  return segments > 1
+    ? `视频时长 ${duration} 秒，分 ${segments} 段生成，每段约 ${segmentSeconds(duration)} 秒，相邻两段重叠约 1 秒。画面比例 ${aspectRatioText(ratio)}。`
+    : `视频时长 ${duration} 秒，画面比例 ${aspectRatioText(ratio)}。`;
+}
 
 // 发送时算这条 user 消息带哪些图、加什么说明。prev 是当前路径上的最后一条消息（不分角色），节点里还没有消息时为 null。
 // 生图节点（use 是 image）的说明不写时长和比例
@@ -22,7 +31,7 @@ export function slotDiff(
   const video = use === 'video';
 
   if (!prev) {
-    const settings = video ? `视频时长 ${cur.duration} 秒，画面比例 ${aspectRatioText(cur.aspectRatio)}。` : '';
+    const settings = video ? settingsNote(cur.duration, cur.aspectRatio) : '';
     return {
       systemNote: slots.length ? `参考图共 ${slots.length} 张，编号如下。${settings}` : `本次没有参考图。${settings}`,
       attachments: attach(all),
@@ -48,7 +57,10 @@ export function slotDiff(
     numbers = all;
     note = `参考图已重新编号，以下是当前全部 ${slots.length} 张参考图，以此为准，之前的编号作废。`;
   }
-  if (video && cur.duration !== prev.duration) note += `视频时长改为 ${cur.duration} 秒。`;
+  if (video && cur.duration !== prev.duration) {
+    const segments = segmentCount(cur.duration);
+    note += segments > 1 ? `视频时长改为 ${cur.duration} 秒，分 ${segments} 段生成。` : `视频时长改为 ${cur.duration} 秒。`;
+  }
   if (video && cur.aspectRatio !== prev.aspectRatio) note += `画面比例改为 ${aspectRatioText(cur.aspectRatio)}。`;
   return { ...(note && { systemNote: note }), attachments: attach(numbers) };
 }

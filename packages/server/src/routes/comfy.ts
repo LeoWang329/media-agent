@@ -7,8 +7,9 @@ import { readComfyConfig, requireWorkFolder } from '../config';
 import { HttpError } from '../httpError';
 import { readSettings } from '../store/settings';
 
-// 局域网那台 ComfyUI 和 AutoDL 实例：测试连接、读下拉选项、列实例、开机关机，见 docs/dev-plan.md 5.17
-export function comfyRoutes(configDir: string, autodl: Autodl): express.Router {
+// 局域网那台 ComfyUI 和 AutoDL 实例：测试连接、读下拉选项、列实例、开机关机，见 docs/dev-plan.md 5.17。
+// videoAutodl 是生成视频用的那台，见 docs/dev-plan.md 5.25
+export function comfyRoutes(configDir: string, autodl: Autodl, videoAutodl: Autodl): express.Router {
   const router = express.Router();
   const settings = async () => readSettings(await requireWorkFolder(configDir));
 
@@ -69,9 +70,22 @@ export function comfyRoutes(configDir: string, autodl: Autodl): express.Router {
   });
 
   router.post('/comfy/autodl/power', async (req, res) => {
-    if (typeof req.body?.on !== 'boolean') throw new HttpError(400, '要说开机还是关机：{on: true} 或 {on: false}');
-    res.json(await autodl.power(req.body.on));
+    res.json(await autodl.power(powerOn(req.body)));
+  });
+
+  router.get('/comfy/video/status', async (_req, res) => {
+    res.json(await videoAutodl.refresh());
+  });
+
+  router.post('/comfy/video/power', async (req, res) => {
+    res.json(await videoAutodl.power(powerOn(req.body)));
   });
 
   return router;
+}
+
+function powerOn(body: unknown): boolean {
+  const on = (body as { on?: unknown } | undefined)?.on;
+  if (typeof on !== 'boolean') throw new HttpError(400, '要说开机还是关机：{on: true} 或 {on: false}');
+  return on;
 }
