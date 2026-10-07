@@ -110,7 +110,7 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const settings = await readSettings(work);
       // 设了只带最近几轮的，更前面的不发，见 docs/dev-plan.md 5.4
       const { path, kept, dropped } = recentTurns(ancestorsOf(node, assistant.parentId!), effectiveTurnLimit(node, settings), node.kind);
-      const messages = composeMessages(path, meta.body, await readFormatRequirement(node.kind), await llmImageUrls(work, canvasId, path));
+      const messages = composeMessages(path, node.messages, meta.body, await readFormatRequirement(node.kind), await llmImageUrls(work, canvasId, path));
       const level = thinkingLevelFor(settings.thinking, 'chat');
       assistant = {
         ...assistant,

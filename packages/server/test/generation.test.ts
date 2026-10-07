@@ -352,6 +352,10 @@ describe('提示词框', () => {
     expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes[0].summary).toBe('改过的概述');
 
     expect((await t.call('POST', `${nodeUrl}/messages/${reply.id}/edit-prompt`, { promptIndex: 3, text: 'x' })).status).toBe(404);
+
+    // 改完接着发：模型写的那一版和改过的框各算一条，历史里多出改过的那一条
+    const { reply: next } = await send('再写一个', edited.id);
+    expect(next.text).toContain('历史消息 4 条');
   });
 
   it('翻译：只把框里的提示词和要求发给模型，译文存进回复；同一个框同一种语言再翻就换掉；手动改了这个框，新版本不带它的译文', async () => {

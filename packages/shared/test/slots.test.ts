@@ -116,7 +116,7 @@ describe('composeMessages 带图', () => {
       { ...base, id: 'a2', parentId: 'u2', role: 'assistant', text: '第二版', slotSnapshot: ['a', 'b'], duration: 8 },
       { ...base, id: 'u3', parentId: 'a2', role: 'user', text: '长一点', slotSnapshot: ['a', 'b'], duration: 12, ...longer },
     ];
-    const messages = composeMessages(path, '提示词', '格式', (id) => `data:${id}`);
+    const messages = composeMessages(path, {}, '提示词', '格式', (id) => `data:${id}`);
     expect(messages[1]).toEqual({
       role: 'user',
       content: [

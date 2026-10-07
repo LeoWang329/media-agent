@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activePath, addMessage, composeMessages, directionDraft, editedUserMessage, forkChain, handwrittenMessage, switchVersion, versionsOf } from '../src';
+import { activePath, addMessage, composeMessages, directionDraft, editedPromptMessage, editedUserMessage, forkChain, handwrittenMessage, parseReply, switchVersion, versionsOf } from '../src';
 import type { ChatNode, Message } from '../src';
 
 let clock = 0;
@@ -92,7 +92,7 @@ describe('composeMessages', () => {
       message('a1b', 'u1', 'assistant', { text: '第一版' }),
       message('u2', 'a1b', 'user', { text: '改一下' }),
     ];
-    expect(composeMessages(path, '系统提示词\n', '\n格式要求\n', (id) => id)).toEqual([
+    expect(composeMessages(path, {}, '系统提示词\n', '\n格式要求\n', (id) => id)).toEqual([
       { role: 'system', content: '系统提示词\n\n\n格式要求' },
       { role: 'user', content: [{ type: 'text', text: '写一个' }] },
       { role: 'assistant', content: '第一版' },
@@ -107,10 +107,35 @@ describe('composeMessages', () => {
     expect(written.parsed?.prompts).toEqual([{ index: 0, text: '1girl, solo,\nred hair', summary: expect.any(String) }]);
 
     const path = [message('u1', null, 'user', { text: '写一个' }), message('a1', 'u1', 'assistant', { text: '第一版' }), written, message('u2', 'h1', 'user', { text: '优化一下' })];
-    expect(composeMessages(path, '系统提示词', '格式要求', (id) => id).slice(2)).toEqual([
+    expect(composeMessages(path, {}, '系统提示词', '格式要求', (id) => id).slice(2)).toEqual([
       { role: 'assistant', content: '第一版' },
       { role: 'user', content: '我自己写了一个框：\n<prompt>\n1girl, solo,\nred hair\n</prompt>' },
       { role: 'user', content: [{ type: 'text', text: '优化一下' }] },
     ]);
+  });
+
+  it('手动改过的框：先发模型写的那一版，再当成用户说的话发改过的框全文；改过几次的和模型写的那版比', () => {
+    const reply = ['<title>两个方向</title>', '<prompt label="方向一">', '镜头贴地仰拍', '</prompt>', '<prompt label="方向二">', '正面中景', '</prompt>', '要改告诉我'].join('\n');
+    const original = message('a1', 'u1', 'assistant', { text: reply, parsed: parseReply(reply) });
+    const once = editedPromptMessage(original, 0, '镜头从脚边升到上身', 'a1e', '2026-10-07T00:00:00.000Z')!;
+    const twice = editedPromptMessage(once, 1, '正面中景\n她捂住胸口', 'a1f', '2026-10-07T00:00:01.000Z')!;
+    const tree = build(message('u1', null, 'user', { text: '写两个' }), original, once, twice, message('u2', 'a1f', 'user', { text: '第二个再慌一点' }));
+    expect(composeMessages(activePath(tree), tree.messages, '系统提示词', '格式要求', (id) => id).slice(2)).toEqual([
+      { role: 'assistant', content: reply },
+      {
+        role: 'user',
+        content: [
+          '我手动改了你上面这条回复里的框，改完是这样：',
+          '第 1 个框（方向一）：\n<prompt>\n镜头从脚边升到上身\n</prompt>',
+          '第 2 个框（方向二）：\n<prompt>\n正面中景\n她捂住胸口\n</prompt>',
+          '之后在我改的这一版上接着改，我改过的地方不要改回去。',
+        ].join('\n\n'),
+      },
+      { role: 'user', content: [{ type: 'text', text: '第二个再慌一点' }] },
+    ]);
+
+    // 改回和原来一样，就不多发那一条
+    const back = editedPromptMessage(original, 0, '镜头贴地仰拍', 'a1g', '2026-10-07T00:00:02.000Z')!;
+    expect(composeMessages([back], { a1: original, a1g: back }, '', '', (id) => id).slice(1)).toEqual([{ role: 'assistant', content: reply }]);
   });
 });

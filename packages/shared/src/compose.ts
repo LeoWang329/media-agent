@@ -44,9 +44,27 @@ export function recentTurns(path: Message[], limit: TurnLimit, kind: NodeKind): 
   return { path: [{ ...first, systemNote, attachments }, ...path.slice(starts[dropped] + 1)], kept: starts.length - dropped, dropped };
 }
 
-// path 是从第一条消息到本次要回复的那条 user 消息；imageUrl 把 imageId 换成发给模型的图片地址
+// 手动改过的版本，顺着 editedFromMessageId 往回找到模型写的那一版；改过几次的也找得到
+function modelVersion(message: Message, byId: Record<string, Message>): Message {
+  let version = message;
+  while (version.editedFromMessageId && byId[version.editedFromMessageId]) version = byId[version.editedFromMessageId];
+  return version;
+}
+
+// 和模型写的那一版比，列出改过的框的全文；一个都没改就是 null
+function editNote(edited: Message, original: Message): string | null {
+  const before = original.parsed?.prompts ?? [];
+  const changed = (edited.parsed?.prompts ?? []).filter((box, i) => box.text !== before[i]?.text);
+  if (!changed.length) return null;
+  const boxes = changed.map((box) => `第 ${box.index + 1} 个框${box.label ? `（${box.label}）` : ''}：\n<prompt>\n${box.text}\n</prompt>`);
+  return ['我手动改了你上面这条回复里的框，改完是这样：', ...boxes, '之后在我改的这一版上接着改，我改过的地方不要改回去。'].join('\n\n');
+}
+
+// path 是从第一条消息到本次要回复的那条 user 消息；byId 是节点里的全部消息，用来找手动改过的版本是从哪一版改的；
+// imageUrl 把 imageId 换成发给模型的图片地址
 export function composeMessages(
   path: Message[],
+  byId: Record<string, Message>,
   systemPrompt: string,
   formatRequirement: string,
   imageUrl: (imageId: string) => string,
@@ -59,8 +77,12 @@ export function composeMessages(
       // 自己写的框不是模型写的，当成用户说的话发，模型才知道是用户写的
       messages.push({ role: 'user', content: `我自己写了一个框：\n${message.text}` });
     } else if (!message.error && message.text) {
-      // 失败的回复跳过；停得太早一个字都没收到的也跳过，空内容有的接口会报错
-      messages.push({ role: 'assistant', content: message.text });
+      // 失败的回复跳过；停得太早一个字都没收到的也跳过，空内容有的接口会报错。
+      // 手动改过的：先发模型写的那一版，再把改过的框当成用户说的话发，模型才知道哪些是用户特意改的，之后不改回去
+      const original = modelVersion(message, byId);
+      messages.push({ role: 'assistant', content: original.text });
+      const note = original === message ? null : editNote(message, original);
+      if (note) messages.push({ role: 'user', content: note });
     }
   }
   return messages;
