@@ -59,7 +59,7 @@ function Collage() {
     if (!pickFolder) return setPickFiles([]);
     let dropped = false;
     api<AssetFile[]>(`/assets/list?${new URLSearchParams({ folder: pickFolder })}`).then(
-      (files) => !dropped && setPickFiles(sortAssets(files.filter((f) => f.supported), useAssetStore.getState().sort)),
+      (files) => !dropped && setPickFiles(sortAssets(files.filter((f) => f.supported && f.kind === 'image'), useAssetStore.getState().sort)),
       (err: Error) => !dropped && (setPickFiles([]), toast(err.message, { tone: 'danger' })),
     );
     return () => {

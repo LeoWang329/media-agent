@@ -7,6 +7,7 @@ import {
   VIDEO_DURATION,
   VIDEO_MEGAPIXELS,
   VIDEO_UPSCALES,
+  MAX_MEDIA,
   type AspectRatio,
   type CanvasNodeLayout,
   type ControlSettings,
@@ -15,6 +16,7 @@ import {
   type ImageRating,
   type ImageSettings,
   type LoraTarget,
+  type MediaSlot,
   type NodeKind,
   type RefImage,
   type TagWeighting,
@@ -86,6 +88,47 @@ export function slots(value: unknown): string[] {
   return value;
 }
 
+// 视频和音频槽位，见 docs/dev-plan.md 5.31：视频、音频各最多 3 个，排成视频在前、音频在后
+export function mediaSlots(value: unknown): MediaSlot[] {
+  if (!Array.isArray(value)) throw new HttpError(400, '视频和音频槽位格式不对');
+  const slots = value.map((item): MediaSlot => {
+    const fields = (item ?? {}) as Record<string, unknown>;
+    const mediaId = uuid(fields.mediaId);
+    const seconds = finiteNumber(fields.seconds, '视频、音频的长度');
+    const start = finiteNumber(fields.start, '从第几秒开始');
+    if (seconds <= 0 || start < 0 || start >= seconds) throw new HttpError(400, '从第几秒开始要在 0 到这段的长度之间');
+    if (fields.kind === 'video') {
+      const use = choice(fields.use, '视频怎么用', ['picture', 'both', 'sound'] as const);
+      const end = fields.end === undefined ? undefined : finiteNumber(fields.end, '到第几秒');
+      if (end !== undefined && (end <= start || end > seconds)) throw new HttpError(400, '到第几秒要比开始的秒数大，不超过这段的长度');
+      return { kind: 'video', mediaId, seconds, start, ...(end !== undefined && { end }), use, ...(fields.frame !== undefined && { frame: uuid(fields.frame) }) };
+    }
+    if (fields.kind === 'audio') return { kind: 'audio', mediaId, seconds, start, use: choice(fields.use, '音频怎么用', ['voice', 'dub'] as const) };
+    throw new HttpError(400, '视频和音频槽位格式不对');
+  });
+  const videos = slots.filter((slot) => slot.kind === 'video');
+  const audios = slots.filter((slot) => slot.kind === 'audio');
+  if (videos.length > MAX_MEDIA.video || audios.length > MAX_MEDIA.audio) throw new HttpError(400, `视频、音频各最多放 ${MAX_MEDIA.video} 个`);
+  return [...videos, ...audios];
+}
+
+// 放进来的视频、音频多长、宽高、有没有声音，浏览器读的；从文件夹拖进来的走查询参数，是字符串
+export function mediaMeta(fields: Record<string, unknown>): { seconds: number; width?: number; height?: number; hasAudio?: boolean } {
+  const number = (value: unknown, what: string) => finiteNumber(typeof value === 'string' && value !== '' ? Number(value) : value, what);
+  const seconds = number(fields.seconds, '长度');
+  if (seconds <= 0) throw new HttpError(400, '长度格式不对');
+  const size = (value: unknown, what: string) => {
+    if (value === undefined || value === '') return undefined;
+    const n = number(value, what);
+    if (!Number.isInteger(n) || n <= 0) throw new HttpError(400, `${what}格式不对`);
+    return n;
+  };
+  const width = size(fields.width, '宽');
+  const height = size(fields.height, '高');
+  const hasAudio = fields.hasAudio === undefined || fields.hasAudio === '' ? undefined : fields.hasAudio === true || fields.hasAudio === 'true' || fields.hasAudio === '1';
+  return { seconds, ...(width && height && { width, height }), ...(hasAudio !== undefined && { hasAudio }) };
+}
+
 // 视频节点的时长，超过 15 秒的分段生成，见 docs/dev-plan.md 5.24
 export function duration(value: unknown): number {
   const { min, max } = VIDEO_DURATION;
@@ -126,7 +169,7 @@ function side(value: unknown, what: string): number {
   return value;
 }
 
-function integer(value: unknown, what: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
+export function integer(value: unknown, what: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new HttpError(400, max === Number.MAX_SAFE_INTEGER ? `${what}要是不小于 ${min} 的整数` : `${what}要是 ${min} 到 ${max} 的整数`);
   }
@@ -146,13 +189,7 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (fields.vae !== undefined) next.vae = text(fields.vae, 'VAE');
   if (fields.loraTarget !== undefined) next.loraTarget = choice(fields.loraTarget, 'LoRA 作用在哪', LORA_TARGETS);
   if (fields.weighting !== undefined) next.weighting = choice(fields.weighting, '权重算法', WEIGHTINGS);
-  if (fields.loras !== undefined) {
-    if (!Array.isArray(fields.loras)) throw new HttpError(400, 'LoRA 格式不对');
-    next.loras = fields.loras.map((lora) => {
-      const { name, strength } = (lora ?? {}) as Record<string, unknown>;
-      return { name: nonEmptyText(name, 'LoRA 名字'), strength: finiteNumber(strength, 'LoRA 强度') };
-    });
-  }
+  if (fields.loras !== undefined) next.loras = loraList(fields.loras);
   if (fields.steps !== undefined) next.steps = integer(fields.steps, '步数', 1);
   if (fields.cfg !== undefined) {
     next.cfg = finiteNumber(fields.cfg, 'CFG');
@@ -178,6 +215,15 @@ function between(value: unknown, what: string, min: number, max: number): number
   return n;
 }
 
+// 挂的几个 LoRA，各带强度；出图、生成视频共用
+function loraList(value: unknown): { name: string; strength: number }[] {
+  if (!Array.isArray(value)) throw new HttpError(400, 'LoRA 格式不对');
+  return value.map((lora) => {
+    const { name, strength } = (lora ?? {}) as Record<string, unknown>;
+    return { name: nonEmptyText(name, 'LoRA 名字'), strength: finiteNumber(strength, 'LoRA 强度') };
+  });
+}
+
 function oneOf(value: unknown, what: string, choices: number[]): number {
   if (!choices.includes(value as number)) throw new HttpError(400, `${what}只能是 ${choices.join('、')}`);
   return value as number;
@@ -191,6 +237,9 @@ export function videoSettings(value: unknown, base: VideoSettings): VideoSetting
   if (fields.megapixels !== undefined) next.megapixels = oneOf(fields.megapixels, '一采大小', VIDEO_MEGAPIXELS);
   if (fields.upscale !== undefined) next.upscale = oneOf(fields.upscale, '放大倍数', VIDEO_UPSCALES);
   if (fields.seed !== undefined) next.seed = fields.seed === null ? null : integer(fields.seed, '种子', 0);
+  if (fields.model !== undefined) next.model = nonEmptyText(fields.model, '主模型');
+  if (fields.speed !== undefined) next.speed = choice(fields.speed, '加速还是不加速', ['fast', 'full'] as const);
+  if (fields.loras !== undefined) next.loras = loraList(fields.loras);
   return next;
 }
 

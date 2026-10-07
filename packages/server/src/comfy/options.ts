@@ -1,4 +1,4 @@
-import { checkpointFamily, type ComfyOptions, type Family } from '@media-agent/shared';
+import { checkpointFamily, isVideoModel, type ComfyOptions, type Family, type VideoOptions } from '@media-agent/shared';
 import { nodeInfo, objectInfo, type ObjectInfo } from './client';
 
 // object_info 按地址缓存，点「刷新」或换了地址才重读，见 docs/dev-plan.md 5.17
@@ -10,6 +10,8 @@ const MODEL_NODES = [
   'CheckpointLoaderSimple',
   'VAELoader',
   'LoraLoader',
+  'LoraLoaderModelOnly',
+  'UNETLoader',
   'UpscaleModelLoader',
   'UltralyticsDetectorProvider',
   'SAMLoader',
@@ -50,6 +52,12 @@ function comboOptions(info: ObjectInfo, nodeType: string, input: string): string
 
 // 这台 ComfyUI 上的底模文件名
 export const comfyCheckpoints = (info: ObjectInfo) => comboOptions(info, 'CheckpointLoaderSimple', 'ckpt_name');
+
+// 生成视频那台：主模型只列 minimax/ 下的 H3 模型，LoRA 列 LoraLoaderModelOnly 能选的
+export const videoOptions = (info: ObjectInfo): VideoOptions => ({
+  models: comboOptions(info, 'UNETLoader', 'unet_name').filter(isVideoModel),
+  loras: comboOptions(info, 'LoraLoaderModelOnly', 'lora_name'),
+});
 
 export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | null>): ComfyOptions {
   return {

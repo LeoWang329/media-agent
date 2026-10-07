@@ -4,6 +4,7 @@ import {
   hasUnsentSettings,
   IMAGE_SIZES,
   imageSizeFits,
+  MEDIA_EXTENSIONS,
   roundSize,
   segmentCount,
   SIZE_LIMITS,
@@ -29,6 +30,7 @@ import { copyOnlyNote, processedNote } from './imageInfo';
 import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
+import { MediaSlots } from './MediaSlots';
 import { DurationPop, VideoGenButton } from './VideoSettings';
 
 const RATIOS: AspectRatio[] = ['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'auto'];
@@ -38,6 +40,10 @@ const CUSTOM_SIZE = 'custom';
 
 // 输入框：删槽位里的图时要看输入框里有没有引用它
 let composer: { nodeId: string; editor: Editor } | null = null;
+
+// 电脑里选文件：视频节点也能选视频和音频，见 docs/dev-plan.md 5.31
+const IMAGE_ACCEPT = '.jpg,.jpeg,.png,.webp,.heic,.heif,.gif';
+const VIDEO_NODE_ACCEPT = [IMAGE_ACCEPT, ...MEDIA_EXTENSIONS.video, ...MEDIA_EXTENSIONS.audio].join(',');
 
 // 程序处理过也救不回来的极端长条图：H3 会拒收
 const misfitNote = (image: { width: number; height: number }) => `尺寸不符：现在是 ${image.width}×${image.height}，H3 要求每边在 256 到 5760 像素之间`;
@@ -61,7 +67,7 @@ export function Dock({ node }: { node: ChatNode }) {
         </button>
         <button type="button" className="btn btn-ghost btn-sm" id="slotLocal" data-od-id="btn-slot-from-disk" onClick={() => fileInput.current?.click()}>
           <Icon name="folder" />
-          <span className="hide-sm">电脑里的图</span>
+          <span className="hide-sm">{use === 'image' ? '电脑里的图' : '电脑里的文件'}</span>
         </button>
         <button type="button" className="btn btn-ghost btn-sm" id="slotCollage" data-od-id="btn-collage" onClick={() => useOverlays.setState({ collage: true })}>
           <Icon name="grid" />
@@ -69,12 +75,13 @@ export function Dock({ node }: { node: ChatNode }) {
         </button>
       </div>
       <Slots node={node} />
+      {use === 'video' && <MediaSlots node={node} />}
       <Composer node={node} image={use === 'image'} />
       <input
         ref={fileInput}
         type="file"
         id="localFile"
-        accept=".jpg,.jpeg,.png,.webp,.heic,.heif,.gif"
+        accept={use === 'image' ? IMAGE_ACCEPT : VIDEO_NODE_ACCEPT}
         multiple
         hidden
         onChange={(e) => {

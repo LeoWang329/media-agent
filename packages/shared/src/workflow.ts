@@ -8,6 +8,7 @@ export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 export const PLUGIN_OF: Record<string, string> = {
   FaceDetailer: 'ComfyUI-Impact-Pack',
   SAMLoader: 'ComfyUI-Impact-Pack',
+  RemoveNoiseMask: 'ComfyUI-Impact-Pack',
   UltralyticsDetectorProvider: 'ComfyUI-Impact-Subpack',
   AIO_Preprocessor: 'comfyui_controlnet_aux',
   BNK_CLIPTextEncodeAdvanced: 'ComfyUI_ADV_CLIP_emb',
@@ -15,9 +16,15 @@ export const PLUGIN_OF: Record<string, string> = {
   MMH3CondSelect: 'ComfyUI-MMH3Tools',
   MMH3LoopingSampler: 'ComfyUI-MMH3Tools',
   MMH3StreamingSave: 'ComfyUI-MMH3Tools',
+  MMH3TrimAV: 'ComfyUI-MMH3Tools',
+  MMH3ConcatAV: 'ComfyUI-MMH3Tools',
+  MiniMaxH3NativeLatentCheckpointSaveT8Advanced: 'comfyui-minimax-h3-audio-T8',
+  MiniMaxH3NativeLatentCheckpointLoadT8Advanced: 'comfyui-minimax-h3-audio-T8',
   MiniMaxLowVRAMAttention: 'ComfyUI-KJNodes',
   MiniMaxChunkFeedForward: 'ComfyUI-KJNodes',
+  ImageTensorList: 'ComfyUI-KJNodes',
   MinimaxH3LatentUpscaler3D: 'Comfyui_Minimax_h3_latent_Upscaler',
+  VHS_LoadVideo: 'ComfyUI-VideoHelperSuite',
 };
 export const DETAILER_NODES = ['FaceDetailer', 'UltralyticsDetectorProvider'];
 

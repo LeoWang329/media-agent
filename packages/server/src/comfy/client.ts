@@ -1,6 +1,8 @@
 import type { ComfyGraph } from '@media-agent/shared';
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream } from 'node:stream/web';
@@ -11,7 +13,7 @@ export class ComfyError extends Error {}
 
 export type ImageRef = { filename: string; subfolder: string; type: string };
 export type HistoryEntry = {
-  outputs?: Record<string, { images?: ImageRef[] }>;
+  outputs?: Record<string, { images?: ImageRef[]; text?: string[] }>;
   status?: { status_str?: string; completed?: boolean; messages?: [string, Record<string, unknown>][] };
 };
 export type ObjectInfo = Record<string, { input?: { required?: Record<string, unknown>; optional?: Record<string, unknown> } }>;
@@ -119,10 +121,17 @@ export async function uploadImage(url: string, data: Uint8Array, name: string): 
   const form = new FormData();
   form.append('image', new Blob([new Uint8Array(data)], { type: 'image/png' }), name);
   form.append('overwrite', 'true');
-  const res = await call(url, '/upload/image', { method: 'POST', body: form }, 120_000);
+  // 视频大的传得久：至少等 2 分钟，每 MB 再多等 2 秒
+  const res = await call(url, '/upload/image', { method: 'POST', body: form }, Math.max(120_000, (data.length / 1e6) * 2000));
   if (!res.ok) throw new ComfyError(`传图给 ComfyUI 失败：${res.status} ${(await res.text()).slice(0, 300)}`);
   const body = (await res.json()) as { name: string; subfolder?: string };
   return body.subfolder ? `${body.subfolder}/${body.name}` : body.name;
+}
+
+// 传一个本机文件（图，或者带的视频、音频），文件名按内容算，同一个文件传几次都是同一个名字
+export async function uploadFile(url: string, file: string): Promise<string> {
+  const data = await fs.readFile(file);
+  return uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}${path.extname(file).toLowerCase() || '.png'}`);
 }
 
 // 队列里正在跑的和排着的，按排队先后

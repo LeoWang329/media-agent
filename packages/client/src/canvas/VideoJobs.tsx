@@ -1,23 +1,32 @@
 import {
   isLiveVideo,
+  mediaSummary,
+  reshootText,
   splitSegments,
+  VIDEO_FPS,
   videoFrames,
   videoSecondsText,
+  videoImageUse,
   videoSettingsOf,
   videoSizes,
+  videoMediaOf,
   type ChatNode,
+  type MediaSlot,
   type Message,
+  type VideoImageUse,
   type VideoJob,
 } from '@media-agent/shared';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useVideoRatio } from './VideoSettings';
 import { secondsSince, useNow } from '../components/ComfyPill';
 import { useVideoStore, type VideoProgress } from '../store/videoStore';
 import { clock, fmtSize } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { useOverlays } from './overlays';
 import { againVideo, removeVideo, stopVideo, videoSrc } from './videoActions';
+import { VideoReshoot } from './VideoReshoot';
 
-// 框下面挂着的视频：点一次「生成视频」一条，按生成的先后排，见 docs/dev-plan.md 5.28
+// 框下面挂着的视频：点一次「生成视频」一条，按生成的先后排，见 docs/dev-plan.md 5.28；重拍一截出的版本挂在原片下面，见 5.30
 
 type Props = { node: ChatNode; message: Message; promptIndex: number; text: string; ro: boolean };
 
@@ -32,16 +41,34 @@ export function elapsedText(ms: number): string {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
+// 槽位的图怎么带，见 docs/dev-plan.md 5.26；视频和音频参考只在参考模式带，配音都带，见 5.31
+function carriesText(use: VideoImageUse, count: number, media: MediaSlot[]): string {
+  const used = use === 'refs' ? media : media.filter((m) => m.use === 'dub');
+  const parts = [use === 'refs' && count ? `${count} 张参考图` : '', ...mediaSummary(videoMediaOf(used, () => undefined))].filter(Boolean);
+  const first = use === 'first' && count ? '，第 1 张图当首帧' : '';
+  return `${first}${parts.length ? `，带 ${parts.join('、')}` : ''}`;
+}
+
 export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
   const jobs = boxVideos(message, promptIndex);
+  const use = videoImageUse(message.systemPromptName);
+  const sized = useVideoRatio(message.systemPromptName, message.aspectRatio, message.slotSnapshot[0]);
   if (!jobs.length) {
     if (ro) return null;
+    if (use === 'unsupported') {
+      return (
+        <div className="ig-empty meta" data-od-id="video-empty">
+          首尾帧、尾帧这两种提示词写的还不能生成视频，现在支持参考模式、图当首帧和纯文字。
+        </div>
+      );
+    }
     const segments = Math.max(1, splitSegments(text).length);
     const settings = videoSettingsOf(node.video);
-    const { finalWidth, finalHeight } = videoSizes(settings.megapixels, settings.upscale, message.aspectRatio);
+    const { finalWidth, finalHeight } = videoSizes(settings.megapixels, settings.upscale, sized);
     return (
       <div className="ig-empty meta" data-od-id="video-empty">
-        还没生成过视频。点「生成视频」按节点的生成设置生成{segments > 1 ? `，分 ${segments} 段` : ''}，约{' '}
+        还没生成过视频。点「生成视频」按节点的生成设置生成{carriesText(use, message.slotSnapshot.length, message.mediaSnapshot ?? [])}
+        {segments > 1 ? `，分 ${segments} 段` : ''}，约{' '}
         <span className="mono">{videoSecondsText(videoFrames(message.duration, segments).total)}</span>，出片{' '}
         <span className="mono">
           {finalWidth}×{finalHeight}
@@ -52,9 +79,11 @@ export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
   }
   return (
     <div className="ig-jobs" data-od-id="video-jobs">
-      {jobs.map((job) => (
-        <Video key={job.id} node={node} message={message} job={job} jobs={jobs} ro={ro} />
-      ))}
+      {jobs
+        .filter((job) => !job.parent)
+        .map((job) => (
+          <Video key={job.id} node={node} message={message} root={job} versions={jobs.filter((j) => j.parent === job.id)} jobs={jobs} ro={ro} />
+        ))}
     </div>
   );
 }
@@ -70,7 +99,7 @@ function videoLabel(job: VideoJob, jobs: VideoJob[]): string {
 const STAGE_TEXT = { encode: '编码提示词', upscale: '放大', save: '存文件' };
 
 // 在做哪一步：一采、二采写第几段第几步
-function stageText(progress: VideoProgress | undefined): string {
+export function stageText(progress: VideoProgress | undefined): string {
   if (!progress) return '正在跑';
   if (progress.stage === 'pass1' || progress.stage === 'pass2') {
     const name = progress.stage === 'pass1' ? '一采' : '二采';
@@ -80,7 +109,7 @@ function stageText(progress: VideoProgress | undefined): string {
 }
 
 // 没出完的在做什么：等开机、准备发、排第几、做到哪一步，后面跟着从点生成到现在多久
-function LiveState({ job }: { job: VideoJob }) {
+export function LiveState({ job }: { job: VideoJob }) {
   const progress = useVideoStore((s) => s.progress[job.id]);
   const position = useVideoStore((s) => s.queue[job.id]);
   const autodl = useVideoStore((s) => s.autodl);
@@ -128,19 +157,53 @@ function LiveState({ job }: { job: VideoJob }) {
   );
 }
 
-function Video({ node, message, job, jobs, ro }: { node: ChatNode; message: Message; job: VideoJob; jobs: VideoJob[]; ro: boolean }) {
+// 一条原片和它重拍出的各个版本：上面一排切换看哪一版，默认看最新的
+function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; message: Message; root: VideoJob; versions: VideoJob[]; jobs: VideoJob[]; ro: boolean }) {
   const place = { nodeId: node.id, messageId: message.id };
+  const all = [root, ...versions];
+  const [picked, setPicked] = useState<string | null>(null);
+  const job = all.find((j) => j.id === picked) ?? all.at(-1)!;
   const live = isLiveVideo(job);
-  // 播不了时看一眼文件还在不在：不在了是「已清理」
-  const [problem, setProblem] = useState<'gone' | 'unplayable' | null>(null);
+  // 播不了时看一眼文件还在不在：不在了是「已清理」。每一版各记各的
+  const [problems, setProblems] = useState<Record<string, 'gone' | 'unplayable'>>({});
+  const problem = problems[job.id] ?? null;
   const src = videoSrc(place, job);
   const { params } = job;
-  const checkFile = () => void fetch(src, { method: 'HEAD' }).then((res) => setProblem(res.status === 404 ? 'gone' : 'unplayable'), () => setProblem('unplayable'));
+  const checkFile = () => {
+    const id = job.id;
+    const set = (kind: 'gone' | 'unplayable') => setProblems((p) => ({ ...p, [id]: kind }));
+    void fetch(src, { method: 'HEAD' }).then((res) => set(res.status === 404 ? 'gone' : 'unplayable'), () => set('unplayable'));
+  };
+  const player = useRef<HTMLVideoElement>(null);
+  const seek = (frame: number) => {
+    if (!player.current) return;
+    player.current.pause();
+    player.current.currentTime = frame / VIDEO_FPS;
+  };
+  // 从视频任务小窗点过来的：切到那一版，滚到看得见，闪一下
+  const flash = useVideoStore((s) => (s.flash && all.some((j) => j.id === s.flash!.jobId) ? s.flash : null));
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!flash) return;
+    setPicked(flash.jobId);
+    ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [flash]);
 
   return (
-    <section className={`ig-job vj-job is-${job.status}`} data-video={job.id} data-od-id="video-job">
+    <section ref={ref} className={`ig-job vj-job is-${job.status}${flash ? ' is-flash' : ''}`} data-video={root.id} data-od-id="video-job">
+      {versions.length > 0 && (
+        <div className="vj-versions" role="tablist" aria-label="版本">
+          {all.map((v) => (
+            <button key={v.id} type="button" role="tab" aria-selected={v.id === job.id} className="vj-ver" data-version={v.id} onClick={() => setPicked(v.id)}>
+              {v.reshoot ? reshootText(v.reshoot.from, v.reshoot.to) : '原片'}
+              {isLiveVideo(v) && <span className="dot dot-live" />}
+              {v.status === 'failed' && <Icon name="warn" className="icon-sm" />}
+            </button>
+          ))}
+        </div>
+      )}
       <header className="ig-head">
-        <span className={`ig-kind${job.source ? ' is-derived' : ''}`}>{videoLabel(job, jobs)}</span>
+        <span className={`ig-kind${job.source || job.reshoot ? ' is-derived' : ''}`}>{job.reshoot ? reshootText(job.reshoot.from, job.reshoot.to) : videoLabel(job, jobs)}</span>
         <span className="ig-meta meta">
           <span className="mono">{clock(job.createdAt)}</span>
           {params.segments.length > 1 && <span>{params.segments.length} 段</span>}
@@ -181,8 +244,18 @@ function Video({ node, message, job, jobs, ro }: { node: ChatNode; message: Mess
             已清理：临时文件被删了，也没下载过。参数还在，可以同样参数再来
           </div>
         ) : (
-          <video className="vj-player" controls preload="metadata" src={src} style={{ aspectRatio: `${params.finalWidth} / ${params.finalHeight}` }} onError={checkFile} />
+          <video
+            ref={player}
+            key={`player-${job.id}`}
+            className="vj-player"
+            controls
+            preload="metadata"
+            src={src}
+            style={{ aspectRatio: `${params.finalWidth} / ${params.finalHeight}` }}
+            onError={checkFile}
+          />
         ))}
+      {!ro && job.status === 'done' && job.latents && problem !== 'gone' && <VideoReshoot key={`reshoot-${job.id}`} place={place} job={job} seek={seek} onStart={() => setPicked(null)} />}
       {job.status === 'done' && (
         <div className="vj-info meta">
           <span className="mono">
@@ -223,16 +296,29 @@ function Video({ node, message, job, jobs, ro }: { node: ChatNode; message: Mess
               下载
             </button>
           )}
-          <button type="button" className="btn btn-ghost btn-sm" data-vact="again" title="同一个种子，参数都照这一条" onClick={() => void againVideo(place, job, true)}>
-            <Icon name="retry" />
-            同样参数再来
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" data-vact="reseed" title="参数照这一条，随机换一个种子" onClick={() => void againVideo(place, job, false)}>
-            <Icon name="sparkles" />
-            只换种子再来
-          </button>
+          {!job.parent && (
+            <>
+              <button type="button" className="btn btn-ghost btn-sm" data-vact="again" title="同一个种子，参数都照这一条" onClick={() => void againVideo(place, job, true)}>
+                <Icon name="retry" />
+                同样参数再来
+              </button>
+              <button type="button" className="btn btn-ghost btn-sm" data-vact="reseed" title="参数照这一条，随机换一个种子" onClick={() => void againVideo(place, job, false)}>
+                <Icon name="sparkles" />
+                只换种子再来
+              </button>
+            </>
+          )}
           <span className="grow" />
-          <button type="button" className="btn btn-ghost btn-sm" data-vact="delete" title="临时文件直接删掉，下载过的那份不动" onClick={() => void removeVideo(place, job)}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            data-vact="delete"
+            title={versions.length && !job.parent ? '原片和重拍出的各个版本一起删掉；下载过的那份不动' : '临时文件直接删掉，下载过的那份不动'}
+            onClick={() => {
+              if (job.parent) setPicked(null);
+              void removeVideo(place, job);
+            }}
+          >
             <Icon name="trash" />
             删掉
           </button>

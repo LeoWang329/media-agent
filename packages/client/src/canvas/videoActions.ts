@@ -8,9 +8,10 @@ import { selectNode } from './nodeActions';
 
 // 视频节点上生成视频的操作：生成、再来、叫停、删掉，和服务端推来的变化，见 docs/dev-plan.md 5.27、5.28
 
-export type VideoPlace = { nodeId: string; messageId: string };
+// canvasId 不写是现在开着的画布；视频任务小窗里别的画布的写上
+export type VideoPlace = { nodeId: string; messageId: string; canvasId?: string };
 
-const jobsUrl = ({ nodeId, messageId }: VideoPlace) => `/canvases/${useCanvasStore.getState().canvasId}/nodes/${nodeId}/messages/${messageId}/videos`;
+const jobsUrl = ({ nodeId, messageId, canvasId = useCanvasStore.getState().canvasId! }: VideoPlace) => `/canvases/${canvasId}/nodes/${nodeId}/messages/${messageId}/videos`;
 
 // 播放的地址：临时文件清掉了服务端给下载的那份
 export const videoSrc = (place: VideoPlace, job: VideoJob) => `/api${jobsUrl(place)}/${job.id}/file`;
@@ -61,7 +62,8 @@ export function onVideoEvent(event: VideoJobEvent) {
   else if (watching.delete(event.job.id)) finished(event.nodeId, event.job);
 }
 
-async function start(place: VideoPlace, body: unknown): Promise<void> {
+// 发出去了返回 true
+async function start(place: VideoPlace, body: unknown, started = '开始生成，一分钟的视频大约要半小时'): Promise<boolean> {
   try {
     // 生成设置是先改界面再排队存的：等刚改的存好再发
     await useCanvasStore.getState().patchesSaved();
@@ -69,9 +71,11 @@ async function start(place: VideoPlace, body: unknown): Promise<void> {
     putVideo(place, job);
     if (isLiveVideo(job)) watching.add(job.id);
     const running = useVideoStore.getState().autodl?.state === 'running';
-    toast(running ? '开始生成，一分钟的视频大约要半小时' : '生成视频用的 AutoDL 实例关着，先开机，开好了再生成。开机一般要一两分钟');
+    toast(running ? started : '生成视频用的 AutoDL 实例关着，先开机，开好了再生成。开机一般要一两分钟');
+    return true;
   } catch (err) {
     failed(err);
+    return false;
   }
 }
 
@@ -81,6 +85,10 @@ export const generateVideo = (place: VideoPlace, promptIndex: number) => start(p
 // 同样参数再来（同一个种子）、只换种子再来
 export const againVideo = (place: VideoPlace, job: VideoJob, sameSeed: boolean) => start(place, { again: { jobId: job.id, sameSeed } });
 
+// 在这一版上重拍一截：起止帧、种子（null 是随机）、改过的段的提示词，见 docs/dev-plan.md 5.30
+export type ReshootPick = { from: number; to: number; seed: number | null; prompts: Record<number, string> };
+export const reshootVideo = (place: VideoPlace, job: VideoJob, pick: ReshootPick) => start(place, { reshoot: { jobId: job.id, ...pick } }, '开始重拍这一截');
+
 export async function stopVideo(place: VideoPlace, job: VideoJob) {
   try {
     const stopped = await trackWrite(api<VideoJob>(`${jobsUrl(place)}/${job.id}/stop`, { method: 'POST' }));
@@ -89,6 +97,12 @@ export async function stopVideo(place: VideoPlace, job: VideoJob) {
   } catch (err) {
     failed(err);
   }
+}
+
+// 视频任务小窗里点一条：打开那个节点，框下面那条视频闪一下；别的画布的先跳过去，见 docs/dev-plan.md 5.29
+export async function showVideo(nodeId: string, jobId: string) {
+  await selectNode(nodeId);
+  useVideoStore.getState().flashVideo(jobId);
 }
 
 export async function removeVideo(place: VideoPlace, job: VideoJob) {

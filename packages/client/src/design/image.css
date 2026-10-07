@@ -381,6 +381,7 @@ details.think[open] > summary .chev { transform: rotate(180deg); }
 .ib-form-k { flex-basis: 100%; font-size: 12px; font-weight: 600; color: var(--muted); }
 .ib-pass { overflow-wrap: anywhere; }
 /* 设置「AutoDL 上的模型」 */
+.mx-host { margin-bottom: 12px; }
 .mx-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 16px; }
 .mx-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13.5px; }
 .mx-group { display: flex; flex-direction: column; gap: 6px; }

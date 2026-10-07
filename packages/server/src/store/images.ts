@@ -146,10 +146,14 @@ async function processForH3(original: Buffer): Promise<{ data: Buffer; ext: Imag
 export async function llmImageUrls(work: string, canvasId: string, messages: Message[]): Promise<(imageId: string) => string> {
   const images = await readImages(work, canvasId);
   const urls = new Map<string, string>();
-  for (const attachment of messages.flatMap((m) => m.attachments ?? [])) {
+  const all = messages.flatMap((m) => [
+    ...(m.attachments ?? []).map((a) => ({ imageId: a.imageId, label: `<Picture ${a.picture}> 这张图` })),
+    ...(m.frames ?? []).map((f) => ({ imageId: f.imageId, label: `<Video ${f.video}> 的截帧` })),
+  ]);
+  for (const attachment of all) {
     if (urls.has(attachment.imageId)) continue;
     const image = images[attachment.imageId];
-    if (!image) throw new Error(`找不到 <Picture ${attachment.picture}> 这张图的记录`);
+    if (!image) throw new Error(`找不到${attachment.label}的记录`);
     const data = await fs.readFile(llmImagePath(work, canvasId, image));
     urls.set(attachment.imageId, `data:image/jpeg;base64,${data.toString('base64')}`);
   }

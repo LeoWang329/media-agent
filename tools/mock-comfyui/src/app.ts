@@ -12,6 +12,7 @@ import { createMockSsh, type MockSsh } from './ssh';
 // 正面提示词含「慢」的每步走得慢（测叫停），含「报错」的跑到一半出错，含「显存」的报显存不够。
 // 出的图多大：有 ImageScale 的按它，不然按空白画布，不然按 LoadImage 那张传上来的图。
 // 有 MMH3LoopingSampler 的按长视频跑，出的是 fixtures/video.mp4，提示词的规矩同上，见 runVideo。
+// 长视频里存一采、二采结果的节点，在假的那台上写一个小文件；读回存档的节点，那台上没有这个文件就出错
 // 假的 AutoDL 接口也挂在这里，见 ./autodl；它上面的 SSH 见 ./ssh，要另外 listen
 
 type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
@@ -20,7 +21,7 @@ type Run = { task: Task; samplerId: string; timer?: NodeJS.Timeout; started: [st
 type ImageRef = { filename: string; subfolder: string; type: string };
 type HistoryEntry = {
   prompt: [number, string, Graph, { client_id: string }, string[]];
-  outputs: Record<string, { images: ImageRef[]; animated?: boolean[] }>;
+  outputs: Record<string, { images?: ImageRef[]; animated?: boolean[]; text?: string[] }>;
   status: { status_str: 'success' | 'error'; completed: boolean; messages: [string, Record<string, unknown>][] };
 };
 
@@ -30,6 +31,9 @@ export type MockComfy = { server: http.Server; autodl: MockAutodl; ssh: MockSsh;
 
 const STEPS = 5;
 
+// 生成视频那台上存一采、二采结果的文件夹
+const LATENT_DIR = '/root/ComfyUI/output/MiniMaxH3/latent_checkpoints';
+
 // 长视频出的是这个很小的真 mp4（VP9，Playwright 带的 Chromium 也能播）
 const VIDEO = fs.readFileSync(new URL('../fixtures/video.mp4', import.meta.url));
 
@@ -37,7 +41,7 @@ const MODELS = {
   checkpoints: ['il-test.safetensors', 'pony-test.safetensors'],
   // 后两个和下面三样是长视频用的，文件名照 AutoDL 上 H3 那台
   vae: ['sdxl_vae.safetensors', 'minimax_h3_audio_vae_fp32.safetensors', 'minimax_h3_video_vae_fp16.safetensors'],
-  unet: ['minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors'],
+  unet: ['minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors', 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors'],
   textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors'],
   latentUpscale: ['minimax_h3_latent_upscaler_3d_bf16.safetensors'],
   loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'],
@@ -139,7 +143,22 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   MMH3ReferenceMultiPrompt: node(
     { clip: ['CLIP'], vae: ['VAE'], audio_vae: ['VAE'], width: ['INT', {}], height: ['INT', {}], length: ['INT', {}], ref_image_size: comboV3(['match', 'max']), prompts: ['STRING', {}] },
     ['MMH3_COND_SET', 'LATENT', 'INT', 'IMAGE'],
+    false,
+    { ref_images: ['IMAGE'] },
   ),
+  ImageTensorList: node({ image1: ['IMAGE'], image2: ['IMAGE'] }, ['IMAGE']),
+  // 参考视频、参考音频、配音用的：读的文件要是传上来过的
+  VHS_LoadVideo: node(
+    { video: combo([]), force_rate: ['FLOAT', {}], custom_width: ['INT', {}], custom_height: ['INT', {}], frame_load_cap: ['INT', {}], skip_first_frames: ['INT', {}], select_every_nth: ['INT', {}] },
+    ['IMAGE', 'INT', 'AUDIO', 'VHS_VIDEOINFO'],
+    false,
+    { format: combo(['None', 'AnimateDiff', 'H3']) },
+  ),
+  LoadAudio: node({ audio: comboV3([]) }, ['AUDIO']),
+  TrimAudioDuration: node({ audio: ['AUDIO'], start_index: ['FLOAT', {}], duration: ['FLOAT', {}] }, ['AUDIO']),
+  RemoveNoiseMask: node({ samples: ['LATENT'] }, ['LATENT']),
+  EmptyAudio: node({ duration: ['FLOAT', {}], sample_rate: ['INT', {}], channels: ['INT', {}] }, ['AUDIO']),
+  AudioConcat: node({ audio1: ['AUDIO'], audio2: ['AUDIO'], direction: combo(['after', 'before']) }, ['AUDIO']),
   MMH3CondSelect: node({ cond_set: ['MMH3_COND_SET'], index: ['INT', {}] }, ['CONDITIONING', 'STRING']),
   BasicGuider: node({ model: ['MODEL'], conditioning: ['CONDITIONING'] }, ['GUIDER']),
   RandomNoise: node({ noise_seed: ['INT', {}] }, ['NOISE']),
@@ -149,13 +168,26 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
     { noise: ['NOISE'], guider: ['GUIDER'], sampler: ['SAMPLER'], sigmas: ['SIGMAS'], cond_set: ['MMH3_COND_SET'], latent: ['LATENT'], carry: comboV3(['mask', 'keyframe']) },
     ['LATENT', 'INT', 'STRING'],
     false,
-    { vae: ['VAE'], denoise_mask_mode: comboV3(['max', 'min', 'mean', 'last']) },
+    { keyframes: ['IMAGE'], vae: ['VAE'], denoise_mask_mode: comboV3(['max', 'min', 'mean', 'last']) },
   ),
   LTXVSeparateAVLatent: node({ av_latent: ['LATENT'] }, ['LATENT', 'LATENT']),
   MinimaxH3LatentUpscaler3D: node({ latent: ['*'], model_name: comboV3(MODELS.latentUpscale), device: comboV3(['cuda', 'rocm', 'cpu']), precision: comboV3(['fp32', 'fp16', 'bf16']) }, ['*']),
   LTXVConcatAVLatent: node({ video_latent: ['LATENT'], audio_latent: ['LATENT'] }, ['LATENT']),
   VAEDecodeAudio: node({ samples: ['LATENT'], vae: ['VAE'] }, ['AUDIO']),
   MMH3StreamingSave: node({ latent: ['LATENT'], vae: ['VAE'], filename_prefix: ['STRING', {}] }, ['STRING'], true, { video_encoder: comboV3(['auto', 'libx264', 'h264_nvenc']) }),
+  // 重拍一截用的：存档存取、切开、拼接、遮罩
+  MiniMaxH3NativeLatentCheckpointSaveT8Advanced: node({ av_latent: ['LATENT'], filename_prefix: ['STRING', {}], checkpoint_id: ['STRING', {}] }, ['LATENT', 'STRING', 'STRING', 'STRING', 'STRING', 'STRING'], true),
+  MiniMaxH3NativeLatentCheckpointLoadT8Advanced: node({ checkpoint_path: ['STRING', {}] }, ['LATENT', 'STRING', 'BOOLEAN', 'STRING', 'STRING', 'STRING', 'STRING', 'STRING']),
+  PreviewAny: node({ source: ['*'] }, ['STRING'], true),
+  MMH3TrimAV: node({ latent: ['LATENT'], trim_head_latents: ['INT', {}], trim_tail_latents: ['INT', {}] }, ['LATENT', 'INT', 'INT', 'STRING']),
+  MMH3ConcatAV: node({ latent_a: ['LATENT'], latent_b: ['LATENT'], trim_b_latents: ['INT', {}] }, ['LATENT']),
+  LatentCut: node({ samples: ['LATENT'], dim: comboV3(['x', 'y', 't']), index: ['INT', {}], amount: ['INT', {}] }, ['LATENT']),
+  ReplaceVideoLatentFrames: node({ destination: ['LATENT'], index: ['INT', {}] }, ['LATENT'], false, { source: ['LATENT'] }),
+  SolidMask: node({ value: ['FLOAT', {}], width: ['INT', {}], height: ['INT', {}] }, ['MASK']),
+  MaskToImage: node({ mask: ['MASK'] }, ['IMAGE']),
+  RepeatImageBatch: node({ image: ['IMAGE'], amount: ['INT', {}] }, ['IMAGE']),
+  ImageBatch: node({ image1: ['IMAGE'], image2: ['IMAGE'] }, ['IMAGE']),
+  ImageToMask: node({ image: ['IMAGE'], channel: combo(['red', 'green', 'blue', 'alpha']) }, ['MASK']),
 };
 
 // 往 AutoDL 那台传的模型也列进下拉，跟真的 ComfyUI 读 extra_model_paths.yaml 一样
@@ -200,7 +232,7 @@ function textAbove(graph: Graph, value: unknown): string {
 }
 const escapeXml = (text: string) => text.replace(/[<>&"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 
-// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里（选填的没填不管）；LoadImage 的图要是传上来过的
+// 按真 ComfyUI 的规矩检查：节点类型要有，下拉项的值要在列表里（选填的没填不管）；LoadImage 的图、读视频和音频的文件要是传上来过的
 function validate(graph: Graph, info: typeof OBJECT_INFO, uploaded: Map<string, Buffer>, hidden: Set<string>): object | null {
   for (const [id, item] of Object.entries(graph)) {
     if (!info[item.class_type] || hidden.has(item.class_type)) {
@@ -214,7 +246,14 @@ function validate(graph: Graph, info: typeof OBJECT_INFO, uploaded: Map<string, 
   const nodeErrors: Record<string, object> = {};
   for (const [id, item] of Object.entries(graph)) {
     const { required, optional = {} } = info[item.class_type].input;
-    const specs = { ...optional, ...required, ...(item.class_type === 'LoadImage' && { image: combo([...uploaded.keys()]) }) };
+    const files = combo([...uploaded.keys()]);
+    const specs = {
+      ...optional,
+      ...required,
+      ...(item.class_type === 'LoadImage' && { image: files }),
+      ...(item.class_type === 'VHS_LoadVideo' && { video: files }),
+      ...(item.class_type === 'LoadAudio' && { audio: files }),
+    };
     const errors = Object.entries(specs).flatMap(([name, spec]) => {
       const options = comboOptions(spec);
       const value = item.inputs[name];
@@ -392,7 +431,15 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
     const text = String(graph[encodeId]?.inputs.prompts ?? '');
     const chunks = text.split('\n').filter((line) => line.trim() === '|').length + 1;
     const wait = text.includes('慢') ? slowStepMs : videoStepMs;
-    const failure = text.includes('显存') ? 'CUDA out of memory. Tried to allocate 20.00 GiB' : text.includes('报错') ? 'mock-comfyui：提示词含「报错」，按约定出错' : null;
+    // 读回的存档那台上没有：一开始就出错
+    const lost = of('MiniMaxH3NativeLatentCheckpointLoadT8Advanced').find((id) => !fs.existsSync(ssh.local(`${LATENT_DIR}/${String(graph[id].inputs.checkpoint_path)}`)));
+    const failure = lost
+      ? `checkpoint not found: ${String(graph[lost].inputs.checkpoint_path)}`
+      : text.includes('显存')
+        ? 'CUDA out of memory. Tried to allocate 20.00 GiB'
+        : text.includes('报错')
+          ? 'mock-comfyui：提示词含「报错」，按约定出错'
+          : null;
     const [pass1, pass2] = of('MMH3LoopingSampler');
     const stepsOf = (id: string) => Number(linked(graph, graph[id].inputs.sigmas)?.inputs.steps ?? 3);
     const saveId = of('MMH3StreamingSave')[0] ?? pass2 ?? pass1;
@@ -429,11 +476,11 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const [type, data] = events[sent];
       sent += 1;
       sendTo(task.clientId, type, data);
-      if (failure && type === 'progress' && data.node === pass1 && data.value === 2) {
+      if (failure && (lost || (type === 'progress' && data.node === pass1 && data.value === 2))) {
         const error = {
           prompt_id: task.id,
-          node_id: pass1,
-          node_type: 'MMH3LoopingSampler',
+          node_id: lost ?? pass1,
+          node_type: lost ? 'MiniMaxH3NativeLatentCheckpointLoadT8Advanced' : 'MMH3LoopingSampler',
           executed: [],
           exception_message: failure,
           exception_type: failure.includes('CUDA') ? 'torch.OutOfMemoryError' : 'RuntimeError',
@@ -461,8 +508,17 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const ref = { filename: `${prefix.slice(slash + 1)}_${String(videoCounter).padStart(5, '0')}.mp4`, subfolder: prefix.slice(0, Math.max(0, slash)), type: 'output' };
       videos.add(ref.filename);
       const output = { images: [ref], animated: [true] };
+      const outputs: HistoryEntry['outputs'] = { [saveId]: output };
+      // 存档写进假的那台，存下的文件名照真的写进接着的 PreviewAny
+      for (const id of of('MiniMaxH3NativeLatentCheckpointSaveT8Advanced')) {
+        const name = `${String(graph[id].inputs.filename_prefix)}_${randomUUID().replace(/-/g, '').slice(0, 12)}.h3latent.safetensors`;
+        const file = ssh.local(`${LATENT_DIR}/${name}`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, 'mock latent');
+        for (const preview of of('PreviewAny')) if (linked(graph, graph[preview].inputs.source) === graph[id]) outputs[preview] = { text: [name] };
+      }
       const success = { prompt_id: task.id, timestamp: Date.now() };
-      record(task, { [saveId]: output }, true, [...run.started, ['execution_success', success]]);
+      record(task, outputs, true, [...run.started, ['execution_success', success]]);
       current = null;
       sendTo(task.clientId, 'executed', { node: saveId, display_node: saveId, output, prompt_id: task.id });
       sendTo(task.clientId, 'execution_success', success);
@@ -607,12 +663,14 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
     res.json({ instance: autodl.instance, instances: autodl.instances, calls: autodl.calls });
   });
 
-  // 测试用：假的 SSH 收到的命令、那台还剩多少空间；能改剩多少
+  // 测试用：假的 SSH 收到的命令、那台还剩多少空间、存着哪些一采二采的存档；能改剩多少、删掉几个存档
   app.get('/_ssh', (_req, res) => {
-    res.json({ commands: ssh.commands, free: ssh.state.free });
+    const dir = ssh.local(LATENT_DIR);
+    res.json({ commands: ssh.commands, free: ssh.state.free, latents: fs.existsSync(dir) ? fs.readdirSync(dir) : [] });
   });
   app.post('/_ssh', (req, res) => {
     if (typeof req.body?.free === 'number') ssh.state.free = req.body.free;
+    for (const name of req.body?.removeLatents ?? []) fs.rmSync(ssh.local(`${LATENT_DIR}/${path.basename(String(name))}`), { force: true });
     res.status(204).end();
   });
 

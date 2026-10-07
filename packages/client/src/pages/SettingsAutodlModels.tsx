@@ -3,22 +3,33 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api, type ApiError } from '../api';
 import { AutodlStateView } from '../components/ComfyPill';
-import { useComfyStore } from '../store/comfyStore';
-import { useModelStore, type Waiting } from '../store/modelStore';
+import { useComfyStore, type AutodlNow } from '../store/comfyStore';
+import { modelsUrl, reloadOptions, useModelStore, type ModelHost, type Waiting } from '../store/modelStore';
+import { useVideoStore, watchVideoJobs } from '../store/videoStore';
 import { confirmBox } from '../ui/confirm';
 import { Dialog } from '../ui/Dialog';
 import { whenDid } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { toast } from '../ui/toast';
 
-// 设置「AutoDL 上的模型」：往 AutoDL 那台传底模、LoRA 这些，从电脑传或者给链接让它下；列出自己传的，能删，见 docs/dev-plan.md 5.22
+// 设置「AutoDL 上的模型」：往 AutoDL 那台传底模、LoRA 这些，从电脑传或者给链接让它下；列出自己传的，能删，见 docs/dev-plan.md 5.22。
+// 选了生成视频用的实例时能切到那台，那台只能传 LoRA
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
 const STATE_TEXT: Record<ModelTransfer['state'], string> = { queued: '排着', running: '在传', done: '传完了', failed: '没传成', stopped: '停了' };
 
+// 这台的状态、能传哪几类
+function useHost(host: ModelHost): { autodl: AutodlNow | null; kinds: typeof MODEL_KINDS } {
+  const image = useComfyStore((s) => s.autodl);
+  const video = useVideoStore((s) => s.autodl);
+  return host === 'video' ? { autodl: video, kinds: MODEL_KINDS.filter((item) => item.kind === 'lora') } : { autodl: image, kinds: MODEL_KINDS };
+}
+
 export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
-  const autodl = useComfyStore((s) => s.autodl);
+  const host = useModelStore((s) => s.host);
+  const { autodl, kinds } = useHost(host);
+  const videoSet = useVideoStore((s) => Boolean(s.autodl && s.autodl.state !== 'unset'));
   const remote = useModelStore((s) => s.remote);
   const listError = useModelStore((s) => s.listError);
   const transfers = useModelStore((s) => s.transfers);
@@ -29,12 +40,15 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
   useEffect(() => {
     if (!workFolder) return;
     void useComfyStore.getState().checkAutodl();
+    void useVideoStore.getState().checkAutodl();
     useModelStore.getState().watch();
+    // 生成视频那台开机关机的变化
+    return watchVideoJobs();
   }, [workFolder]);
 
   useEffect(() => {
     if (workFolder && running) void useModelStore.getState().load();
-  }, [workFolder, running]);
+  }, [workFolder, running, host]);
 
   if (!workFolder) return <p className="muted">AutoDL 的实例记在工作文件夹里，先在「工作文件夹」里选一个。</p>;
 
@@ -42,10 +56,10 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
     const ok = await confirmBox({ title: `删掉「${file.path}」？`, body: '那台上的文件直接删掉，找不回来。', ok: '删除', danger: true });
     if (!ok) return;
     try {
-      await api('/comfy/autodl/models', { method: 'DELETE', body: { kind: file.kind, path: file.path } });
+      await api(modelsUrl(host), { method: 'DELETE', body: { kind: file.kind, path: file.path } });
       toast('删掉了');
       void useModelStore.getState().load();
-      void useComfyStore.getState().loadOptions();
+      reloadOptions(host);
     } catch (err) {
       failed(err);
     }
@@ -53,9 +67,11 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
 
   const shown: (ModelTransfer & { local?: boolean })[] = [
     ...transfers,
-    ...waiting.map((item): ModelTransfer & { local: boolean } => ({ id: item.id, way: 'upload', kind: item.kind, path: item.folder ? `${item.folder}/${item.name}` : item.name, done: 0, total: item.file.size, state: 'queued', local: true })),
+    ...waiting
+      .filter((item) => item.host === host)
+      .map((item): ModelTransfer & { local: boolean } => ({ id: item.id, way: 'upload', kind: item.kind, path: item.folder ? `${item.folder}/${item.name}` : item.name, done: 0, total: item.file.size, state: 'queued', local: true })),
   ];
-  const sendingFromHere = waiting.length > 0 || transfers.some((one) => one.way === 'upload' && one.state === 'running');
+  const sendingFromHere = waiting.some((item) => item.host === host) || transfers.some((one) => one.way === 'upload' && one.state === 'running');
 
   return (
     <>
@@ -63,15 +79,27 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
         <div>
           <h2>AutoDL 上的模型</h2>
           <p>
-            往 AutoDL 那台传底模、LoRA 这些，传完出图设置里就能选。从电脑传，速度看你这边的上传带宽；给链接让那台自己下，它连得上 HuggingFace 的国内镜像和 ModelScope，连不上 Civitai 和 HuggingFace
-            本站，Civitai 上的先下到电脑再传。那台上原有的模型是 AutoDL 公共模型库的，只读，这里不列。
+            {host === 'video' ? '往生成视频那台传 LoRA，传完视频节点的生成设置里就能选。' : '往 AutoDL 那台传底模、LoRA 这些，传完出图设置里就能选。'}
+            从电脑传，速度看你这边的上传带宽；给链接让那台自己下，它连得上 HuggingFace 的国内镜像和 ModelScope，连不上 Civitai 和 HuggingFace 本站，Civitai
+            上的先下到电脑再传。那台上原有的模型是 AutoDL 公共模型库的，只读，这里不列。
           </p>
         </div>
       </div>
 
+      {(videoSet || host === 'video') && (
+        <div className="seg mx-host" role="group" aria-label="哪台" id="mxHost">
+          <button type="button" aria-pressed={host === 'autodl'} onClick={() => useModelStore.getState().setHost('autodl')}>
+            出图那台
+          </button>
+          <button type="button" aria-pressed={host === 'video'} onClick={() => useModelStore.getState().setHost('video')}>
+            生成视频那台
+          </button>
+        </div>
+      )}
+
       {autodl?.state === 'unset' ? (
         <p className="muted">
-          先在 <Link to={{ hash: 'comfy' }}>ComfyUI</Link> 一节填 AutoDL 的开发者 Token、选好实例。
+          先在 <Link to={{ hash: 'comfy' }}>ComfyUI</Link> 一节填 AutoDL 的开发者 Token、选好{host === 'video' ? '生成视频用的' : ''}实例。
         </p>
       ) : (
         <>
@@ -107,7 +135,7 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
             <div className="sx-list" data-od-id="autodl-files">
               <h3 className="sx-sub">自己传的</h3>
               {!remote.files.length && <p className="muted">还没有。点上面「从电脑传」或「给链接下」。</p>}
-              {MODEL_KINDS.map(({ kind, label }) => {
+              {kinds.map(({ kind, label }) => {
                 const files = remote.files.filter((file) => file.kind === kind);
                 if (!files.length) return null;
                 return (
@@ -134,8 +162,8 @@ export function AutodlModelsTab({ workFolder }: { workFolder: string | null }) {
         </>
       )}
 
-      {form === 'upload' && <UploadDialog onClose={() => setForm(null)} />}
-      {form === 'download' && <DownloadDialog onClose={() => setForm(null)} />}
+      {form === 'upload' && <UploadDialog host={host} onClose={() => setForm(null)} />}
+      {form === 'download' && <DownloadDialog host={host} onClose={() => setForm(null)} />}
     </>
   );
 }
@@ -169,13 +197,15 @@ function TransferRow({ transfer }: { transfer: ModelTransfer & { local?: boolean
 }
 
 // 类型、子文件夹、文件名，两个窗口共用
-function WhereFields({ kind, folder, name, onKind, onFolder, onName }: { kind: ModelKind; folder: string; name: string; onKind: (kind: ModelKind) => void; onFolder: (folder: string) => void; onName: (name: string) => void }) {
+type WhereProps = { host: ModelHost; kind: ModelKind; folder: string; name: string; onKind: (kind: ModelKind) => void; onFolder: (folder: string) => void; onName: (name: string) => void };
+function WhereFields({ host, kind, folder, name, onKind, onFolder, onName }: WhereProps) {
+  const { kinds } = useHost(host);
   return (
     <>
       <label className="field">
         <span className="label">类型</span>
         <select className="select" aria-label="模型类型" value={kind} onChange={(e) => onKind(e.target.value as ModelKind)}>
-          {MODEL_KINDS.map((item) => (
+          {kinds.map((item) => (
             <option key={item.kind} value={item.kind}>
               {item.label}
             </option>
@@ -195,19 +225,18 @@ function WhereFields({ kind, folder, name, onKind, onFolder, onName }: { kind: M
 }
 
 // 关着的实例这时开机，要等一两分钟；按钮上写着
-function useBootText(): string | null {
-  const state = useComfyStore((s) => s.autodl?.state);
-  return state === 'booting' ? '正在开机…' : null;
+function useBootText(host: ModelHost): string | null {
+  return useHost(host).autodl?.state === 'booting' ? '正在开机…' : null;
 }
 
-function UploadDialog({ onClose }: { onClose: () => void }) {
+function UploadDialog({ host, onClose }: { host: ModelHost; onClose: () => void }) {
   const input = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [kind, setKind] = useState<ModelKind>('lora');
   const [folder, setFolder] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
-  const boot = useBootText();
+  const boot = useBootText(host);
 
   // 先看一眼同名的有没有、空间够不够（关着的先开机），过了才排进去
   const start = async () => {
@@ -217,15 +246,15 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
       const where = { kind, folder: folder.trim(), name: name.trim(), size: file.size };
       let replace = false;
       try {
-        await api('/comfy/autodl/models/check', { method: 'POST', body: where });
+        await api(`${modelsUrl(host)}/check`, { method: 'POST', body: where });
       } catch (err) {
         if ((err as ApiError).status !== 409) throw err;
         const ok = await confirmBox({ title: `${(err as Error).message}，换掉吗？`, body: '换掉的话，那台上原来那个传完后就没了。', ok: '换掉' });
         if (!ok) return;
         replace = true;
-        await api('/comfy/autodl/models/check', { method: 'POST', body: { ...where, replace } });
+        await api(`${modelsUrl(host)}/check`, { method: 'POST', body: { ...where, replace } });
       }
-      const item: Waiting = { id: crypto.randomUUID(), file, ...where, replace };
+      const item: Waiting = { id: crypto.randomUUID(), host, file, ...where, replace };
       useModelStore.getState().enqueue(item);
       toast(`「${item.name}」排上了，传完前别关这个页面`);
       onClose();
@@ -266,7 +295,7 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
             }}
           />
         </div>
-        <WhereFields kind={kind} folder={folder} name={name} onKind={setKind} onFolder={setFolder} onName={setName} />
+        <WhereFields host={host} kind={kind} folder={folder} name={name} onKind={setKind} onFolder={setFolder} onName={setName} />
         <p className="hint">关着的实例点「传」时先开机。传完前别关这个页面。</p>
       </div>
       <div className="dialog-foot">
@@ -281,26 +310,26 @@ function UploadDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function DownloadDialog({ onClose }: { onClose: () => void }) {
+function DownloadDialog({ host, onClose }: { host: ModelHost; onClose: () => void }) {
   const [url, setUrl] = useState('');
   const [kind, setKind] = useState<ModelKind>('lora');
   const [folder, setFolder] = useState('');
   const [name, setName] = useState('');
   const [named, setNamed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const boot = useBootText();
+  const boot = useBootText(host);
 
   const start = async () => {
     setBusy(true);
     try {
       const body = { kind, url: url.trim(), folder: folder.trim(), name: name.trim() };
       try {
-        await api('/comfy/autodl/models/download', { method: 'POST', body });
+        await api(`${modelsUrl(host)}/download`, { method: 'POST', body });
       } catch (err) {
         if ((err as ApiError).status !== 409) throw err;
         const ok = await confirmBox({ title: `${(err as Error).message}，换掉吗？`, body: '换掉的话，那台上原来那个下完后就没了。', ok: '换掉' });
         if (!ok) return;
-        await api('/comfy/autodl/models/download', { method: 'POST', body: { ...body, replace: true } });
+        await api(`${modelsUrl(host)}/download`, { method: 'POST', body: { ...body, replace: true } });
       }
       useModelStore.getState().watch();
       toast('排上了，那台自己下，这个页面能关');
@@ -333,6 +362,7 @@ function DownloadDialog({ onClose }: { onClose: () => void }) {
           />
         </label>
         <WhereFields
+          host={host}
           kind={kind}
           folder={folder}
           name={name}

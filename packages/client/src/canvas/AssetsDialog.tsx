@@ -1,6 +1,6 @@
 import { ASSET_SORT_LABELS, ASSET_SORTS, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { api, assetThumbUrl } from '../api';
+import { api, assetFileUrl, assetThumbUrl } from '../api';
 import { isUnder, useAssetStore } from '../store/assetStore';
 import { MAX_SLOTS, useCanvasStore } from '../store/canvasStore';
 import { confirmBox } from '../ui/confirm';
@@ -33,6 +33,7 @@ export function AssetsDialog() {
 function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
   const node = useCanvasStore((s) => (s.selectedId ? s.nodes[s.selectedId] : undefined));
   const images = useCanvasStore((s) => s.detail?.images);
+  const records = useCanvasStore((s) => s.detail?.media);
   const { roots, trees, scanning, folder, files, unreadable, query, results, sort } = useAssetStore();
   const [typed, setTyped] = useState('');
   const [selected, setSelected] = useState<AssetFile[]>([]);
@@ -63,6 +64,9 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
     if (path) slotOfPath.set(path, i);
   });
 
+  // 已经放进视频和音频那一排的文件
+  const placedMedia = new Set((node?.media ?? []).map((m) => records?.[m.mediaId]?.originalPath).filter(Boolean));
+
   const openFolder = (path: string) => {
     setTyped('');
     void useAssetStore.getState().search('');
@@ -71,6 +75,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
 
   const pick = (file: AssetFile) => {
     if (mode === 'browse') return toast(`${file.name} · ${fmtSize(file.size)}`);
+    if (file.kind !== 'image' && mode !== 'slots') return toast('这里只能挑图', { tone: 'warn' });
     if (mode === 'slots') {
       setSelected((list) => (list.some((f) => f.path === file.path) ? list.filter((f) => f.path !== file.path) : [...list, file]));
       return;
@@ -125,6 +130,35 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
     }
     const order = selected.findIndex((f) => f.path === file.path);
     const at = slotOfPath.get(file.path);
+    // 视频显示开头的画面，音频是个图标，见 docs/dev-plan.md 5.31
+    if (file.kind !== 'image') {
+      return (
+        <button
+          key={file.path}
+          type="button"
+          className={`tile is-${file.kind}${order >= 0 ? ' is-selected' : ''}`}
+          title={`${file.name} · ${fmtSize(file.size)}`}
+          data-od-id="asset-tile"
+          data-testid="asset-tile"
+          onClick={() => pick(file)}
+        >
+          <div className="tile-img">
+            {file.kind === 'video' ? (
+              <video className="im" src={`${assetFileUrl(file.path, file.mtime)}#t=0.1`} preload="metadata" muted />
+            ) : (
+              <span className="tile-audio">
+                <Icon name="music" />
+              </span>
+            )}
+            <span className="tag tile-kind">{file.kind === 'video' ? '视频' : '音频'}</span>
+            {mode === 'slots' && <span className="check">{order >= 0 ? order + 1 : ''}</span>}
+            {placedMedia.has(file.path) && <span className="tag in-slot">已放进来</span>}
+          </div>
+          <div className="tile-name">{file.name}</div>
+          {sub}
+        </button>
+      );
+    }
     return (
       <button
         key={file.path}
@@ -356,7 +390,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
             type="button"
             className="btn btn-primary"
             id="asConfirm"
-            disabled={!selected.length || room === 0}
+            disabled={!selected.length}
             onClick={() => {
               closeAssets();
               if (node) void useCanvasStore.getState().place(node.id, selected.map((f) => ({ path: f.path, name: f.name, mtime: f.mtime })));

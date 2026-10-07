@@ -508,12 +508,13 @@ function SavePreset({ family, image }: { family: Family; image: ImageSettings })
   );
 }
 
-// 选 LoRA：点开能按名字搜。几个词用空格隔开，名字里都有才列出来，不分大小写；上下键挑、回车选
-function LoraSelect({ value, loras, onPick }: { value: string; loras: string[]; onPick: (name: string) => void }) {
+// 选 LoRA：点开能按名字搜。几个词用空格隔开，名字里都有才列出来，不分大小写；上下键挑、回车选。
+// 视频节点选主模型也用它，what 是选的是什么
+export function LoraSelect({ value, loras, onPick, what = 'LoRA' }: { value: string; loras: string[]; onPick: (name: string) => void; what?: string }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   return (
     <>
-      <button type="button" className="select gc-lora-name" aria-label="LoRA" title={value} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
+      <button type="button" className="select gc-lora-name" aria-label={what} title={value} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
         {value}
       </button>
       {anchor && (
@@ -521,6 +522,7 @@ function LoraSelect({ value, loras, onPick }: { value: string; loras: string[]; 
           anchor={anchor}
           value={value}
           loras={loras}
+          what={what}
           onPick={(name) => {
             setAnchor(null);
             onPick(name);
@@ -532,7 +534,7 @@ function LoraSelect({ value, loras, onPick }: { value: string; loras: string[]; 
   );
 }
 
-function LoraSearch({ anchor, value, loras, onPick, onClose }: { anchor: DOMRect; value: string; loras: string[]; onPick: (name: string) => void; onClose: () => void }) {
+function LoraSearch({ anchor, value, loras, what, onPick, onClose }: { anchor: DOMRect; value: string; loras: string[]; what: string; onPick: (name: string) => void; onClose: () => void }) {
   const [q, setQ] = useState('');
   // 刚打开时停在现在选的那个上
   const [active, setActive] = useState(() => Math.max(0, loras.indexOf(value)));
@@ -556,11 +558,11 @@ function LoraSearch({ anchor, value, loras, onPick, onClose }: { anchor: DOMRect
   };
 
   return (
-    <Popover anchor={anchor} className="gc-lora-pop" odId="popover-pick-lora" label="选 LoRA" onClose={onClose}>
+    <Popover anchor={anchor} className="gc-lora-pop" odId="popover-pick-lora" label={`选 ${what}`} onClose={onClose}>
       <input
         className="input"
         placeholder={`搜名字，一共 ${loras.length} 个`}
-        aria-label="搜 LoRA"
+        aria-label={`搜 ${what}`}
         data-autofocus
         value={q}
         onChange={(e) => {
@@ -569,7 +571,7 @@ function LoraSearch({ anchor, value, loras, onPick, onClose }: { anchor: DOMRect
         }}
         onKeyDown={onKeyDown}
       />
-      <div className="gc-lora-list" role="listbox" aria-label="LoRA 列表" ref={list}>
+      <div className="gc-lora-list" role="listbox" aria-label={`${what} 列表`} ref={list}>
         {shown.map((name, i) => (
           <button
             key={name}
@@ -583,7 +585,7 @@ function LoraSearch({ anchor, value, loras, onPick, onClose }: { anchor: DOMRect
             {name}
           </button>
         ))}
-        {!shown.length && <p className="gp-none">没有名字里带「{q.trim()}」的 LoRA</p>}
+        {!shown.length && <p className="gp-none">没有名字里带「{q.trim()}」的 {what}</p>}
       </div>
     </Popover>
   );

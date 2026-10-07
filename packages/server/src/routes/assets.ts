@@ -1,4 +1,4 @@
-import { ASSET_SORTS, COLLAGE_CELL_SIZES, isCollageGrid } from '@media-agent/shared';
+import { ASSET_SORTS, COLLAGE_CELL_SIZES, isCollageGrid, mediaKindOf } from '@media-agent/shared';
 import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -80,6 +80,13 @@ export function assetRoutes(configDir: string): express.Router {
     if (!isSupportedImage(file)) throw new HttpError(415, '不支持这种图片格式');
     // send 默认把路径里以点开头的目录当隐藏文件拒掉，而缩略图缓存就在 ~/.media-agent 下面，得放开
     res.sendFile(await thumbnail(configDir, file), { dotfiles: 'allow' });
+  });
+
+  // 资产库里的视频、音频原文件：格子上显示开头的画面、放进节点前读多长，支持 Range
+  router.get('/assets/file', async (req, res) => {
+    const file = await allowedPath(configDir, req.query.path);
+    if (!mediaKindOf(file)) throw new HttpError(415, '这里只给视频和音频');
+    res.sendFile(file, { dotfiles: 'allow' });
   });
 
   return router;

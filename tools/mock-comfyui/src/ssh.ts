@@ -172,7 +172,7 @@ export function createMockSsh(): MockSsh {
         fs.renameSync(file(1), file(2));
         return 0;
       case 'rm':
-        fs.rmSync(file(1), { force: true });
+        for (const target of args.filter((arg) => !arg.startsWith('-'))) fs.rmSync(local(target), { force: true });
         return 0;
       case 'find': {
         const dirs = args.slice(0, args.indexOf('-type'));

@@ -1,4 +1,4 @@
-import { compareAssetNames, sortAssets, SUPPORTED_IMAGE_EXTENSIONS, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
+import { compareAssetNames, mediaKindOf, sortAssets, SUPPORTED_IMAGE_EXTENSIONS, type AssetFile, type AssetSort, type FolderTree } from '@media-agent/shared';
 import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -14,13 +14,15 @@ export const SEARCH_LIMIT = 200;
 
 const extension = (name: string) => path.extname(name).toLowerCase();
 export const isSupportedImage = (name: string) => SUPPORTED.has(extension(name));
-const isListed = (name: string) => SUPPORTED.has(extension(name)) || UNSUPPORTED.has(extension(name));
+// 视频和音频也列，见 docs/dev-plan.md 5.31
+const isListed = (name: string) => SUPPORTED.has(extension(name)) || UNSUPPORTED.has(extension(name)) || mediaKindOf(name) !== null;
 
 async function toAssetFile(file: string): Promise<AssetFile | null> {
   const stat = await fs.stat(file).catch(() => null);
   if (!stat?.isFile()) return null;
   const name = path.basename(file);
-  return { path: file, name, size: stat.size, mtime: stat.mtimeMs, supported: isSupportedImage(name) };
+  const media = mediaKindOf(name);
+  return { path: file, name, size: stat.size, mtime: stat.mtimeMs, supported: media !== null || isSupportedImage(name), kind: media ?? 'image' };
 }
 
 type RootIndex = { scannedAt: number; tree: FolderTree; files: { path: string; name: string }[] };

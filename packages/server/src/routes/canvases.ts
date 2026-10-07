@@ -42,6 +42,7 @@ import {
 } from '../store/canvases';
 import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
+import { canvasMediaPath, importMedia, readMedia, storeUploadedMedia } from '../store/media';
 import { DEFAULT_PROMPT, defaultPromptFor, readPromptMeta } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import * as v from './validate';
@@ -161,7 +162,7 @@ export function canvasRoutes(configDir: string): express.Router {
       const parent = parentId === null ? null : node.messages[parentId];
       if (parent === undefined) throw new HttpError(404, '找不到要接着回复的那条消息');
       // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明；生图节点不说时长和比例
-      const { systemNote, attachments } = slotDiff(parent, node, node.kind);
+      const { systemNote, attachments, frames } = slotDiff(parent, node, node.kind);
       const userMessage: Message = {
         id: randomUUID(),
         parentId,
@@ -169,10 +170,12 @@ export function canvasRoutes(configDir: string): express.Router {
         createdAt: new Date().toISOString(),
         text,
         slotSnapshot: [...node.slots],
+        ...(node.media?.length && { mediaSnapshot: node.media.map((m) => ({ ...m })) }),
         duration: node.duration,
         aspectRatio: node.aspectRatio,
         ...(systemNote !== undefined && { systemNote }),
         attachments,
+        ...(frames && { frames }),
       };
       return { node: { ...addMessage(node, userMessage), draft: '' }, userMessage, replyTo: userMessage };
     });
@@ -217,6 +220,29 @@ export function canvasRoutes(configDir: string): express.Router {
     await readCanvas(w, canvasId);
     const name = v.fileName(req.query.name);
     res.json(await storeDroppedImage(w, canvasId, name, req.body as Buffer, await llmLongSide(w, canvasId, req.query.nodeId)));
+  });
+
+  // 视频和音频，见 docs/dev-plan.md 5.31：原样复制进画布；多长、宽高、有没有声音是浏览器读好发来的
+  router.post('/canvases/:canvasId/media', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    const source = await allowedPath(configDir, req.body?.path);
+    res.json(await importMedia(w, canvasId, source, v.mediaMeta(req.body ?? {})));
+  });
+
+  // 从文件夹拖进来的：请求体就是文件，边收边存，不整个读进内存
+  router.post('/canvases/:canvasId/media/upload', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    res.json(await storeUploadedMedia(w, canvasId, v.fileName(req.query.name), req, v.mediaMeta(req.query as Record<string, unknown>)));
+  });
+
+  router.get('/canvases/:canvasId/media/:mediaId/file', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    res.sendFile(canvasMediaPath(w, canvasId, await readMedia(w, canvasId, v.uuid(req.params.mediaId))), { dotfiles: 'allow' });
   });
 
   router.get('/canvases/:canvasId/images/:imageId/checklist-path', async (req, res) => {
@@ -319,6 +345,11 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase
   if (body.modelConfigId !== undefined) next.modelConfigId = v.text(body.modelConfigId, '模型配置');
   if (body.systemPromptName !== undefined) next.systemPromptName = v.nonEmptyText(body.systemPromptName, '系统提示词');
   if (body.slots !== undefined) next.slots = v.slots(body.slots);
+  if (body.media !== undefined) {
+    const media = v.mediaSlots(body.media);
+    if (media.length && node.kind !== 'video') throw new HttpError(400, '生图节点不能放视频和音频');
+    next.media = media;
+  }
   if (body.duration !== undefined) next.duration = v.duration(body.duration);
   if (body.aspectRatio !== undefined) next.aspectRatio = v.aspectRatio(body.aspectRatio);
   if (body.draft !== undefined) next.draft = v.text(body.draft, '输入框内容');

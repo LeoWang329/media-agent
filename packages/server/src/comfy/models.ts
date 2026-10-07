@@ -2,12 +2,11 @@ import { MODEL_KINDS, nameFromUrl, remotePathProblem, sizeText, type ModelKind, 
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Transform, type Readable } from 'node:stream';
-// ssh2 是 CommonJS 的包，Node 直接跑时只能整个默认导入
-import ssh2, { type Client } from 'ssh2';
+import type { Client } from 'ssh2';
 import { HttpError } from '../httpError';
 import type { Autodl } from './autodl';
-import type { SshAccess } from './autodlApi';
 import { loadObjectInfo } from './options';
+import { connect, must, quote, run, said } from './ssh';
 
 // 往 AutoDL 那台传模型、给链接让它下、列出来、删，见 docs/dev-plan.md 5.22。
 // 经 SSH 在那台上执行命令：从电脑传的灌进 cat 的标准输入，给链接的让 curl 下。SSH 的密码每次现查，不存、不写日志。
@@ -26,6 +25,8 @@ export const MODEL_DIRS: Record<ModelKind, string> = {
   clipVision: `${MODELS_ROOT}/clip_vision`,
   vae: `${MODELS_ROOT}/vae`,
 };
+// 生成视频那台只传 LoRA，放在它的 extra_model_paths.yaml 里配好的文件夹
+export const VIDEO_MODEL_DIRS: Partial<Record<ModelKind, string>> = { lora: `${MODELS_ROOT}/loras` };
 // 看剩余空间的地方，和上面这些在同一块盘上
 const DISK = '/root/autodl-tmp';
 
@@ -36,68 +37,15 @@ export type ModelTransfers = ReturnType<typeof createModelTransfers>;
 export type UploadParams = { id: string; kind: ModelKind; folder: string; name: string; size: number; replace: boolean };
 export type DownloadParams = { kind: ModelKind; url: string; folder: string; name: string; replace: boolean };
 
-// 单引号包起来给 shell，里面的单引号写成 '\''
-const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
-
 type Target = { relative: string; full: string; dir: string; part: string };
 
-function targetOf(kind: ModelKind, folder: string, name: string): Target {
-  if (!MODEL_DIRS[kind]) throw new HttpError(400, '模型类型不对');
+function targetOf(dirs: Partial<Record<ModelKind, string>>, kind: ModelKind, folder: string, name: string): Target {
+  if (!dirs[kind]) throw new HttpError(400, '模型类型不对');
   const problem = remotePathProblem(folder, name);
   if (problem) throw new HttpError(400, problem);
   const relative = folder ? `${folder}/${name}` : name;
-  const full = `${MODEL_DIRS[kind]}/${relative}`;
+  const full = `${dirs[kind]}/${relative}`;
   return { relative, full, dir: path.posix.dirname(full), part: `${full}.part` };
-}
-
-function connect(access: SshAccess): Promise<Client> {
-  return new Promise((resolve, reject) => {
-    const conn = new ssh2.Client();
-    let ready = false;
-    conn.on('ready', () => {
-      ready = true;
-      resolve(conn);
-    });
-    // 连上以后再出的错（比如断了）由正在跑的命令报
-    conn.on('error', (err) => {
-      if (!ready) reject(new HttpError(502, `连不上那台的 SSH：${err.message}`));
-    });
-    conn.connect({ ...access, readyTimeout: 30_000, keepaliveInterval: 15_000 });
-  });
-}
-
-type Ran = { code: number | null; out: string; err: string };
-
-// 执行一条命令等它跑完。input 灌进标准输入；signal 停了就关掉这条通道，开了 pty 的那边的命令跟着被挂断
-function run(conn: Client, command: string, { input, pty = false, signal }: { input?: Readable; pty?: boolean; signal?: AbortSignal } = {}): Promise<Ran> {
-  return new Promise((resolve, reject) => {
-    conn.exec(command, { pty }, (error, channel) => {
-      if (error) return reject(new HttpError(502, `在那台上执行命令失败：${error.message}`));
-      let out = '';
-      let err = '';
-      channel.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-      channel.stderr.on('data', (chunk: Buffer) => (err += chunk.toString('utf8')));
-      // 那边先退出、还在往里灌的，算在退出码里，不另外报
-      channel.on('error', () => {});
-      const stop = () => channel.close();
-      signal?.addEventListener('abort', stop, { once: true });
-      channel.on('close', (code?: number | null) => {
-        signal?.removeEventListener('abort', stop);
-        resolve({ code: typeof code === 'number' ? code : null, out, err });
-      });
-      if (signal?.aborted) stop();
-      else if (input) input.pipe(channel);
-      else channel.end();
-    });
-  });
-}
-
-const said = (ran: Ran) => (ran.err || ran.out).trim() || `退出码 ${ran.code ?? '没有'}`;
-
-async function must(conn: Client, command: string, what: string): Promise<string> {
-  const ran = await run(conn, command);
-  if (ran.code !== 0) throw new HttpError(502, `${what}：${said(ran)}`);
-  return ran.out;
 }
 
 async function freeSpace(conn: Client): Promise<number> {
@@ -135,7 +83,9 @@ function contentLength(headers: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs?: number } = {}) {
+// dirs 是这台能传哪几类、各放哪；生成视频那台用 VIDEO_MODEL_DIRS
+export function createModelTransfers(autodl: Autodl, { pollMs = 1000, dirs = MODEL_DIRS }: { pollMs?: number; dirs?: Partial<Record<ModelKind, string>> } = {}) {
+  const kinds = MODEL_KINDS.map(({ kind }) => kind).filter((kind) => dirs[kind]);
   const transfers: ModelTransfer[] = [];
   const stops = new Map<string, AbortController>();
   let downloads: Promise<void> = Promise.resolve();
@@ -178,18 +128,17 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
   async function list(): Promise<RemoteModels> {
     const conn = await open(false);
     try {
-      const dirs = MODEL_KINDS.map(({ kind }) => MODEL_DIRS[kind]);
       const free = await freeSpace(conn);
       // 只列普通文件：公共模型库链接过来的是软链接，不列
-      const out = await must(conn, `find ${dirs.map(quote).join(' ')} -type f -printf '%s\\t%T@\\t%p\\n' 2>/dev/null; true`, '列不出那台上的模型');
+      const out = await must(conn, `find ${kinds.map((kind) => quote(dirs[kind]!)).join(' ')} -type f -printf '%s\\t%T@\\t%p\\n' 2>/dev/null; true`, '列不出那台上的模型');
       const files: RemoteModelFile[] = [];
       for (const line of out.split('\n')) {
         const [bytes, time, full] = line.replace(/\r$/, '').split('\t');
-        const kind = full && MODEL_KINDS.find(({ kind }) => full.startsWith(`${MODEL_DIRS[kind]}/`))?.kind;
+        const kind = full && kinds.find((one) => full.startsWith(`${dirs[one]}/`));
         if (!kind) continue;
         files.push({
           kind,
-          path: full.slice(MODEL_DIRS[kind].length + 1),
+          path: full.slice(dirs[kind]!.length + 1),
           bytes: Number(bytes),
           modifiedAt: new Date(Number(time) * 1000).toISOString(),
           partial: full.endsWith('.part'),
@@ -205,7 +154,7 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
 
   // 从电脑传之前：同名的有没有、空间够不够。关着的先开机
   async function check(kind: ModelKind, folder: string, name: string, size: number, replace: boolean): Promise<{ free: number }> {
-    const target = targetOf(kind, folder, name);
+    const target = targetOf(dirs, kind, folder, name);
     const conn = await open(true);
     try {
       await ensureRoom(conn, target, size, replace);
@@ -217,7 +166,7 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
 
   // 从电脑传：本机服务一边收一边灌给那台的 cat，传完才返回
   async function upload(input: Readable, { id, kind, folder, name, size, replace }: UploadParams): Promise<ModelTransfer> {
-    const target = targetOf(kind, folder, name);
+    const target = targetOf(dirs, kind, folder, name);
     if (transfers.some((one) => one.id === id)) throw new HttpError(409, '这个已经在传了');
     const transfer = add({ id, way: 'upload', kind, path: target.relative, done: 0, total: size, state: 'running' });
     const stop = new AbortController();
@@ -264,7 +213,7 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
   // 给链接让那台下：先看同名的、取大小、看空间，都过了排进去，一个一个下
   async function download({ kind, url, folder, name, replace }: DownloadParams): Promise<ModelTransfer> {
     const source = mirror(url);
-    const target = targetOf(kind, folder, name || nameFromUrl(source));
+    const target = targetOf(dirs, kind, folder, name || nameFromUrl(source));
     const conn = await open(true);
     let total: number | null;
     try {
@@ -332,7 +281,7 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
   async function remove(kind: ModelKind, relative: string): Promise<void> {
     const name = path.posix.basename(relative);
     const folder = relative.includes('/') ? path.posix.dirname(relative) : '';
-    const target = targetOf(kind, folder, name.endsWith('.part') ? name.slice(0, -'.part'.length) : name);
+    const target = targetOf(dirs, kind, folder, name.endsWith('.part') ? name.slice(0, -'.part'.length) : name);
     const conn = await open(false);
     try {
       await must(conn, `rm -f ${quote(name.endsWith('.part') ? target.part : target.full)}`, '删不掉');
@@ -342,5 +291,5 @@ export function createModelTransfers(autodl: Autodl, { pollMs = 1000 }: { pollMs
     void refreshOptions();
   }
 
-  return { list, check, upload, download, stop, remove, transfers: () => transfers.map((one) => ({ ...one })) };
+  return { kinds, list, check, upload, download, stop, remove, transfers: () => transfers.map((one) => ({ ...one })) };
 }

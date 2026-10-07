@@ -3,7 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { createAutodl, type Autodl, type AutodlOptions } from './comfy/autodl';
 import { createImageJobs, type ImageJobs } from './comfy/jobs';
-import { createModelTransfers } from './comfy/models';
+import { createModelTransfers, VIDEO_MODEL_DIRS } from './comfy/models';
 import { createVideoJobs, type VideoJobs } from './comfy/videoJobs';
 import { maskConfig, readConfig, requireWorkFolder, updateConfig } from './config';
 import { HttpError } from './httpError';
@@ -52,6 +52,7 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   const imageJobs = createImageJobs(configDir, autodl);
   const videoJobs = createVideoJobs(configDir, videoAutodl);
   const models = createModelTransfers(autodl, modelOptions);
+  const videoModels = createModelTransfers(videoAutodl, { ...modelOptions, dirs: VIDEO_MODEL_DIRS });
   app.locals.autodl = autodl;
   app.locals.imageJobs = imageJobs;
   app.locals.videoAutodl = videoAutodl;
@@ -109,6 +110,7 @@ export function createApp({ configDir, clientDist, tagSources = DEFAULT_TAG_SOUR
   api.use(presetRoutes(configDir));
   api.use(comfyRoutes(configDir, autodl, videoAutodl));
   api.use(modelRoutes(models));
+  api.use(modelRoutes(videoModels, '/comfy/video/models'));
   api.use(workflowRoutes(configDir));
   api.use(imageRoutes(configDir, imageJobs));
   api.use(videoRoutes(configDir, videoJobs));

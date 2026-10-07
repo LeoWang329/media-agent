@@ -39,7 +39,7 @@ export function planReply(messages: ChatMessage[]): MockPlan {
     if (part.type !== 'image_url') return;
     imageCount += 1;
     const before = parts[i - 1];
-    const label = before?.type === 'text' ? before.text.trim().match(/^<Picture \d+>$/)?.[0] : undefined;
+    const label = before?.type === 'text' ? before.text.trim().match(/^<(Picture|Video) \d+>$/)?.[0] : undefined;
     if (label) pictureLabels.push(label);
   });
 

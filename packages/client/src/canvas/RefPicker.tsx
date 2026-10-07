@@ -59,7 +59,7 @@ export function RefPicker() {
   const fixed = anchor.images;
   const choices = fixed ?? node.slots;
   const inSlots = new Set(node.slots.map((id) => images?.[id]?.originalPath).filter(Boolean));
-  const library = (files ?? []).filter((f) => f.supported && !inSlots.has(f.path)).slice(0, 6);
+  const library = (files ?? []).filter((f) => f.supported && f.kind === 'image' && !inSlots.has(f.path)).slice(0, 6);
 
   return (
     <div className="refpick" id="refpick" ref={box} style={position ?? { left: 0, top: 0, visibility: 'hidden' }} data-testid="refpick">

@@ -1,19 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addTiming,
   DEFAULT_VIDEO_SETTINGS,
+  latentCount,
+  latentFrame,
   missingNodeTypes,
+  nearestLatent,
   PLUGIN_OF,
+  reshootGraph,
+  reshootPlan,
+  reshootText,
+  reshootWhere,
   segmentCount,
   slotDiff,
   splitSegments,
   videoDownloadName,
   videoFrames,
   videoGraph,
+  videoImageUse,
   videoParams,
+  videoRatioOf,
+  videoRemainingMs,
   videoSizes,
   videoStage,
   videoTempFileName,
+  videoWindowStarts,
+  VIDEO_SPEEDS,
   VIDEO_MODEL,
+  type VideoTiming,
 } from '../src';
 
 const settings = (duration: number) => ({ slots: [], duration, aspectRatio: '16:9' as const });
@@ -127,9 +141,204 @@ describe('videoGraph', () => {
   });
 });
 
+describe('加速和不加速', () => {
+  it('参数记下每段几步，流程里一采、二采的步数照它；以前出的没记的按加速的', () => {
+    const fast = videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS);
+    const full = videoParams(['一段'], 15, '16:9', { ...DEFAULT_VIDEO_SETTINGS, speed: 'full', model: VIDEO_SPEEDS.full.model });
+    expect([fast.steps, full.steps]).toEqual([
+      { pass1: 10, pass2: 3 },
+      { pass1: 20, pass2: 6 },
+    ]);
+    const scheduled = (graph: ReturnType<typeof videoGraph>) => Object.values(graph).filter((node) => node.class_type === 'BasicScheduler').map((node) => [node.inputs.steps, node.inputs.denoise]);
+    expect(scheduled(videoGraph(full, 1))).toEqual([
+      [20, 1],
+      [6, 0.2],
+    ]);
+    expect(videoGraph(full, 1)['1'].inputs.unet_name).toBe('minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors');
+    expect(scheduled(videoGraph({ ...fast, steps: undefined }, 1))).toEqual([
+      [10, 1],
+      [3, 0.2],
+    ]);
+  });
+});
+
+describe('带图的流程', () => {
+  const nodes = (graph: ReturnType<typeof videoGraph>, type: string) => Object.values(graph).filter((node) => node.class_type === type);
+
+  it('槽位的图怎么用跟着写回复的那套提示词：自己建的按名字开头认，认不出的按参考模式', () => {
+    expect(['ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'i2v-慢节奏', 't2va', '我的参考', undefined].map(videoImageUse)).toEqual([
+      'refs',
+      'first',
+      'none',
+      'unsupported',
+      'unsupported',
+      'first',
+      'refs',
+      'refs',
+      'refs',
+    ]);
+  });
+
+  it('图当首帧、比例自动的宽高按这张图算；比例选了固定的照选的', () => {
+    const first = { id: 'a', width: 600, height: 900 };
+    expect(videoParams(['一段'], 15, 'auto', DEFAULT_VIDEO_SETTINGS, { refs: ['a'], firstFrame: first })).toMatchObject({
+      aspectRatio: 'image',
+      refs: ['a'],
+      firstFrame: 'a',
+      width: 544,
+      height: 800,
+      finalWidth: 1088,
+      finalHeight: 1600,
+    });
+    expect(videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS, { refs: ['a'], firstFrame: first })).toMatchObject({ aspectRatio: '16:9', width: 864, height: 480 });
+    expect(videoRatioOf('auto', 'refs', first)).toBe('auto');
+  });
+
+  it('一张参考图直接接；几张用 ImageTensorList 按顺序接成一串；首帧接在一采的 keyframes，二采不接', () => {
+    const one = videoGraph(videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS, { refs: ['a'] }), 1, { refs: ['a.png'] });
+    expect(nodes(one, 'MMH3ReferenceMultiPrompt')[0].inputs.ref_images).toEqual(['30', 0]);
+    expect(nodes(one, 'ImageTensorList')).toEqual([]);
+
+    const three = videoGraph(videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS, { refs: ['a', 'b', 'c'] }), 1, { refs: ['a.png', 'b.png', 'c.png'] });
+    expect(nodes(three, 'LoadImage').map((node) => node.inputs.image)).toEqual(['a.png', 'b.png', 'c.png']);
+    expect([three[40].inputs, three[41].inputs]).toEqual([
+      { image1: ['30', 0], image2: ['31', 0] },
+      { image1: ['40', 0], image2: ['32', 0] },
+    ]);
+    expect(nodes(three, 'MMH3ReferenceMultiPrompt')[0].inputs.ref_images).toEqual(['41', 0]);
+    expect(nodes(three, 'MMH3LoopingSampler').map((node) => node.inputs.keyframes)).toEqual([undefined, undefined]);
+
+    const params = videoParams(['一段'], 15, 'auto', DEFAULT_VIDEO_SETTINGS, { refs: ['a'], firstFrame: { id: 'a', width: 600, height: 900 } });
+    const first = videoGraph(params, 1, { refs: ['a.png'], firstFrame: 'a.png' });
+    expect(nodes(first, 'LoadImage')).toHaveLength(1);
+    expect(nodes(first, 'MMH3LoopingSampler').map((node) => node.inputs.keyframes)).toEqual([['30', 0], undefined]);
+    expect(missingNodeTypes(three, ['LoadImage']).filter((type) => !PLUGIN_OF[type])).toEqual([
+      'UNETLoader',
+      'ModelAttentionBackend',
+      'CLIPLoader',
+      'VAELoader',
+      'BasicGuider',
+      'RandomNoise',
+      'KSamplerSelect',
+      'BasicScheduler',
+      'LTXVSeparateAVLatent',
+      'LTXVConcatAVLatent',
+      'VAEDecodeAudio',
+    ]);
+  });
+});
+
+describe('估还要多久', () => {
+  const params = videoParams(['一', '二'], 30, '16:9', DEFAULT_VIDEO_SETTINGS);
+  const timing = (at: string, pass1StepMs = 9000): VideoTiming => ({
+    at,
+    finalWidth: 1728,
+    finalHeight: 960,
+    segments: 2,
+    encodeMs: 30_000,
+    pass1StepMs,
+    upscaleMs: 8000,
+    pass2StepMs: 30_000,
+    saveMs: 100_000,
+  });
+  const now = 1_000_000;
+
+  it('同样大小、同样段数的只留最近 5 条；别的大小的不动', () => {
+    const other = { ...timing('o'), segments: 1 };
+    let all = [other];
+    for (let i = 0; i < 7; i += 1) all = addTiming(all, timing(String(i)));
+    expect(all.map((t) => t.at)).toEqual(['o', '2', '3', '4', '5', '6']);
+  });
+
+  it('没开始的：各步加起来，一采、二采按每步用时乘段数乘步数；用最近一条', () => {
+    const timings = [timing('old', 1), timing('new')];
+    // 30 + 9×10×2 + 8 + 30×3×2 + 100 = 498 秒
+    expect(videoRemainingMs(params, null, timings, now)).toBe(498_000);
+    expect(videoRemainingMs({ ...params, finalWidth: 1312 }, null, timings, now)).toBeNull();
+    // 不加速的步数多一倍，每步用时一样：30 + 9×20×2 + 8 + 30×6×2 + 100 = 858 秒；以前出的没记步数，按加速的算
+    const full = videoParams(['一', '二'], 30, '16:9', { ...DEFAULT_VIDEO_SETTINGS, speed: 'full' });
+    expect(videoRemainingMs(full, null, timings, now)).toBe(858_000);
+    expect(videoRemainingMs({ ...params, steps: undefined }, null, timings, now)).toBe(498_000);
+  });
+
+  it('一采第 2 段第 4 步：一采还剩 6 步，加上后面的；正在放大的按那条的用时减去已经做了的', () => {
+    const timings = [timing('new')];
+    expect(videoRemainingMs(params, { stage: 'pass1', chunk: 2, chunks: 2, step: 4, steps: 10, since: now }, timings, now)).toBe(6 * 9000 + 8000 + 180_000 + 100_000);
+    expect(videoRemainingMs(params, { stage: 'upscale', chunk: 0, chunks: 2, step: 0, steps: 0, since: now - 3000 }, timings, now)).toBe(5000 + 180_000 + 100_000);
+    expect(videoRemainingMs(params, { stage: 'save', chunk: 0, chunks: 2, step: 0, steps: 0, since: now - 200_000 }, timings, now)).toBe(0);
+  });
+});
+
 describe('视频的文件名', () => {
   it('临时文件 HHmmss-种子.mp4；下载 节点标题-种子.mp4，不能用的字符换成 _', () => {
     expect(videoTempFileName(new Date(2026, 9, 7, 9, 5, 3), 42)).toBe('090503-42.mp4');
     expect(videoDownloadName(' 雨后/骑车 ', 7)).toBe('雨后_骑车-7.mp4');
+  });
+});
+
+describe('重拍一截', () => {
+  const nodes = (graph: ReturnType<typeof videoGraph>, type: string) => Object.values(graph).filter((node) => node.class_type === type);
+  const thirty = videoParams(['第一段', '第二段'], 30, '16:9', DEFAULT_VIDEO_SETTINGS);
+  const latents = { pass1: 'a_pass1.h3latent.safetensors', pass2: 'a_pass2.h3latent.safetensors' };
+
+  it('潜空间帧：每 5 个管 17 帧；一窗 362 帧是 107 个，重叠 22 帧是 7 个，两段 30 秒是 207 个；选的地方对齐到最近的潜空间帧', () => {
+    expect([0, 1, 2, 3, 4, 5].map(latentFrame)).toEqual([0, 1, 5, 9, 13, 17]);
+    expect([362, 22, 702].map(latentCount)).toEqual([107, 7, 207]);
+    expect([192, 480, 24, 48].map((frame) => latentFrame(nearestLatent(frame)))).toEqual([192, 481, 22, 47]);
+  });
+
+  it('只碰到一窗的切这一窗；跨两窗的两窗一起切；文字说重拍几秒到几秒、在第几段', () => {
+    const plan = reshootPlan(thirty, 192, 264);
+    expect(plan).toMatchObject({ from: 192, to: 264, fromLatent: 57, toLatent: 78, firstWindow: 0, lastWindow: 0, startLatent: 0, endLatent: 107, startFrame: 0, frames: 362, totalLatents: 207 });
+    expect(`${reshootText(plan.from, plan.to)}，${reshootWhere(plan)}`).toBe('重拍 8.0 到 11.0 秒，在第 1 段');
+
+    const across = reshootPlan(thirty, 336, 384);
+    expect(across).toMatchObject({ firstWindow: 0, lastWindow: 1, startLatent: 0, endLatent: 207, frames: 702 });
+    expect(reshootWhere(across)).toBe('跨第 1、2 段');
+    expect(reshootWhere({ firstWindow: 0, lastWindow: 2 })).toBe('跨第 1 到 3 段');
+    // 时间条上的分界和分窗对得上：分界那一帧算后一段
+    expect(videoWindowStarts(thirty)).toEqual([362]);
+    expect([reshootPlan(thirty, 358, 362).firstWindow, reshootPlan(thirty, 362, 366).firstWindow]).toEqual([0, 1]);
+
+    const second = reshootPlan(thirty, 480, 528);
+    expect(second).toMatchObject({ from: 481, to: 528, firstWindow: 1, lastWindow: 1, startLatent: 100, startFrame: 340, endLatent: 207, frames: 362 });
+  });
+
+  it('流程：读回两份存档切出这几窗，遮罩只白这一截；一采从存档出发，二采只换重画的潜空间帧；前后从存档接上；新的整条也存', () => {
+    const plan = reshootPlan(thirty, 192, 264);
+    const graph = reshootGraph(thirty, 5, { refs: [] }, 'job', plan, latents);
+    expect(nodes(graph, 'MiniMaxH3NativeLatentCheckpointLoadT8Advanced').map((node) => node.inputs.checkpoint_path)).toEqual([latents.pass1, latents.pass2]);
+    expect(nodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ prompts: '第一段', length: 362 });
+    expect(nodes(graph, 'RepeatImageBatch').map((node) => node.inputs.amount)).toEqual([192, 72, 98]);
+    expect(nodes(graph, 'SolidMask').map((node) => node.inputs.value)).toEqual([0, 1, 0]);
+    const [pass1, pass2] = nodes(graph, 'MMH3LoopingSampler');
+    expect(pass1.inputs).toMatchObject({ overlap_strength_audio: 1 });
+    expect(graph[(pass1.inputs.latent as [string, number])[0]].inputs).toMatchObject({ trim_head_latents: 0, trim_tail_latents: 100 });
+    expect(pass1.inputs.denoise_mask).toEqual(pass2.inputs.denoise_mask);
+    expect(nodes(graph, 'LatentCut')[0].inputs).toMatchObject({ index: 57, amount: 21 });
+    expect(nodes(graph, 'ReplaceVideoLatentFrames')[0].inputs.index).toBe(57);
+    // 只有后面要接：从第 2 窗开头往前 7 个开始，拼的时候去掉这 7 个
+    const concats = nodes(graph, 'MMH3ConcatAV');
+    expect(concats.map((node) => [graph[(node.inputs.latent_b as [string, number])[0]].inputs.trim_head_latents, node.inputs.trim_b_latents])).toEqual([
+      [100, 7],
+      [100, 7],
+    ]);
+    expect(nodes(graph, 'MiniMaxH3NativeLatentCheckpointSaveT8Advanced').map((node) => node.inputs.filename_prefix)).toEqual(['media_agent_job_pass1', 'media_agent_job_pass2']);
+    expect(['MMH3TrimAV', 'MMH3ConcatAV', 'MiniMaxH3NativeLatentCheckpointLoadT8Advanced', 'MiniMaxH3NativeLatentCheckpointSaveT8Advanced'].map((type) => PLUGIN_OF[type])).toEqual([
+      'ComfyUI-MMH3Tools',
+      'ComfyUI-MMH3Tools',
+      'comfyui-minimax-h3-audio-T8',
+      'comfyui-minimax-h3-audio-T8',
+    ]);
+  });
+
+  it('首帧图只在切出的从第 1 窗开始时接；参考图都接', () => {
+    const params = videoParams(['第一段', '第二段'], 30, 'auto', DEFAULT_VIDEO_SETTINGS, { refs: ['a'], firstFrame: { id: 'a', width: 600, height: 900 } });
+    const files = { refs: ['a.png'], firstFrame: 'a.png' };
+    const front = reshootGraph(params, 5, files, 'job', reshootPlan(params, 24, 48), latents);
+    const back = reshootGraph(params, 5, files, 'job', reshootPlan(params, 480, 528), latents);
+    expect(nodes(front, 'MMH3LoopingSampler')[0].inputs.keyframes).toBeDefined();
+    expect(nodes(back, 'MMH3LoopingSampler')[0].inputs.keyframes).toBeUndefined();
+    expect(nodes(back, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ prompts: '第二段', ref_images: expect.any(Array) });
   });
 });

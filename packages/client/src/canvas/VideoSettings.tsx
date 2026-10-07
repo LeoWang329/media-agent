@@ -1,9 +1,25 @@
-import { VIDEO_DURATION, VIDEO_MEGAPIXELS, VIDEO_UPSCALES, videoAspect, videoSettingsOf, videoSizes, type ChatNode, type VideoSettings } from '@media-agent/shared';
-import { useState } from 'react';
+import {
+  VIDEO_DURATION,
+  VIDEO_MEGAPIXELS,
+  VIDEO_SPEEDS,
+  VIDEO_UPSCALES,
+  videoAspect,
+  videoImageUse,
+  videoRatioOf,
+  videoSettingsOf,
+  videoSizes,
+  type AspectRatio,
+  type ChatNode,
+  type VideoSettings,
+  type VideoSpeed,
+} from '@media-agent/shared';
+import { useEffect, useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
-import { CommitInput, integerFrom } from '../ui/CommitInput';
+import { useVideoStore } from '../store/videoStore';
+import { anyNumber, CommitInput, integerFrom } from '../ui/CommitInput';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
+import { LoraSelect } from './GenSettings';
 
 // 视频节点的时长和生成设置，见 docs/dev-plan.md 5.24、5.27
 
@@ -50,11 +66,19 @@ export function DurationPop({ anchor, value, onPick, onClose }: { anchor: DOMRec
   );
 }
 
-// 槽位区右边的「生成设置」：按钮上写着出片多大，点开改一采大小、放大倍数、种子
+// 宽高按哪个比例算：图当首帧、比例自动的按槽位第一张图，见 docs/dev-plan.md 5.26
+export function useVideoRatio(promptName: string | undefined, ratio: AspectRatio, firstId: string | undefined) {
+  const first = useCanvasStore((s) => (firstId ? s.detail?.images[firstId] : undefined));
+  return videoRatioOf(ratio, videoImageUse(promptName), first);
+}
+
+const SPEED_LABELS: Record<VideoSpeed, string> = { fast: '加速', full: '不加速' };
+
+// 槽位区右边的「生成设置」：按钮上写着出片多大，点开改加速还是不加速、一采大小、放大倍数、种子、主模型、LoRA
 export function VideoGenButton({ node }: { node: ChatNode }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const settings = videoSettingsOf(node.video);
-  const { finalWidth, finalHeight } = videoSizes(settings.megapixels, settings.upscale, node.aspectRatio);
+  const { finalWidth, finalHeight } = videoSizes(settings.megapixels, settings.upscale, useVideoRatio(node.systemPromptName, node.aspectRatio, node.slots[0]));
   return (
     <>
       <button
@@ -62,7 +86,7 @@ export function VideoGenButton({ node }: { node: ChatNode }) {
         className="btn btn-secondary btn-sm gen-cfg-btn"
         id="btnVideoCfg"
         data-od-id="btn-video-settings"
-        title="生成设置：一采大小、放大倍数、种子，每个节点各存一份"
+        title="生成设置：加速还是不加速、一采大小、放大倍数、种子、主模型、LoRA，每个节点各存一份"
         onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}
       >
         <Icon name="sliders" />
@@ -78,16 +102,41 @@ export function VideoGenButton({ node }: { node: ChatNode }) {
 
 function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: ChatNode; onClose: () => void }) {
   const settings = videoSettingsOf(node.video);
-  const ratio = videoAspect(node.aspectRatio);
-  const final = videoSizes(settings.megapixels, settings.upscale, node.aspectRatio);
+  const sized = useVideoRatio(node.systemPromptName, node.aspectRatio, node.slots[0]);
+  const ratioText = typeof sized !== 'string' ? '，比例自动的按当首帧的那张图' : node.aspectRatio === 'auto' ? '，比例自动的按 16:9' : `，现在是 ${videoAspect(node.aspectRatio)}`;
+  const final = videoSizes(settings.megapixels, settings.upscale, sized);
   const save = (patch: Partial<VideoSettings>) => void useCanvasStore.getState().patchNode(node.id, { video: patch });
+  // 主模型和 LoRA 的列表从生成视频那台读；关着时读过的照样有
+  const options = useVideoStore((s) => s.options);
+  const optionsError = useVideoStore((s) => s.optionsError);
+  useEffect(() => {
+    void useVideoStore.getState().loadOptions();
+  }, []);
+  const models = options?.models ?? [];
+  const loras = options?.loras ?? [];
+  // 节点选的那台上没有：也列出来
+  const pick = (list: string[], value: string) => (value && !list.includes(value) ? [value, ...list] : list);
   return (
-    <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg'))}>
+    <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg, .gc-lora-pop'))}>
+      <div className="vc-sec">
+        <h4>加速</h4>
+        <div className="seg" role="group" aria-label="加速还是不加速" id="vcSpeed">
+          {(Object.keys(SPEED_LABELS) as VideoSpeed[]).map((speed) => (
+            <button key={speed} type="button" aria-pressed={settings.speed === speed} onClick={() => save({ speed, model: VIDEO_SPEEDS[speed].model })}>
+              {SPEED_LABELS[speed]}
+            </button>
+          ))}
+        </div>
+        <p className="hint">
+          加速用 DaSiWa V2 加速版，一采 {VIDEO_SPEEDS.fast.steps.pass1} 步、二采 {VIDEO_SPEEDS.fast.steps.pass2} 步；不加速用完整版，一采 {VIDEO_SPEEDS.full.steps.pass1} 步、二采{' '}
+          {VIDEO_SPEEDS.full.steps.pass2} 步，同样长度多花七成左右的时间。切的时候主模型跟着换，换完还能在下面改。
+        </p>
+      </div>
       <div className="vc-sec">
         <h4>一采大小</h4>
         <select className="select select-sm mono" id="vcMp" aria-label="一采大小" value={settings.megapixels} onChange={(e) => save({ megapixels: Number(e.target.value) })}>
           {VIDEO_MEGAPIXELS.map((mp) => {
-            const size = videoSizes(mp, settings.upscale, node.aspectRatio);
+            const size = videoSizes(mp, settings.upscale, sized);
             return (
               <option key={mp} value={mp}>
                 {mp} 百万像素 · {size.width}×{size.height}
@@ -96,7 +145,7 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
           })}
         </select>
         <p className="hint">
-          先按这个大小生成一遍（一采），宽高按节点的比例算{node.aspectRatio === 'auto' ? '，比例自动的按 16:9' : `，现在是 ${ratio}`}。越大越慢，要的显存越多。
+          先按这个大小生成一遍（一采），宽高按节点的比例算{ratioText}。越大越慢，要的显存越多。
         </p>
       </div>
       <div className="vc-sec">
@@ -124,6 +173,57 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
           {settings.seed !== null && (
             <CommitInput className="input mono" id="vcSeed" style={{ width: 150 }} aria-label="种子" value={String(settings.seed)} parse={integerFrom(0)} onCommit={(v) => save({ seed: Number(v) })} />
           )}
+        </div>
+      </div>
+      <div className="vc-sec">
+        <h4>
+          主模型
+          <button type="button" className="btn btn-ghost btn-sm vc-refresh" title="生成视频那台上新放了模型，重读一次" onClick={() => void useVideoStore.getState().loadOptions(true)}>
+            <Icon name="retry" />
+            刷新
+          </button>
+        </h4>
+        <LoraSelect what="主模型" value={settings.model} loras={pick(models, settings.model)} onPick={(model) => save({ model })} />
+        {optionsError && !options && (
+          <p className="hint is-error" id="vcOptionsError">
+            {optionsError}
+          </p>
+        )}
+      </div>
+      <div className="vc-sec">
+        <h4>
+          LoRA<span className="meta">可以挂几个，各带强度，只作用在主模型上</span>
+        </h4>
+        <div className="gc-loras" id="vcLoras">
+          {settings.loras.map((lora, i) => (
+            <div className="gc-lora" key={i}>
+              <LoraSelect value={lora.name} loras={pick(loras, lora.name)} onPick={(name) => save({ loras: settings.loras.map((l, j) => (j === i ? { ...l, name } : l)) })} />
+              <CommitInput
+                className="input mono"
+                type="number"
+                step="0.05"
+                min="-2"
+                max="2"
+                aria-label="强度"
+                value={String(lora.strength)}
+                parse={anyNumber}
+                onCommit={(v) => save({ loras: settings.loras.map((l, j) => (j === i ? { ...l, strength: Number(v) } : l)) })}
+              />
+              <button type="button" className="btn btn-ghost btn-icon btn-sm" aria-label="去掉" onClick={() => save({ loras: settings.loras.filter((_, j) => j !== i) })}>
+                <Icon name="x" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={!loras.length}
+            title={loras.length ? undefined : '生成视频那台开机后才列得出 LoRA'}
+            onClick={() => save({ loras: [...settings.loras, { name: loras.find((l) => !settings.loras.some((x) => x.name === l)) ?? loras[0], strength: 0.8 }] })}
+          >
+            <Icon name="plus" />
+            挂一个 LoRA
+          </button>
         </div>
       </div>
       <div className="vc-final">

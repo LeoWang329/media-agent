@@ -1,10 +1,11 @@
-import type { AutodlState, VideoJobEvent } from '@media-agent/shared';
+import type { AutodlState, VideoBoard, VideoJobEvent, VideoOptions } from '@media-agent/shared';
 import { create } from 'zustand';
 import { api } from '../api';
 import { toast } from '../ui/toast';
 import type { AutodlNow } from './comfyStore';
 
-// 生成视频那台 AutoDL 的状态、每条视频做到哪一步和排第几，从 /video-jobs/events 收，不存盘，见 docs/dev-plan.md 5.25、5.27
+// 生成视频那台 AutoDL 的状态、每条视频做到哪一步和排第几，从 /video-jobs/events 收，不存盘，见 docs/dev-plan.md 5.25、5.27；
+// 视频任务小窗的列表从 /video-jobs 读，有一条变了再读一次，见 5.29；生成设置里的主模型和 LoRA 从生成视频那台读
 
 export type VideoProgress = Omit<Extract<VideoJobEvent, { type: 'progress' }>, 'type' | 'jobId'>;
 
@@ -12,18 +13,64 @@ type VideoState = {
   autodl: AutodlNow | null; // 还没问过是 null
   progress: Record<string, VideoProgress>; // 键是视频的 id
   queue: Record<string, number>;
+  board: VideoBoard | null; // 还没读过是 null
+  flash: { jobId: string; seq: number } | null; // 从视频任务小窗点过来的那条，闪一下
+  options: VideoOptions | null; // 还没读到是 null，读不到的原因在 optionsError
+  optionsError: string | null;
   checkAutodl: () => Promise<void>;
+  loadOptions: (refresh?: boolean) => Promise<void>;
   power: (on: boolean) => Promise<void>;
+  loadBoard: () => Promise<void>;
+  flashVideo: (jobId: string) => void;
 };
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
-export const useVideoStore = create<VideoState>((_set, get) => {
+export const useVideoStore = create<VideoState>((set, get) => {
   let autodlRun: Promise<void> | null = null;
+  let boardRun: Promise<void> | null = null;
+  let boardAgain = false;
+  let flashSeq = 0;
   return {
     autodl: null,
     progress: {},
     queue: {},
+    board: null,
+    flash: null,
+    options: null,
+    optionsError: null,
+
+    loadOptions: async (refresh = false) => {
+      try {
+        set({ options: await api<VideoOptions>(`/comfy/video/options${refresh ? '?refresh=1' : ''}`), optionsError: null });
+      } catch (err) {
+        set({ optionsError: (err as Error).message });
+      }
+    },
+
+    // 正在读的时候又有变化，读完再读一次
+    loadBoard: () => {
+      if (boardRun) {
+        boardAgain = true;
+        return boardRun;
+      }
+      boardRun = (async () => {
+        do {
+          boardAgain = false;
+          const board = await api<VideoBoard>('/video-jobs').catch(() => null);
+          if (board) set({ board });
+        } while (boardAgain);
+      })().finally(() => {
+        boardRun = null;
+      });
+      return boardRun;
+    },
+
+    flashVideo: (jobId) => {
+      const seq = ++flashSeq;
+      set({ flash: { jobId, seq } });
+      setTimeout(() => get().flash?.seq === seq && set({ flash: null }), 1600);
+    },
 
     checkAutodl: () =>
       (autodlRun ??= api<AutodlState>('/comfy/video/status')
@@ -67,6 +114,7 @@ function applyEvent(event: VideoJobEvent) {
     const { type: _, ...state } = event;
     applyAutodl(state);
   } else {
+    if (useVideoStore.getState().board) void useVideoStore.getState().loadBoard();
     const jobId = event.type === 'removed' ? event.jobId : event.job.id;
     const ended = event.type === 'removed' || (event.job.status !== 'queued' && event.job.status !== 'running');
     const { progress, queue } = useVideoStore.getState();

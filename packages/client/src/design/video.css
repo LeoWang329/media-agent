@@ -13,6 +13,9 @@
 .vc-sec { display: flex; flex-direction: column; gap: 6px; padding: 2px 2px 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
 .vc-sec h4 { margin: 0; }
 .vc-sec .select { width: 100%; }
+.vc-sec h4 { display: flex; align-items: center; gap: 6px; }
+.vc-sec h4 .meta { font-weight: 400; font-size: 11.5px; }
+.vc-refresh { margin-left: auto; }
 .vc-final { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; padding: 0 2px; font-size: 12.5px; }
 
 /* 框下面的视频 */
@@ -27,3 +30,80 @@
 .vj-info .ig-dl::before { content: none; }
 .vj-error { margin: 0; overflow-wrap: anywhere; }
 .vj-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+/* 原片和重拍出的各个版本，见 docs/dev-plan.md 5.30 */
+.vj-versions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.vj-ver { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 99px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.vj-ver:hover { color: var(--fg); border-color: color-mix(in oklch, var(--fg) 24%, var(--border)); }
+.vj-ver[aria-selected="true"] { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+.vj-ver .icon-sm { color: var(--danger); }
+
+/* 时间条：按段分好，拖选一截重拍 */
+.vrs { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.vrs-bar { position: relative; height: 28px; border-radius: 8px; background: var(--fg-softer); cursor: crosshair; touch-action: none; user-select: none; overflow: hidden; }
+.vrs-seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.vrs-seg + .vrs-seg { border-left: 1px dashed color-mix(in oklch, var(--muted) 70%, transparent); }
+.vrs-sel { position: absolute; top: 0; bottom: 0; background: color-mix(in oklch, var(--accent) 30%, transparent); box-shadow: inset 0 0 0 2px var(--accent); border-radius: 4px; pointer-events: none; }
+.vrs-hint { margin: 0; font-size: 12px; }
+.vrs-form { display: flex; flex-direction: column; gap: 8px; }
+.vrs-range { margin: 0; font-size: 12.5px; }
+.vrs-acts { display: flex; align-items: center; gap: 6px; }
+.vrs-seed { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.vrs-seed .input { width: 130px; height: 28px; }
+
+/* 框下面那条从视频任务小窗点过来时闪一下 */
+.vj-job.is-flash { animation: vj-flash 1.4s var(--ease); }
+@keyframes vj-flash { 0%, 60% { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-soft); } 100% { box-shadow: inset 0 0 0 2px transparent; } }
+
+/* 视频任务：顶上的按钮和小窗，见 docs/dev-plan.md 5.29 */
+.vt-btn .vt-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; background: var(--accent); color: oklch(99% 0 0); font-size: 11px; line-height: 18px; text-align: center; }
+.vt-pop { width: 460px; max-height: min(70vh, 640px); overflow-y: auto; }
+.vt-sec { display: flex; flex-direction: column; gap: 6px; }
+.vt-sec + .vt-sec { border-top: 1px solid var(--border); padding-top: 8px; }
+.vt-sec h4 { margin: 0 2px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.vt-empty { margin: 0 2px; font-size: 12px; }
+.vt-row { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font-size: 12.5px; }
+.vt-row:hover { border-color: color-mix(in oklch, var(--fg) 24%, var(--border)); background: var(--fg-softer); }
+.vt-where { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.vt-canvas { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.vt-node { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vt-meta { display: flex; gap: 8px; font-size: 11.5px; }
+.vt-state { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-height: 26px; }
+.vt-live { display: inline-flex; align-items: center; gap: 6px; }
+.vt-left { font-size: 12px; }
+.vt-state .btn { margin-left: auto; }
+.vt-failed { display: inline-flex; align-items: center; gap: 4px; color: var(--danger); }
+
+/* 视频和音频参考，见 docs/dev-plan.md 5.31：图的槽位下面那一排、点开的小窗、资产库里的格子、消息里的截帧 */
+.mslots-wrap { margin: -2px 0 10px; }
+.mslots { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
+.mslots-title { align-self: center; margin-right: 2px; white-space: nowrap; }
+.mslot { display: flex; align-items: center; gap: 7px; min-width: 0; max-width: 200px; height: 44px; padding: 3px 9px 3px 3px; border-radius: 8px; border: 1px solid var(--border); background: var(--fg-softer); color: var(--fg); text-align: left; font: inherit; cursor: pointer; }
+.mslot:hover { border-color: color-mix(in oklch, var(--fg) 35%, var(--border)); }
+.mslot-im { width: 52px; height: 36px; border-radius: 5px; object-fit: cover; flex: none; background: var(--fg-soft); }
+.mslot-icon { width: 36px; height: 36px; border-radius: 5px; display: grid; place-items: center; flex: none; background: var(--fg-soft); color: var(--muted); }
+.mslot.is-audio .mslot-icon { color: var(--accent); }
+.mslot-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.mslot-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mslot-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.mslot.is-placing { cursor: default; padding-left: 10px; }
+.mslot.is-add { padding: 0 10px; border-style: dashed; background: transparent; color: var(--muted); gap: 4px; }
+.mslots-problem { margin-top: 6px; font-size: 12px; color: var(--danger); }
+.mslots-note { margin-top: 6px; font-size: 12px; }
+.media-pop { width: 340px; display: flex; flex-direction: column; gap: 8px; }
+.mp-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mp-head .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mp-player { width: 100%; max-height: 190px; border-radius: 8px; background: oklch(12% 0 0); }
+audio.mp-player { background: transparent; height: 36px; }
+.mp-start { gap: 6px; font-size: 13px; flex-wrap: wrap; }
+.mp-start .input { width: 64px; height: 28px; }
+.media-pop .seg button { font-family: var(--font-body); }
+.media-pop .seg button:disabled { opacity: .45; cursor: not-allowed; }
+.mp-actions { gap: 4px; }
+.mp-actions .is-danger { color: var(--danger); }
+.tile .tile-kind { position: absolute; left: 6px; top: 6px; background: oklch(15% 0.01 255 / .7); color: oklch(96% 0 0); }
+.tile-audio { position: absolute; inset: 0; display: grid; place-items: center; color: var(--accent); }
+.tile-audio svg { width: 34px; height: 34px; }
+.tile.is-video video.im { width: 100%; height: 100%; object-fit: cover; display: block; }
+.msg-img.is-frame { width: 62px; }
+.msg-img.is-frame .num-badge { width: auto; padding: 0 4px; }

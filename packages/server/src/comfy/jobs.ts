@@ -31,7 +31,7 @@ import {
   type SharedSettings,
   type UpscaleSettings,
 } from '@media-agent/shared';
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -427,7 +427,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       ?.images.find((image) => image.seed === job.source?.seed && image.status === 'done');
     const file = from && (await imageFile(place.work, from));
     if (!file) throw new comfy.ComfyError('要补做的那张原图找不到了：删掉了，或者临时文件清掉了又没下载过');
-    return uploadFile(url, file);
+    return comfy.uploadFile(url, file);
   }
 
   // ControlNet 的参考图传给 ComfyUI：槽位里的用画布里存的那份，出过的图用临时文件或下载的那份
@@ -438,7 +438,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     for (const control of controls) {
       const file = control.image && (await refFile(place, node, control.image));
       if (!file) throw new comfy.ComfyError(`ControlNet「${CONTROL_LABELS[control.type]}」的参考图找不到了：删掉了，或者临时文件清掉了又没下载过`);
-      names.push(await uploadFile(url, file));
+      names.push(await comfy.uploadFile(url, file));
     }
     return names;
   }
@@ -451,12 +451,6 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     const record = await readImage(place.work, place.canvasId, ref.imageId).catch(() => null);
     const file = record && canvasImagePath(place.work, place.canvasId, record);
     return file && (await fs.stat(file).catch(() => null))?.isFile() ? file : null;
-  }
-
-  // 文件名按内容算，同一张传几次都是同一个名字
-  async function uploadFile(url: string, file: string): Promise<string> {
-    const data = await fs.readFile(file);
-    return comfy.uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}${path.extname(file).toLowerCase() || '.png'}`);
   }
 
   function track(t: Tracked): void {

@@ -16,7 +16,8 @@ import { SysPromptDialog } from '../canvas/SysPromptDialog';
 import { TranslateDialog } from '../canvas/TranslateDialog';
 import { BoxTagEditor, WriteTagsEditor } from '../canvas/BoxTagEditor';
 import { UploadDialog } from '../canvas/UploadDialog';
-import { onVideoEvent } from '../canvas/videoActions';
+import { onVideoEvent, showVideo } from '../canvas/videoActions';
+import { VideoTasksButton } from '../canvas/VideoTasks';
 import { ZoomDialog } from '../canvas/ZoomDialog';
 import { fitAll, useView, zoomBy } from '../canvas/view';
 import { ComfyPill, VideoPill } from '../components/ComfyPill';
@@ -47,14 +48,15 @@ export function Canvas() {
   const zoom = useView((s) => s.z);
   const [renaming, setRenaming] = useState(false);
   const fitted = useRef(false);
-  // 从首页点进来的节点（地址里的 #node=节点 id），画布读出来后打开它的对话
-  const linked = useRef<string | null>(null);
+  // 从首页点进来的节点（地址里的 #node=节点 id），画布读出来后打开它的对话；从视频任务小窗点进来的还带着 &video=视频 id，那条闪一下
+  const linked = useRef<{ nodeId: string; videoId: string | null } | null>(null);
   const title = detail?.canvas.title ?? '';
 
   useEffect(() => {
     if (!id) return;
     fitted.current = false;
-    linked.current = location.hash.startsWith('#node=') ? location.hash.slice('#node='.length) : null;
+    const hash = new URLSearchParams(location.hash.slice(1));
+    linked.current = hash.get('node') ? { nodeId: hash.get('node')!, videoId: hash.get('video') } : null;
     void useCanvasStore.getState().open(id);
     useOverlays.setState(CLOSED_OVERLAYS);
   }, [id]);
@@ -82,10 +84,10 @@ export function Canvas() {
     fitted.current = true;
     const hidden = hiddenNodeIds(detail.nodes);
     fitAll(detail.nodes.filter((n) => !hidden.has(n.id)));
-    const nodeId = linked.current;
-    if (!nodeId) return;
+    const link = linked.current;
+    if (!link) return;
     linked.current = null;
-    if (detail.nodes.some((n) => n.id === nodeId)) selectNode(nodeId);
+    if (detail.nodes.some((n) => n.id === link.nodeId)) void (link.videoId ? showVideo(link.nodeId, link.videoId) : selectNode(link.nodeId));
     navigate({ hash: '' }, { replace: true });
   }, [detail, navigate]);
 
@@ -258,6 +260,7 @@ export function Canvas() {
       <div className="ws-float ws-comfy">
         <ComfyPill />
         <VideoPill />
+        <VideoTasksButton />
       </div>
 
       <Drawer />

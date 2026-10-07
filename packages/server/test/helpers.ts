@@ -63,10 +63,10 @@ export async function startTestApp(options: Pick<AppOptions, 'tagSources' | 'aut
   }
 
   // 在工作文件夹里生成一张 300×300 的图放进画布，返回 imageId；颜色不同内容就不同
-  async function addImage(canvasId: string, color: string): Promise<string> {
-    const file = path.join(work, 'test-images', `${color.slice(1)}.jpg`);
+  async function addImage(canvasId: string, color: string, width = 300, height = 300): Promise<string> {
+    const file = path.join(work, 'test-images', `${color.slice(1)}-${width}x${height}.jpg`);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, await sharp({ create: { width: 300, height: 300, channels: 3, background: color } }).jpeg().toBuffer());
+    await fs.writeFile(file, await sharp({ create: { width, height, channels: 3, background: color } }).jpeg().toBuffer());
     return (await ok('POST', `/canvases/${canvasId}/images`, { path: file })).id;
   }
 

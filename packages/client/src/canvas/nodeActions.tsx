@@ -34,12 +34,14 @@ export async function finishRename(nodeId: string, next: string | null) {
   if (await store().patchNode(nodeId, { title })) toast('已改名。之后 AI 不会再覆盖这个标题');
 }
 
-export function selectNode(nodeId: string) {
-  void store().select(nodeId);
+// 打开节点的对话；返回的 Promise 在节点读出来以后完成，读不出来也不报错
+export function selectNode(nodeId: string): Promise<void> {
+  const opened = store().select(nodeId).catch(() => undefined);
   setTimeout(() => {
     const summary = summaryOf(nodeId);
     if (summary) ensureVisible(summary);
   }, 30);
+  return opened;
 }
 
 export const closeDrawer = () => {

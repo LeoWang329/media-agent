@@ -13,14 +13,16 @@ export function systemMessageText(systemPrompt: string, formatRequirement: strin
   return `${systemPrompt.trimEnd()}\n\n\n${formatRequirement.trim()}`;
 }
 
-// user 消息的 content：说明、每张图前面标一行 <Picture N>、用户输入
+// user 消息的 content：说明、每张图前面标一行 <Picture N>、视频的截帧前面标一行 <Video N>、用户输入
 export function userContent(message: Message, imageUrl: (imageId: string) => string): ContentPart[] {
+  const image = (label: string, imageId: string): ContentPart[] => [
+    { type: 'text', text: label },
+    { type: 'image_url', image_url: { url: imageUrl(imageId) } },
+  ];
   return [
     ...(message.systemNote ? [{ type: 'text' as const, text: message.systemNote }] : []),
-    ...(message.attachments ?? []).flatMap((a): ContentPart[] => [
-      { type: 'text', text: `<Picture ${a.picture}>` },
-      { type: 'image_url', image_url: { url: imageUrl(a.imageId) } },
-    ]),
+    ...(message.attachments ?? []).flatMap((a) => image(`<Picture ${a.picture}>`, a.imageId)),
+    ...(message.frames ?? []).flatMap((f) => image(`<Video ${f.video}>`, f.imageId)),
     { type: 'text', text: message.text },
   ];
 }
@@ -40,8 +42,10 @@ export function recentTurns(path: Message[], limit: TurnLimit, kind: NodeKind): 
   const dropped = limit === 'all' ? 0 : starts.length - limit;
   if (dropped <= 0) return { path, kept: starts.length, dropped: 0 };
   const first = path[starts[dropped]];
-  const { systemNote, attachments } = slotDiff(null, { slots: first.slotSnapshot, duration: first.duration, aspectRatio: first.aspectRatio }, kind);
-  return { path: [{ ...first, systemNote, attachments }, ...path.slice(starts[dropped] + 1)], kept: starts.length - dropped, dropped };
+  const { systemNote, attachments, frames } = slotDiff(null, { slots: first.slotSnapshot, duration: first.duration, aspectRatio: first.aspectRatio, media: first.mediaSnapshot }, kind);
+  const kept: Message = { ...first, systemNote, attachments, frames };
+  if (!frames) delete kept.frames;
+  return { path: [kept, ...path.slice(starts[dropped] + 1)], kept: starts.length - dropped, dropped };
 }
 
 // 手动改过的版本，顺着 editedFromMessageId 往回找到模型写的那一版；改过几次的也找得到

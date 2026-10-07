@@ -68,6 +68,7 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
         createdAt: new Date().toISOString(),
         text: '',
         slotSnapshot: [...replyTo.slotSnapshot],
+        ...(replyTo.mediaSnapshot && { mediaSnapshot: replyTo.mediaSnapshot.map((m) => ({ ...m })) }),
         duration: replyTo.duration,
         aspectRatio: replyTo.aspectRatio,
         modelConfigId: current.modelConfigId,

@@ -1,10 +1,12 @@
-import type { AspectRatio, Attachment, ChatNode, Message, PromptMeta } from './types';
+import { mediaNote, sameMedia } from './media';
+import type { AspectRatio, Attachment, ChatNode, FrameAttachment, MediaSlot, Message, PromptMeta } from './types';
 import { activePath } from './versionTree';
 import { segmentCount, segmentSeconds } from './video';
 
-export type SlotSettings = { slots: string[]; duration: number; aspectRatio: AspectRatio };
+// media 是视频和音频槽位，只有视频节点有，没有是空
+export type SlotSettings = { slots: string[]; duration: number; aspectRatio: AspectRatio; media?: MediaSlot[] };
 
-export type SlotDiff = { systemNote?: string; attachments: Attachment[] };
+export type SlotDiff = { systemNote?: string; attachments: Attachment[]; frames?: FrameAttachment[] };
 
 export const aspectRatioText = (ratio: AspectRatio) => (ratio === 'auto' ? '自动' : ratio);
 
@@ -18,10 +20,18 @@ function settingsNote(duration: number, ratio: AspectRatio): string {
     : `视频时长 ${duration} 秒，画面比例 ${aspectRatioText(ratio)}。`;
 }
 
+// 视频和音频的说明和截帧，接在图、时长、比例的说明后面，见 docs/dev-plan.md 5.31：第一条有就说；之后变了才说，把现在的全部重说一遍
+function mediaDiff(prev: MediaSlot[] | null, cur: MediaSlot[]): { note: string; frames: FrameAttachment[] } {
+  if (prev && sameMedia(prev, cur)) return { note: '', frames: [] };
+  if (!cur.length) return { note: prev?.length ? '参考视频和音频都去掉了。' : '', frames: [] };
+  const { note, frames } = mediaNote(cur);
+  return { note: prev ? `参考视频和音频改了，以下是现在全部的，以此为准。${note}` : note, frames };
+}
+
 // 发送时算这条 user 消息带哪些图、加什么说明。prev 是当前路径上的最后一条消息（不分角色），节点里还没有消息时为 null。
-// 生图节点（use 是 image）的说明不写时长和比例
+// 生图节点（use 是 image）的说明不写时长和比例，也没有视频和音频
 export function slotDiff(
-  prev: Pick<Message, 'slotSnapshot' | 'duration' | 'aspectRatio'> | null,
+  prev: Pick<Message, 'slotSnapshot' | 'duration' | 'aspectRatio' | 'mediaSnapshot'> | null,
   cur: SlotSettings,
   use: PromptMeta['use'] = 'video',
 ): SlotDiff {
@@ -29,13 +39,15 @@ export function slotDiff(
   const all = slots.map((_, i) => i + 1);
   const attach = (numbers: number[]) => numbers.map((picture) => ({ picture, imageId: slots[picture - 1] }));
   const video = use === 'video';
+  const media = video ? mediaDiff(prev && (prev.mediaSnapshot ?? []), cur.media ?? []) : { note: '', frames: [] };
+  const withFrames = (diff: SlotDiff): SlotDiff => (media.frames.length ? { ...diff, frames: media.frames } : diff);
 
   if (!prev) {
     const settings = video ? settingsNote(cur.duration, cur.aspectRatio) : '';
-    return {
-      systemNote: slots.length ? `参考图共 ${slots.length} 张，编号如下。${settings}` : `本次没有参考图。${settings}`,
+    return withFrames({
+      systemNote: `${slots.length ? `参考图共 ${slots.length} 张，编号如下。` : '本次没有参考图。'}${settings}${media.note}`,
       attachments: attach(all),
-    };
+    });
   }
 
   const before = prev.slotSnapshot;
@@ -62,25 +74,24 @@ export function slotDiff(
     note += segments > 1 ? `视频时长改为 ${cur.duration} 秒，分 ${segments} 段生成。` : `视频时长改为 ${cur.duration} 秒。`;
   }
   if (video && cur.aspectRatio !== prev.aspectRatio) note += `画面比例改为 ${aspectRatioText(cur.aspectRatio)}。`;
-  return { ...(note && { systemNote: note }), attachments: attach(numbers) };
+  note += media.note;
+  return withFrames({ ...(note && { systemNote: note }), attachments: attach(numbers) });
 }
 
-type NodeSettings = Pick<ChatNode, 'messages' | 'rootIds' | 'activeChildOf' | 'slots' | 'duration' | 'aspectRatio'>;
+type NodeSettings = Pick<ChatNode, 'messages' | 'rootIds' | 'activeChildOf' | 'slots' | 'duration' | 'aspectRatio' | 'media'>;
 
-// 当前路径最后一条消息记下的槽位、时长、比例；还没有消息时为 null
+// 当前路径最后一条消息记下的槽位、时长、比例、视频和音频；还没有消息时为 null
 export function pathSnapshot(node: NodeSettings): SlotSettings | null {
   const last = activePath(node).at(-1);
-  return last ? { slots: [...last.slotSnapshot], duration: last.duration, aspectRatio: last.aspectRatio } : null;
+  return last ? { slots: [...last.slotSnapshot], duration: last.duration, aspectRatio: last.aspectRatio, media: [...(last.mediaSnapshot ?? [])] } : null;
 }
 
-// 槽位、时长、比例和当前路径最后一条消息记下的不一样，就是有还没发出的改动
+// 两份槽位、时长、比例、视频和音频一样不一样
+export const sameSettings = (a: SlotSettings, b: SlotSettings) =>
+  a.duration === b.duration && a.aspectRatio === b.aspectRatio && a.slots.length === b.slots.length && a.slots.every((id, i) => id === b.slots[i]) && sameMedia(a.media, b.media);
+
+// 槽位、时长、比例、视频和音频和当前路径最后一条消息记下的不一样，就是有还没发出的改动
 export function hasUnsentSettings(node: NodeSettings): boolean {
   const snapshot = pathSnapshot(node);
-  if (!snapshot) return false;
-  return (
-    snapshot.duration !== node.duration ||
-    snapshot.aspectRatio !== node.aspectRatio ||
-    snapshot.slots.length !== node.slots.length ||
-    snapshot.slots.some((id, i) => id !== node.slots[i])
-  );
+  return Boolean(snapshot && !sameSettings(snapshot, node));
 }

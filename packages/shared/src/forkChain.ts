@@ -1,4 +1,4 @@
-import type { AspectRatio, ChatNode, Message } from './types';
+import type { AspectRatio, ChatNode, MediaSlot, Message } from './types';
 import { ancestorsOf, ROOT_KEY } from './versionTree';
 
 export type ForkChain = {
@@ -6,6 +6,7 @@ export type ForkChain = {
   rootIds: string[];
   activeChildOf: Record<string, string>;
   slots: string[];
+  media: MediaSlot[];
   duration: number;
   aspectRatio: AspectRatio;
   draft: string;
@@ -33,6 +34,7 @@ export function forkChain(source: Pick<ChatNode, 'messages' | 'rootIds' | 'activ
     rootIds: chain.length ? [chain[0].id] : [],
     activeChildOf,
     slots: [...snapshotFrom.slotSnapshot],
+    media: (snapshotFrom.mediaSnapshot ?? []).map((m) => ({ ...m })),
     duration: snapshotFrom.duration,
     aspectRatio: snapshotFrom.aspectRatio,
     draft: target.role === 'user' ? target.text : (draftPrefix ?? ''),

@@ -5,7 +5,12 @@ import {
   hiddenNodeIds,
   imageSettingsOf,
   isSupportedImageName,
+  MAX_MEDIA,
+  mediaKindOf,
   pathSnapshot,
+  sameSettings,
+  secondsText,
+  takeSeconds,
   switchVersion as switchVersionInTree,
   videoSettingsOf,
   withTranslation,
@@ -18,6 +23,8 @@ import {
   type FamilyDefaults,
   type ImageRecord,
   type ImageSettings,
+  type MediaRecord,
+  type MediaSlot,
   type VideoSettings,
   type ModelConfigWithKey,
   type NodeKind,
@@ -30,8 +37,9 @@ import {
   type TurnLimit,
 } from '@media-agent/shared';
 import { create } from 'zustand';
-import { api, assetThumbUrl, postStream, uploadImage } from '../api';
+import { api, assetFileUrl, assetThumbUrl, mediaFileUrl, postStream, uploadImage, uploadMedia } from '../api';
 import { extensionOf, processedNote } from '../canvas/imageInfo';
+import { captureFrame, probeMedia } from '../canvas/mediaProbe';
 import { ensureVisible } from '../canvas/view';
 import { markSaved, trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
@@ -58,6 +66,12 @@ export type Placed = { id: string; name: string; added: boolean };
 // 正在放进槽位的图：槽位上先占好位置，盖一层「处理中」
 export type Placing = { nodeId: string; replaceIndex: number | null; thumbs: string[] };
 
+// 正在放进去的视频、音频（读多长、复制进画布、截帧），视频和音频那一排上先占好位置
+export type PlacingMedia = { nodeId: string; names: string[] };
+
+// 改一格视频或音频：从第几秒开始取、怎么用
+export type MediaChange = { start?: number; end?: number; use?: MediaSlot['use'] };
+
 // 编号变了的槽位闪一下
 export type Flash = { nodeId: string; indexes: number[]; seq: number };
 
@@ -75,6 +89,7 @@ type CanvasState = {
   turnLimit: TurnLimit | null; // 设置里的最多带几轮，打开画布时读一次
   defaults: Record<Family, FamilyDefaults>; // 设置里两个系列的默认值，打开画布时读一次
   placing: Placing | null;
+  placingMedia: PlacingMedia | null;
   flash: Flash | null;
   undoLabels: string[]; // 撤销栈里每一步叫什么，最后一个是下一次撤销的
   redoLabels: string[];
@@ -107,6 +122,9 @@ type CanvasState = {
   addImages: (nodeId: string, images: ImageRecord[]) => Promise<boolean>; // 已经复制进画布的图（拼图）；槽位满了没放也算成
   removeSlot: (nodeId: string, index: number) => Promise<boolean>; // 返回删掉了没有
   moveSlot: (nodeId: string, from: number, to: number) => Promise<void>;
+  changeMedia: (nodeId: string, index: number, change: MediaChange) => Promise<void>;
+  removeMedia: (nodeId: string, index: number) => Promise<void>;
+  moveMedia: (nodeId: string, from: number, to: number) => Promise<void>;
   revertSettings: (nodeId: string) => Promise<void>;
   undo: (only?: UndoToken) => Promise<void>; // 传了 only：只有它还是最近一步时才撤（提示条上的「撤销」）
   redo: () => Promise<void>;
@@ -127,14 +145,13 @@ const UNDOABLE_FIELDS = ['title', 'duration', 'aspectRatio'] as const;
 // 这几个字段改了，画布卡片上显示的东西跟着变，要重新读一遍画布
 const CARD_FIELDS = ['title', 'slots', 'duration', 'aspectRatio', 'systemPromptName', 'image'] as const;
 
-const sameSettings = (a: SlotSettings, b: SlotSettings) =>
-  a.duration === b.duration && a.aspectRatio === b.aspectRatio && a.slots.length === b.slots.length && a.slots.every((id, i) => id === b.slots[i]);
+// 节点现在的槽位、时长、比例、视频和音频
+const settingsOf = (node: ChatNode): SlotSettings => ({ slots: node.slots, duration: node.duration, aspectRatio: node.aspectRatio, media: node.media ?? [] });
 
-// 切到这个版本后，槽位、时长、比例变回那个版本最后一条消息当时的样子；和节点现在的一样就不用变
+// 切到这个版本后，槽位、时长、比例、视频和音频变回那个版本最后一条消息当时的样子；和节点现在的一样就不用变
 export function switchChangesSettings(node: ChatNode, messageId: string): SlotSettings | null {
   const after = pathSnapshot(switchVersionInTree(node, messageId));
-  const now: SlotSettings = { slots: node.slots, duration: node.duration, aspectRatio: node.aspectRatio };
-  return after && !sameSettings(now, after) ? after : null;
+  return after && !sameSettings(settingsOf(node), after) ? after : null;
 }
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
@@ -319,6 +336,93 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     return step;
   };
 
+  // 视频和音频槽位，和槽位一样先记再改；排成视频在前、音频在后
+  const saveMedia = async (nodeId: string, media: MediaSlot[], label: string) => {
+    const before = get().nodes[nodeId]?.media ?? [];
+    const sorted = [...media.filter((m) => m.kind === 'video'), ...media.filter((m) => m.kind === 'audio')];
+    const step = remember({ label, nodeId, undo: () => applyFields(nodeId, { media: before }), redo: () => applyFields(nodeId, { media: sorted }) });
+    try {
+      await applyFields(nodeId, { media: sorted });
+    } catch (err) {
+      forget(step);
+      throw err;
+    }
+    return step;
+  };
+
+  const mediaName = (mediaId: string) => get().detail?.media[mediaId]?.originalName ?? '这一段';
+
+  // 截给写提示词的模型看的一帧：用的那一截正中间，存成画布里的一张图；截不了的不截
+  const frameOf = async (nodeId: string, record: MediaRecord, { start, end }: { start: number; end?: number }): Promise<string | undefined> => {
+    const canvasId = get().canvasId!;
+    try {
+      const at = start + takeSeconds({ seconds: record.seconds, start, end, use: 'picture' }) / 2;
+      const blob = await captureFrame(mediaFileUrl(canvasId, record.id), at);
+      const name = `${record.originalName.replace(/\.[^.]+$/, '')}-${secondsText(start)}秒.jpg`;
+      const image = await trackWrite(uploadImage<ImageRecord>(canvasId, nodeId, new File([blob], name, { type: 'image/jpeg' })));
+      set((s) => (s.detail ? { detail: { ...s.detail, images: { ...s.detail.images, [image.id]: image } } } : {}));
+      return image.id;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // 放视频和音频，见 docs/dev-plan.md 5.31：浏览器先读多长、宽高、有没有声音，再复制进画布，视频截一帧；接在各自那一排后面
+  const placeMedia = async (nodeId: string, sources: ImageSource[]) => {
+    const node = get().nodes[nodeId];
+    if (node.kind !== 'video') {
+      toast(`生图节点只能放图，${sources.map((s) => s.name).join('、')} 没放进去`, { tone: 'danger', ms: 4500 });
+      return;
+    }
+    const canvasId = get().canvasId!;
+    const added: MediaSlot[] = [];
+    const problems: string[] = [];
+    const duplicates: string[] = [];
+    set({ placingMedia: { nodeId, names: sources.map((s) => s.name) } });
+    try {
+      for (const source of sources) {
+        const kind = mediaKindOf(source.name)!;
+        const current = [...(get().nodes[nodeId].media ?? []), ...added];
+        if (current.filter((m) => m.kind === kind).length >= MAX_MEDIA[kind]) {
+          problems.push(`${source.name}（${kind === 'video' ? '视频' : '音频'}最多 ${MAX_MEDIA[kind]} 个，满了）`);
+          continue;
+        }
+        const url = 'path' in source ? assetFileUrl(source.path, source.mtime) : URL.createObjectURL(source.file);
+        try {
+          const probe = await probeMedia(url, kind, source.name);
+          const record =
+            'path' in source
+              ? await write<MediaRecord>(`${canvasUrl()}/media`, 'POST', { path: source.path, ...probe })
+              : await trackWrite(uploadMedia<MediaRecord>(canvasId, source.file, probe));
+          set((s) => (s.detail ? { detail: { ...s.detail, media: { ...s.detail.media, [record.id]: record } } } : {}));
+          if (current.some((m) => m.mediaId === record.id)) {
+            duplicates.push(source.name);
+            continue;
+          }
+          const base = { mediaId: record.id, seconds: record.seconds, start: 0 };
+          if (kind === 'video') {
+            const frame = await frameOf(nodeId, record, { start: 0 });
+            added.push({ kind, ...base, use: 'picture', ...(frame && { frame }) });
+          } else {
+            added.push({ kind, ...base, use: 'voice' });
+          }
+        } catch (err) {
+          problems.push((err as Error).message);
+        } finally {
+          if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+        }
+      }
+      if (added.length) {
+        await saveMedia(nodeId, [...(get().nodes[nodeId].media ?? []), ...added], '放视频和音频');
+        toast(`放进了 ${added.map((m) => mediaName(m.mediaId)).join('、')}`);
+      }
+    } finally {
+      set({ placingMedia: null });
+    }
+    if (problems.length) toast(`没放进去：${problems.join('；')}`, { tone: 'danger', ms: 5000 });
+    if (duplicates.length) toast(`${duplicates.join('、')} 已经放进来了`, { tone: 'warn' });
+  };
+
   // 删除节点：撤销时从 .trash 里挪回来；再删一次会进新的 .trash 文件夹，名字要更新
   const removeNode = async (nodeId: string): Promise<{ deleted: string[]; trash: string }> => {
     const result = await write<{ deleted: string[]; trash: string }>(nodeUrl(nodeId), 'DELETE');
@@ -416,11 +520,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
   };
 
   // 放图：先复制进画布文件夹（程序按 H3 的要求处理），再一次改好槽位。
-  // 换图（replaceIndex 指着已有的图）只用第一张
-  const place = (nodeId: string, sources: ImageSource[], { replaceIndex, quiet }: PlaceOptions = {}) =>
+  // 换图（replaceIndex 指着已有的图）只用第一张。混着放进来的视频和音频进下面那一排，见 docs/dev-plan.md 5.31
+  const place = (nodeId: string, all: ImageSource[], { replaceIndex, quiet }: PlaceOptions = {}) =>
     queueSlots(async () => {
       const slots = get().nodes[nodeId]?.slots;
       if (!slots) throw new Error('先在画布上点一个节点');
+      const media = all.filter((s) => mediaKindOf(s.name));
+      const sources = all.filter((s) => !mediaKindOf(s.name));
+      if (media.length && replaceIndex !== undefined) toast('这里只能换成图，视频和音频没放进去', { tone: 'warn' });
+      else if (media.length) await placeMedia(nodeId, media);
+      if (!sources.length) return [];
       const replacing = replaceIndex !== undefined && replaceIndex < slots.length;
       const unsupported = sources.filter((s) => !isSupportedImageName(s.name));
       const usable = sources.filter((s) => isSupportedImageName(s.name)).slice(0, replacing ? 1 : undefined);
@@ -489,6 +598,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     turnLimit: null,
     defaults: FAMILY_DEFAULTS,
     placing: null,
+    placingMedia: null,
     flash: null,
     undoLabels: [],
     redoLabels: [],
@@ -716,7 +826,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         setNode({ ...node, ...settings });
         let step: UndoStep | undefined;
         if (settings) {
-          const before: SlotSettings = { slots: current.slots, duration: current.duration, aspectRatio: current.aspectRatio };
+          const before = settingsOf(current);
           step = remember({ label: '切版本时换了槽位', nodeId, undo: () => applyFields(nodeId, before), redo: () => applyFields(nodeId, settings) });
         }
         const key = node.messages[messageId].parentId ?? 'root';
@@ -766,13 +876,55 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         toast(`${imageName(moved)} 从 ${from + 1} 号挪到 ${to + 1} 号，中间的编号跟着变了`, { tone: 'warn', ms: 4000 });
       }).then(() => undefined),
 
+    // 改一格视频或音频：视频的起止改了重新截一帧，开始挪到了「到第几秒」后面的，改回取到这段结束；
+    // 一段音频选了配音，原来的配音变回声音参考
+    changeMedia: (nodeId, index, change) =>
+      queueSlots(async () => {
+        const media = [...(get().nodes[nodeId].media ?? [])];
+        const slot = media[index];
+        if (!slot) return;
+        let next = { ...slot, ...change } as MediaSlot;
+        if (next.kind === 'video' && next.end !== undefined && next.end <= next.start) {
+          const { end: _, ...rest } = next;
+          next = rest;
+        }
+        if (next.kind === 'video' && slot.kind === 'video' && (next.start !== slot.start || next.end !== slot.end)) {
+          const record = get().detail?.media[slot.mediaId];
+          const frame = record && (await frameOf(nodeId, record, next));
+          const { frame: _, ...rest } = next;
+          next = { ...rest, ...(frame && { frame }) };
+        }
+        media[index] = next;
+        if (change.use === 'dub') media.forEach((m, i) => i !== index && m.use === 'dub' && (media[i] = { ...m, use: 'voice' } as MediaSlot));
+        await saveMedia(nodeId, media, change.use ? '改视频、音频的用法' : change.end !== undefined ? '改取到第几秒' : '改从第几秒开始');
+      }).then(() => undefined),
+
+    removeMedia: (nodeId, index) =>
+      queueSlots(async () => {
+        const media = get().nodes[nodeId].media ?? [];
+        const removed = media[index];
+        if (!removed) return;
+        const step = await saveMedia(nodeId, media.filter((_, i) => i !== index), '删掉视频或音频');
+        toast(`删掉了 ${mediaName(removed.mediaId)}`, undoAction(step));
+      }).then(() => undefined),
+
+    // 同一排里调顺序，编号跟着变
+    moveMedia: (nodeId, from, to) =>
+      queueSlots(async () => {
+        const media = [...(get().nodes[nodeId].media ?? [])];
+        if (from === to || media[from]?.kind !== media[to]?.kind) return;
+        const [moved] = media.splice(from, 1);
+        media.splice(to, 0, moved);
+        await saveMedia(nodeId, media, '调整视频、音频的顺序');
+      }).then(() => undefined),
+
     // 撤回没发出的改动：槽位、时长、比例回到当前路径最后一条消息当时的样子
     revertSettings: (nodeId) =>
       queueSlots(async () => {
         const node = get().nodes[nodeId];
         const snapshot = pathSnapshot(node);
         if (!snapshot) return;
-        const before: SlotSettings = { slots: node.slots, duration: node.duration, aspectRatio: node.aspectRatio };
+        const before = settingsOf(node);
         const step = remember({ label: '撤回没发出的改动', nodeId, undo: () => applyFields(nodeId, before), redo: () => applyFields(nodeId, snapshot) });
         try {
           await applyFields(nodeId, snapshot);

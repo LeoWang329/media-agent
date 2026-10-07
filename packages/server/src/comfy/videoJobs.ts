@@ -1,17 +1,35 @@
 import {
+  addTiming,
   isLiveVideo as isLive,
   MAX_SEGMENTS,
+  mediaProblems,
+  videoMediaOf,
+  LATENT_DIR,
+  LATENT_SAVE,
+  stepsOf,
+  reshootGraph,
+  reshootPlan,
   missingNodeTypes,
   PLUGIN_OF,
   splitSegments,
   videoGraph,
   videoParams,
   videoSettingsOf,
+  videoImageUse,
   videoStage,
   type ComfyGraph,
+  type MediaSlot,
+  type VideoFiles,
+  type VideoImages,
+  type VideoImageUse,
   type VideoJob,
   type VideoJobEvent,
+  type VideoJobParams,
+  type VideoLatents,
+  type VideoBoard,
   type VideoStage,
+  type VideoTask,
+  type VideoTiming,
 } from '@media-agent/shared';
 import { randomInt, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -19,11 +37,15 @@ import path from 'node:path';
 import { comfyClientId, readComfyConfig, readConfig } from '../config';
 import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases, readNode, updateNode } from '../store/canvases';
+import { canvasImagePath, readImage } from '../store/images';
+import { canvasMediaPath, readMediaRecords } from '../store/media';
+import { readJson, writeJsonAtomic } from '../store/jsonFile';
 import { withLock } from '../store/locks';
 import { readSettings } from '../store/settings';
 import { BootCancelled, type Autodl } from './autodl';
 import * as comfy from './client';
 import { saveVideoTemp } from './files';
+import { connect as sshConnect, quote, run as sshRun } from './ssh';
 import { loadObjectInfo } from './options';
 
 // 一条视频挂在哪条回复下
@@ -31,18 +53,25 @@ export type VideoPlace = { work: string; canvasId: string; nodeId: string; messa
 
 type Progress = Omit<Extract<VideoJobEvent, { type: 'progress' }>, 'type' | 'jobId'>;
 
-// 发出去还没出完的一条，按 prompt_id 认；chunks 是分几段
+// 发出去还没出完的一条，按 prompt_id 认；chunks 是分几段；stageAt 是每一步从什么时候开始的，passSteps 是一采、二采每段几步，出完记用时用
 type Tracked = VideoPlace & {
   jobId: string;
   promptId: string;
   seed: number;
+  params: VideoJobParams;
   chunks: number;
   url: string;
   startedAt?: number;
   finishing?: boolean;
   position?: number;
   progress?: Progress;
+  stageAt: Partial<Record<VideoStage, number>>;
+  passSteps: Partial<Record<'pass1' | 'pass2', number>>;
+  // 存档存在哪台实例上
+  instance: string;
 };
+
+type Ids = { canvasId: string; nodeId: string; messageId: string };
 
 type ComfyMessage = { type: string; data?: Record<string, unknown> };
 
@@ -51,6 +80,13 @@ const EARLY_KEEP_MS = 60_000;
 const HISTORY_TRIES = 10;
 const HISTORY_WAIT_MS = 300;
 
+// 视频任务小窗里「完了的」最多列几条
+const FINISHED_KEPT = 10;
+const timingsFile = (work: string) => path.join(work, 'video-timings.json');
+// 删视频时那台关着、没删成的存档，下次开机删，见 docs/dev-plan.md 5.30
+const latentTrashFile = (work: string) => path.join(work, 'video-latents-trash.json');
+type LatentTrash = { instance: string; files: string[] }[];
+
 const randomSeed = () => randomInt(0, 2 ** 32);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,6 +94,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const UNCHANGED = new Error('没有要改的');
 
 export type VideoAgain = { jobId: string; sameSeed: boolean };
+// 重拍一截：在哪一版上重拍、第几帧到第几帧（不含）、种子（null 是随机）、改过的段（键是第几段，从 0 数），见 docs/dev-plan.md 5.30
+export type VideoReshoot = { jobId: string; from: number; to: number; seed: number | null; prompts: Record<number, string> };
 
 export type VideoJobs = ReturnType<typeof createVideoJobs>;
 
@@ -77,8 +115,14 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
   let closed = false;
   // 正在等开机或者正在发的条数
   let autodlWork = 0;
+  // 视频任务小窗用，见 docs/dev-plan.md 5.29：在做的和排着的在哪；这次开程序以后完了的，新的在前
+  const liveJobs = new Map<string, Ids>();
+  const finished: (Ids & { jobId: string })[] = [];
 
-  const emit = (event: VideoJobEvent) => listeners.forEach((listener) => listener(event));
+  const emit = (event: VideoJobEvent) => {
+    noteBoard(event);
+    listeners.forEach((listener) => listener(event));
+  };
   const syncBusy = () => autodl.setBusy('videos', autodlWork > 0 || tracked.size > 0);
   const stopWatchingAutodl = autodl.subscribe((state) => emit({ type: 'autodl', ...state }));
   const later = (run: () => void, ms: number) => {
@@ -89,7 +133,23 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     timers.add(timer);
   };
   const inUse = (url: string) => (submitting.get(url) ?? 0) > 0 || [...tracked.values()].some((t) => t.url === url);
-  const ids = (place: VideoPlace) => ({ canvasId: place.canvasId, nodeId: place.nodeId, messageId: place.messageId });
+  const ids = (place: VideoPlace): Ids => ({ canvasId: place.canvasId, nodeId: place.nodeId, messageId: place.messageId });
+
+  // 一条变成没在做的了，从在做的挪到完了的；删掉的两边都去掉
+  function noteBoard(event: VideoJobEvent): void {
+    if (event.type === 'removed') {
+      liveJobs.delete(event.jobId);
+      const index = finished.findIndex((item) => item.jobId === event.jobId);
+      if (index >= 0) finished.splice(index, 1);
+      return;
+    }
+    if (event.type !== 'job') return;
+    const where = { canvasId: event.canvasId, nodeId: event.nodeId, messageId: event.messageId };
+    if (isLive(event.job)) return void liveJobs.set(event.job.id, where);
+    if (!liveJobs.delete(event.job.id)) return;
+    finished.unshift({ ...where, jobId: event.job.id });
+    finished.splice(FINISHED_KEPT);
+  }
 
   async function readJob(place: VideoPlace, jobId: string): Promise<VideoJob> {
     const node = await readNode(place.work, place.canvasId, place.nodeId);
@@ -131,8 +191,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       },
     );
 
-  // 点「生成视频」生成这个框，见 docs/dev-plan.md 5.27；again 是「同样参数再来」「只换种子再来」，照着那一条的参数
-  async function create(place: VideoPlace, promptIndex: number, again?: VideoAgain): Promise<VideoJob> {
+  // 点「生成视频」生成这个框，见 docs/dev-plan.md 5.27；again 是「同样参数再来」「只换种子再来」，照着那一条的参数；
+  // reshoot 是在一条出完的视频上重拍一截，出的是原片的一个版本，见 5.30
+  async function create(place: VideoPlace, promptIndex: number, again?: VideoAgain, reshoot?: VideoReshoot): Promise<VideoJob> {
     const settings = await readSettings(place.work);
     const { autodlToken } = await readComfyConfig(configDir);
     if (!(autodlToken && settings.comfy.videoAutodl.instanceUuid)) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好生成视频用的实例');
@@ -143,20 +204,39 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
 
     const fresh = { id: randomUUID(), createdAt: new Date().toISOString(), status: 'queued' as const };
     let job: VideoJob;
-    if (again) {
+    if (reshoot) {
+      const base = message.videos?.find((j) => j.id === reshoot.jobId);
+      if (!base) throw new HttpError(404, '找不到要重拍的那条视频');
+      if (base.status !== 'done') throw new HttpError(400, '这条还没出完，出完了才能重拍');
+      if (!base.latents) throw new HttpError(400, '这条出的时候没存一采、二采的结果，只能整条重出');
+      if (base.latents.instance !== settings.comfy.videoAutodl.instanceUuid) throw new HttpError(400, '那台上没有这条的存档了，只能整条重出');
+      const plan = reshootPlan(base.params, reshoot.from, reshoot.to);
+      if (plan.toLatent <= plan.fromLatent) throw new HttpError(400, '选的这一截太短了');
+      const segments = base.params.segments.map((text, i) => (i >= plan.firstWindow && i <= plan.lastWindow && reshoot.prompts[i]?.trim() ? reshoot.prompts[i] : text));
+      job = {
+        ...fresh,
+        promptIndex: base.promptIndex,
+        parent: base.parent ?? base.id,
+        reshoot: { base: base.id, from: plan.from, to: plan.to },
+        params: { ...base.params, segments },
+        seed: reshoot.seed ?? randomSeed(),
+      };
+    } else if (again) {
       const from = message.videos?.find((j) => j.id === again.jobId);
       if (!from) throw new HttpError(404, '找不到要照着再来的那条视频');
       job = { ...fresh, promptIndex: from.promptIndex, source: { jobId: from.id }, params: from.params, seed: again.sameSeed ? from.seed : randomSeed() };
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
-      // 参考图和首帧 P20 才接，见 docs/dev-plan.md 5.26
-      if (message.slotSnapshot.length) throw new HttpError(400, '带图的生成视频还没做');
+      const use = videoImageUse(message.systemPromptName);
+      if (use === 'unsupported') throw new HttpError(400, '首尾帧、尾帧这两种提示词写的还不能生成视频，现在支持参考模式、图当首帧和纯文字');
       const segments = splitSegments(box.text);
       if (!segments.length) throw new HttpError(400, '这个框是空的');
       if (segments.length > MAX_SEGMENTS) throw new HttpError(400, `这个框分了 ${segments.length} 段，最多 ${MAX_SEGMENTS} 段`);
       const video = videoSettingsOf(node.video);
-      job = { ...fresh, promptIndex, params: videoParams(segments, message.duration, message.aspectRatio, video), seed: video.seed ?? randomSeed() };
+      const images = await imagesOf(place, message.slotSnapshot, use);
+      const media = await mediaOf(place, message.mediaSnapshot ?? [], use, images.refs.length);
+      job = { ...fresh, promptIndex, params: videoParams(segments, message.duration, message.aspectRatio, video, images, media), seed: video.seed ?? randomSeed() };
     }
 
     await updateNode(place.work, place.canvasId, place.nodeId, (current) => {
@@ -169,7 +249,54 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     return job;
   }
 
-  // 等生成视频那台开好，对照它装了哪些节点，发出去；发之前看一眼是不是已经叫停了
+  // 槽位的图怎么带，见 docs/dev-plan.md 5.26：参考模式的都当参考图；图当首帧的只带第一张，钉在第 0 帧，也当 <Picture 1>；纯文字的不带
+  async function imagesOf(place: VideoPlace, slots: string[], use: VideoImageUse): Promise<VideoImages> {
+    if (use === 'refs') return { refs: [...slots] };
+    if (use !== 'first' || !slots.length) return { refs: [] };
+    const record = await readImage(place.work, place.canvasId, slots[0]);
+    return { refs: [record.id], firstFrame: { id: record.id, width: record.width, height: record.height } };
+  }
+
+  // 视频和音频怎么带，见 docs/dev-plan.md 5.31：参考的只在参考模式带，配音都带；超了上限的不发，说清楚哪条超了
+  async function mediaOf(place: VideoPlace, snapshot: MediaSlot[], use: VideoImageUse, pictures: number) {
+    const used = use === 'refs' ? snapshot : snapshot.filter((slot) => slot.use === 'dub');
+    const problems = mediaProblems(used, pictures);
+    if (problems.length) throw new HttpError(400, `视频和音频超了上限：${problems.join('；')}。删掉一段、改好再写一条`);
+    const records = used.length ? await readMediaRecords(place.work, place.canvasId) : {};
+    return videoMediaOf(used, (id) => records[id]);
+  }
+
+  // 带的视频和音频传给 ComfyUI，用画布里存的那份；返回读的节点要填的名字，顺序和 params.media 一样
+  async function uploadMedia(place: VideoPlace, params: VideoJobParams, url: string): Promise<string[]> {
+    const records = params.media?.length ? await readMediaRecords(place.work, place.canvasId) : {};
+    const names = new Map<string, string>();
+    for (const item of params.media ?? []) {
+      if (names.has(item.mediaId)) continue;
+      const record = records[item.mediaId];
+      const file = record && canvasMediaPath(place.work, place.canvasId, record);
+      if (!file || !(await fs.stat(file).catch(() => null))?.isFile()) throw new comfy.ComfyError(`带的${item.kind === 'video' ? '视频' : '音频'}找不到了：画布里存的那份被删掉了`);
+      names.set(item.mediaId, await comfy.uploadFile(url, file));
+    }
+    return (params.media ?? []).map((item) => names.get(item.mediaId)!);
+  }
+
+  // 带的图传给 ComfyUI，用画布里存的那份；返回 LoadImage 要填的名字
+  async function uploadImages(place: VideoPlace, params: VideoJobParams, url: string): Promise<VideoFiles> {
+    const names = new Map<string, string>();
+    for (const id of [...(params.refs ?? []), ...(params.firstFrame ? [params.firstFrame] : [])]) {
+      if (names.has(id)) continue;
+      const record = await readImage(place.work, place.canvasId, id).catch(() => null);
+      const file = record && canvasImagePath(place.work, place.canvasId, record);
+      if (!file || !(await fs.stat(file).catch(() => null))?.isFile()) {
+        const n = (params.refs ?? []).indexOf(id) + 1;
+        throw new comfy.ComfyError(`${n ? `第 ${n} 张参考图` : '首帧图'}找不到了：画布里存的那份被删掉了`);
+      }
+      names.set(id, await comfy.uploadFile(url, file));
+    }
+    return { refs: (params.refs ?? []).map((id) => names.get(id)!), ...(params.firstFrame && { firstFrame: names.get(params.firstFrame) }) };
+  }
+
+  // 等生成视频那台开好，对照它装了哪些节点，传图，发出去；发之前看一眼是不是已经叫停了
   async function submit(place: VideoPlace, jobId: string): Promise<void> {
     autodlWork += 1;
     syncBusy();
@@ -181,14 +308,26 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       url = address;
       submitting.set(address, (submitting.get(address) ?? 0) + 1);
       await connect(address);
-      await requireNodes(address, videoGraph((await readJob(place, jobId)).params, 0));
+      const first = await readJob(place, jobId);
+      const instance = (await readSettings(place.work)).comfy.videoAutodl.instanceUuid ?? '';
+      // 重拍的：读回哪一版的存档，那台上还在不在
+      const base = first.reshoot ? await readJob(place, first.reshoot.base).catch(() => null) : null;
+      if (first.reshoot) {
+        if (!base?.latents) throw new comfy.ComfyError('要重拍的那一版删掉了');
+        await requireLatents(base.latents);
+      }
+      const graphOf = (job: VideoJob, files: VideoFiles) =>
+        job.reshoot && base?.latents ? reshootGraph(job.params, job.seed, files, job.id, reshootPlan(job.params, job.reshoot.from, job.reshoot.to), base.latents) : videoGraph(job.params, job.seed, files, job.id);
+      // 查缺不缺节点时 LoadImage 填什么都行，先拿图的 id 顶上
+      await requireNodes(address, graphOf(first, { refs: first.params.refs ?? [], firstFrame: first.params.firstFrame }));
+      const files = { ...(await uploadImages(place, first.params, address)), media: await uploadMedia(place, first.params, address) };
       const id = await (clientId ??= comfyClientId(configDir));
       await withLock(`video-job:${jobId}`, async () => {
         const job = await readJob(place, jobId);
         if (job.status !== 'queued' || job.promptId) return;
-        const promptId = await comfy.queuePrompt(address, videoGraph(job.params, job.seed), id);
+        const promptId = await comfy.queuePrompt(address, graphOf(job, files), id);
         await changeJob(place, jobId, (current) => ({ ...current, promptId }));
-        track({ ...place, jobId, promptId, seed: job.seed, chunks: job.params.segments.length, url: address });
+        track({ ...place, jobId, promptId, seed: job.seed, params: job.params, chunks: reshootChunks(job), url: address, stageAt: {}, passSteps: {}, instance });
       });
       void refreshQueue(address);
     } catch (err) {
@@ -204,6 +343,77 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       syncBusy();
     }
   }
+
+  // 重拍的只算切出来的那几窗
+  const reshootChunks = (job: VideoJob) => {
+    if (!job.reshoot) return job.params.segments.length;
+    const plan = reshootPlan(job.params, job.reshoot.from, job.reshoot.to);
+    return plan.lastWindow - plan.firstWindow + 1;
+  };
+
+  // 重拍前看一眼存档还在不在那台上：换了实例、被删了的，只能整条重出
+  async function requireLatents(latents: VideoLatents): Promise<void> {
+    const conn = await sshConnect(await autodl.ssh());
+    try {
+      const ran = await sshRun(conn, `test -f ${quote(`${LATENT_DIR}/${latents.pass1}`)} && test -f ${quote(`${LATENT_DIR}/${latents.pass2}`)}`);
+      if (ran.code !== 0) throw new comfy.ComfyError('那台上没有这条的存档了，只能整条重出');
+    } finally {
+      conn.end();
+    }
+  }
+
+  // 删视频时一起删那台上的存档：开着就经 SSH 删，关着或者没删成的记下来，下次开机删
+  async function dropLatents(work: string, all: VideoLatents[]): Promise<void> {
+    if (!all.length) return;
+    const files = new Map<string, string[]>();
+    for (const latents of all) files.set(latents.instance, [...(files.get(latents.instance) ?? []), latents.pass1, latents.pass2]);
+    const running = autodl.current();
+    const here = running.state === 'running' ? running.instance?.uuid : undefined;
+    const left: LatentTrash = [];
+    for (const [instance, names] of files) {
+      if (instance === here && (await removeLatentFiles(names))) continue;
+      left.push({ instance, files: names });
+    }
+    if (left.length) await withLock('video-latents-trash', async () => writeJsonAtomic(latentTrashFile(work), [...((await readJson<LatentTrash>(latentTrashFile(work))) ?? []), ...left]));
+  }
+
+  async function removeLatentFiles(names: string[]): Promise<boolean> {
+    try {
+      const conn = await sshConnect(await autodl.ssh());
+      try {
+        return (await sshRun(conn, `rm -f ${names.map((name) => quote(`${LATENT_DIR}/${name}`)).join(' ')}`)).code === 0;
+      } finally {
+        conn.end();
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  // 开机了：上次关着时没删成的、在这台上的存档删掉
+  let flushing = false;
+  async function flushLatentTrash(instance: string): Promise<void> {
+    if (flushing) return;
+    flushing = true;
+    try {
+      const { workFolder: work } = await readConfig(configDir);
+      if (!work) return;
+      const trash = (await readJson<LatentTrash>(latentTrashFile(work))) ?? [];
+      const mine = trash.filter((item) => item.instance === instance);
+      if (!mine.length || !(await removeLatentFiles(mine.flatMap((item) => item.files)))) return;
+      await withLock('video-latents-trash', async () => {
+        const now = (await readJson<LatentTrash>(latentTrashFile(work))) ?? [];
+        await writeJsonAtomic(latentTrashFile(work), now.filter((item) => !mine.some((done) => done.instance === item.instance && done.files.join() === item.files.join())));
+      });
+    } catch (err) {
+      console.error('删生成视频那台上的存档失败', err);
+    } finally {
+      flushing = false;
+    }
+  }
+  const stopFlushing = autodl.subscribe((state) => {
+    if (state.state === 'running' && state.instance) void flushLatentTrash(state.instance.uuid);
+  });
 
   // 节点列表是缓存的，刚装了插件还没重读的话，重读一次再算
   async function requireNodes(url: string, graph: ComfyGraph): Promise<void> {
@@ -322,7 +532,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
   // 到了哪一步；一采、二采从第 0 段算起，收到第一步时是第 1 段
   function setStage(t: Tracked, stage: VideoStage): void {
     if (t.progress?.stage === stage) return;
-    t.progress = { stage, chunk: 0, chunks: t.chunks, step: 0, steps: 0 };
+    const since = Date.now();
+    t.stageAt[stage] = since;
+    t.progress = { stage, chunk: 0, chunks: t.chunks, step: 0, steps: 0, since };
     emit({ type: 'progress', jobId: t.jobId, ...t.progress });
   }
 
@@ -336,6 +548,7 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     if (progress.chunk === 0 || step < progress.step) progress.chunk = Math.min(progress.chunk + 1, progress.chunks);
     progress.step = step;
     progress.steps = Number(data.max);
+    t.passSteps[stage] = progress.steps;
     emit({ type: 'progress', jobId: t.jobId, ...progress });
   }
 
@@ -368,7 +581,30 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     if (!ref) return { status: 'failed', error: 'ComfyUI 说出完了，但没找到出的视频' };
     const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target));
     const { size } = await fs.stat(path.join(t.work, file));
-    return { status: 'done', file, bytes: size, ...(t.startedAt && { ms: Date.now() - t.startedAt }) };
+    await saveTiming(t, Date.now()).catch((err) => console.error('记生成视频的用时失败', err));
+    // 一采、二采存下的文件名，重拍一截时读回来
+    const saved = (id: string) => entry?.outputs?.[id]?.text?.[0];
+    const [pass1, pass2] = [saved(LATENT_SAVE.pass1Path), saved(LATENT_SAVE.pass2Path)];
+    return { status: 'done', file, bytes: size, ...(t.startedAt && { ms: Date.now() - t.startedAt }), ...(pass1 && pass2 && { latents: { pass1, pass2, instance: t.instance } }) };
+  }
+
+  // 出完记下各步用了多久，见 docs/dev-plan.md 5.29；有哪一步没看到（比如中间重启过）就不记
+  async function saveTiming(t: Tracked, doneAt: number): Promise<void> {
+    const { encode, pass1, upscale, pass2, save } = t.stageAt;
+    if (!(encode && pass1 && upscale && pass2 && save)) return;
+    const steps = (pass: 'pass1' | 'pass2') => (t.passSteps[pass] ?? stepsOf(t.params)[pass]) * t.chunks;
+    const timing: VideoTiming = {
+      at: new Date(doneAt).toISOString(),
+      finalWidth: t.params.finalWidth,
+      finalHeight: t.params.finalHeight,
+      segments: t.chunks,
+      encodeMs: pass1 - encode,
+      pass1StepMs: Math.round((upscale - pass1) / steps('pass1')),
+      upscaleMs: pass2 - upscale,
+      pass2StepMs: Math.round((save - pass2) / steps('pass2')),
+      saveMs: doneAt - save,
+    };
+    await withLock('video-timings', async () => writeJsonAtomic(timingsFile(t.work), addTiming((await readJson<VideoTiming[]>(timingsFile(t.work))) ?? [], timing)));
   }
 
   async function end(t: Tracked, change: Partial<VideoJob>): Promise<void> {
@@ -430,18 +666,23 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     });
   }
 
-  // 删一条：临时文件直接删，不进 .trash；下载过的那份不动
+  // 删一条：临时文件直接删，不进 .trash；下载过的那份不动。删原片时它重拍出的各个版本一起删；那台上的存档也删，见 docs/dev-plan.md 5.30
   function remove(place: VideoPlace, jobId: string): Promise<void> {
     return withLock(`video-job:${jobId}`, async () => {
       const job = await readJob(place, jobId);
       if (isLive(job)) throw new HttpError(409, '这条还没出完，先叫停');
-      if (job.file) await fs.rm(path.join(place.work, job.file), { force: true });
+      const all = (await readNode(place.work, place.canvasId, place.nodeId)).messages[place.messageId]?.videos ?? [];
+      const doomed = [job, ...(job.parent ? [] : all.filter((j) => j.parent === job.id))];
+      if (doomed.some(isLive)) throw new HttpError(409, '这条还有没出完的重拍，先叫停');
+      const gone = new Set(doomed.map((j) => j.id));
+      for (const one of doomed) if (one.file) await fs.rm(path.join(place.work, one.file), { force: true });
       await updateNode(place.work, place.canvasId, place.nodeId, (node) => {
         const message = node.messages[place.messageId];
         if (!message) throw new HttpError(404, '找不到这条回复');
-        return { ...node, messages: { ...node.messages, [message.id]: { ...message, videos: (message.videos ?? []).filter((j) => j.id !== jobId) } } };
+        return { ...node, messages: { ...node.messages, [message.id]: { ...message, videos: (message.videos ?? []).filter((j) => !gone.has(j.id)) } } };
       });
-      emit({ type: 'removed', ...ids(place), jobId });
+      for (const one of doomed) emit({ type: 'removed', ...ids(place), jobId: one.id });
+      void dropLatents(place.work, doomed.flatMap((one) => (one.latents ? [one.latents] : []))).catch((err) => console.error('删生成视频的存档失败', err));
     });
   }
 
@@ -469,12 +710,14 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
   }
 
   async function recover(place: VideoPlace, job: VideoJob, url: string | null): Promise<void> {
+    liveJobs.set(job.id, ids(place));
     const lost = '程序重启时这条还没出完';
     if (!url || !job.promptId) {
       await changeJob(place, job.id, (current) => (isLive(current) ? { ...current, status: 'failed', error: lost } : current)).catch(() => {});
       return;
     }
-    const t: Tracked = { ...place, jobId: job.id, promptId: job.promptId, seed: job.seed, chunks: job.params.segments.length, url };
+    const instance = (await readSettings(place.work)).comfy.videoAutodl.instanceUuid ?? '';
+    const t: Tracked = { ...place, jobId: job.id, promptId: job.promptId, seed: job.seed, params: job.params, chunks: reshootChunks(job), url, stageAt: {}, passSteps: {}, instance };
     try {
       await connect(url);
       track(t);
@@ -482,6 +725,25 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     } catch (err) {
       await end(t, { status: 'failed', error: `程序重启后查不到这条出没出完：${(err as Error).message}` });
     }
+  }
+
+  // 视频任务小窗：在做的和排着的按点生成的先后，这次开程序以后完了的新的在前，带上画布名和节点标题；画布、节点、这条已经删了的不列
+  async function board(): Promise<VideoBoard> {
+    const { workFolder: work } = await readConfig(configDir);
+    if (!work) return { live: [], done: [], timings: [] };
+    const titles = new Map((await readAllCanvases(work).catch(() => [])).map((canvas) => [canvas.id, canvas.title]));
+    const task = async (where: Ids, jobId: string): Promise<VideoTask | null> => {
+      const canvasTitle = titles.get(where.canvasId);
+      const node = canvasTitle === undefined ? null : await readNode(work, where.canvasId, where.nodeId).catch(() => null);
+      const job = node?.messages[where.messageId]?.videos?.find((j) => j.id === jobId);
+      return node && job ? { ...where, canvasTitle: canvasTitle!, nodeTitle: node.title, job } : null;
+    };
+    const present = (tasks: (VideoTask | null)[]) => tasks.filter((item): item is VideoTask => item !== null);
+    const live = present(await Promise.all([...liveJobs].map(([jobId, where]) => task(where, jobId))))
+      .filter((item) => isLive(item.job))
+      .sort((a, b) => a.job.createdAt.localeCompare(b.job.createdAt));
+    const done = present(await Promise.all(finished.map((item) => task(item, item.jobId))));
+    return { live, done, timings: (await readJson<VideoTiming[]>(timingsFile(work))) ?? [] };
   }
 
   // 新连上的页面先拿到生成视频那台的状态、现在排第几、做到哪一步，之后再收变化
@@ -499,6 +761,7 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
   function close(): void {
     closed = true;
     stopWatchingAutodl();
+    stopFlushing();
     timers.forEach(clearTimeout);
     for (const socket of sockets.values()) socket.ws?.close();
     sockets.clear();
@@ -506,5 +769,5 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     listeners.clear();
   }
 
-  return { create, stop, remove, setSaved, subscribe, resume, close };
+  return { create, stop, remove, setSaved, board, subscribe, resume, close };
 }

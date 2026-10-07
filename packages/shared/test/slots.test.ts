@@ -99,7 +99,7 @@ describe('slotDiff', () => {
     expect(hasUnsentSettings({ ...node, slots: ['a', 'b'] })).toBe(true);
     expect(hasUnsentSettings({ ...node, duration: 12 })).toBe(true);
     expect(hasUnsentSettings({ ...node, messages: {}, rootIds: [], activeChildOf: {}, slots: ['b'] })).toBe(false);
-    expect(pathSnapshot(node)).toEqual(settings(['a']));
+    expect(pathSnapshot(node)).toEqual({ ...settings(['a']), media: [] });
   });
 });
 

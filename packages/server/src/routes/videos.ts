@@ -1,6 +1,6 @@
 import express, { type Request } from 'express';
 import { copyVideoToFolder, videoFile } from '../comfy/files';
-import type { VideoAgain, VideoJobs, VideoPlace } from '../comfy/videoJobs';
+import type { VideoAgain, VideoJobs, VideoPlace, VideoReshoot } from '../comfy/videoJobs';
 import { requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
 import { readNode } from '../store/canvases';
@@ -18,11 +18,12 @@ export function videoRoutes(configDir: string, jobs: VideoJobs): express.Router 
     messageId: String(req.params.messageId),
   });
 
-  // again 是「同样参数再来」「只换种子再来」，照着那一条的参数
+  // again 是「同样参数再来」「只换种子再来」，照着那一条的参数；reshoot 是在一条出完的视频上重拍一截，见 docs/dev-plan.md 5.30
   router.post(base, async (req, res) => {
     const again = req.body?.again === undefined ? undefined : againOf(req.body.again);
-    const promptIndex = again ? 0 : v.index(req.body?.promptIndex, '提示词框');
-    res.status(201).json(await jobs.create(await place(req), promptIndex, again));
+    const reshoot = req.body?.reshoot === undefined ? undefined : reshootOf(req.body.reshoot);
+    const promptIndex = again || reshoot ? 0 : v.index(req.body?.promptIndex, '提示词框');
+    res.status(201).json(await jobs.create(await place(req), promptIndex, again, reshoot));
   });
 
   router.post(`${base}/:jobId/stop`, async (req, res) => {
@@ -51,6 +52,11 @@ export function videoRoutes(configDir: string, jobs: VideoJobs): express.Router 
     res.json({ path: saved });
   });
 
+  // 视频任务小窗：所有画布在做的、排着的和这次开程序以后完了的，见 docs/dev-plan.md 5.29
+  router.get('/video-jobs', async (_req, res) => {
+    res.json(await jobs.board());
+  });
+
   router.get('/video-jobs/events', (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders();
@@ -75,6 +81,22 @@ async function findVideo(place: VideoPlace, jobId: string): Promise<{ title: str
 function againOf(value: unknown): VideoAgain {
   const fields = (value ?? {}) as Record<string, unknown>;
   return { jobId: v.nonEmptyText(fields.jobId, '照着再来的那条视频'), sameSeed: v.bool(fields.sameSeed, '同一个种子') };
+}
+
+function reshootOf(value: unknown): VideoReshoot {
+  const fields = (value ?? {}) as Record<string, unknown>;
+  const prompts: Record<number, string> = {};
+  if (fields.prompts !== undefined) {
+    if (typeof fields.prompts !== 'object' || fields.prompts === null) throw new HttpError(400, '改过的提示词格式不对');
+    for (const [key, text] of Object.entries(fields.prompts)) prompts[v.index(Number(key), '提示词的段')] = v.text(text, '改过的提示词');
+  }
+  return {
+    jobId: v.nonEmptyText(fields.jobId, '要重拍的那条视频'),
+    from: v.index(fields.from, '重拍的开头帧'),
+    to: v.index(fields.to, '重拍的结尾帧'),
+    seed: fields.seed === null || fields.seed === undefined ? null : v.integer(fields.seed, '种子', 0),
+    prompts,
+  };
 }
 
 function downloadItem(value: unknown) {

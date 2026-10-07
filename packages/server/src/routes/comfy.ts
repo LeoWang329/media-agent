@@ -2,7 +2,7 @@ import type { ComfyStatus } from '@media-agent/shared';
 import express from 'express';
 import type { Autodl } from '../comfy/autodl';
 import { systemStats } from '../comfy/client';
-import { comfyOptions, hasObjectInfo, loadObjectInfo } from '../comfy/options';
+import { comfyOptions, hasObjectInfo, loadObjectInfo, videoOptions } from '../comfy/options';
 import { readComfyConfig, requireWorkFolder } from '../config';
 import { HttpError } from '../httpError';
 import { readSettings } from '../store/settings';
@@ -79,6 +79,19 @@ export function comfyRoutes(configDir: string, autodl: Autodl, videoAutodl: Auto
 
   router.post('/comfy/video/power', async (req, res) => {
     res.json(await videoAutodl.power(powerOn(req.body)));
+  });
+
+  // 生成设置里的主模型和 LoRA：从生成视频那台读，关着时读过的照样给，refresh=1 重读
+  router.get('/comfy/video/options', async (req, res) => {
+    const refresh = req.query.refresh === '1';
+    let url = await videoAutodl.address();
+    const last = videoAutodl.lastAddress();
+    if (!url && !refresh && last && hasObjectInfo(last)) url = last;
+    if (!url) throw new HttpError(400, videoAutodl.current().state === 'unset' ? '先在设置里选好生成视频用的实例' : '生成视频那台关着，开机后才读得到主模型和 LoRA');
+    const info = await loadObjectInfo(url, refresh).catch((err: Error) => {
+      throw new HttpError(502, err.message);
+    });
+    res.json(videoOptions(info));
   });
 
   return router;

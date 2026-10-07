@@ -62,17 +62,19 @@ export function editedUserMessage(original: Message, text: string, id: string, c
     createdAt,
     text,
     slotSnapshot: [...original.slotSnapshot],
+    ...(original.mediaSnapshot !== undefined && { mediaSnapshot: original.mediaSnapshot.map((m) => ({ ...m })) }),
     duration: original.duration,
     aspectRatio: original.aspectRatio,
     ...(original.systemNote !== undefined && { systemNote: original.systemNote }),
     ...(original.attachments !== undefined && { attachments: original.attachments.map((a) => ({ ...a })) }),
+    ...(original.frames !== undefined && { frames: original.frames.map((f) => ({ ...f })) }),
   };
 }
 
 // 自己写的框：不调模型，接在 parentId 后面的一条回复，里面只有这一个框。槽位、时长、比例照节点现在的；
 // 记下节点现在用的系统提示词，之后编辑这个框时按它的系列查标签
 export function handwrittenMessage(
-  node: Pick<ChatNode, 'slots' | 'duration' | 'aspectRatio' | 'systemPromptName'>,
+  node: Pick<ChatNode, 'slots' | 'media' | 'duration' | 'aspectRatio' | 'systemPromptName'>,
   parentId: string | null,
   promptText: string,
   id: string,
@@ -86,6 +88,7 @@ export function handwrittenMessage(
     createdAt,
     text,
     slotSnapshot: [...node.slots],
+    ...(node.media?.length && { mediaSnapshot: node.media.map((m) => ({ ...m })) }),
     duration: node.duration,
     aspectRatio: node.aspectRatio,
     systemPromptName: node.systemPromptName,

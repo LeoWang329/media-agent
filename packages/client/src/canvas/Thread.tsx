@@ -205,6 +205,11 @@ type UserProps = {
 function UserMessage({ node, message, ro, busy, images, editing, onEdit }: UserProps) {
   const canvasId = useCanvasStore((s) => s.canvasId);
   const imgs = message.slotSnapshot;
+  const frames = message.frames ?? [];
+  const snapshot = message.mediaSnapshot ?? [];
+  const videoCount = snapshot.filter((m) => m.kind === 'video').length;
+  const audioCount = snapshot.length - videoCount;
+  const mediaCount = [videoCount && `${videoCount} 段视频`, audioCount && `${audioCount} 段音频`].filter(Boolean).join('、');
   if (editing && !ro) return <UserEdit node={node} message={message} busy={busy} onDone={() => onEdit(false)} />;
 
   return (
@@ -238,7 +243,7 @@ function UserMessage({ node, message, ro, busy, images, editing, onEdit }: UserP
           </div>
         )}
         <div className="msg-text">{tokens(message.text, imgs, images)}</div>
-        {imgs.length > 0 && canvasId && (
+        {(imgs.length > 0 || frames.length > 0) && canvasId && (
           <div className="msg-imgs">
             {imgs.map((id, i) => (
               <div key={`${i}-${id}`} className="msg-img" title={`${i + 1} 号：${images?.[id]?.originalName ?? ''}`}>
@@ -246,10 +251,18 @@ function UserMessage({ node, message, ro, busy, images, editing, onEdit }: UserP
                 <span className="num-badge">{i + 1}</span>
               </div>
             ))}
+            {/* 视频的截帧，见 docs/dev-plan.md 5.31 */}
+            {frames.map((frame) => (
+              <div key={`video-${frame.video}`} className="msg-img is-frame" title={`<Video ${frame.video}> 截的一帧`} data-testid="message-frame">
+                <img className="im" src={imageThumbUrl(canvasId, frame.imageId)} alt="" loading="lazy" draggable={false} />
+                <span className="num-badge">视频 {frame.video}</span>
+              </div>
+            ))}
           </div>
         )}
         <div className="meta" style={{ marginTop: 8 }}>
           这条带了 {imgs.length} 张图
+          {mediaCount && ` · ${mediaCount}`}
           {node.kind === 'video' && ` · ${message.duration} 秒 · ${aspectRatioText(message.aspectRatio)}`}
         </div>
       </div>

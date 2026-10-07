@@ -20,3 +20,4 @@ export * from './imageJob';
 export * from './workflow';
 export * from './remoteModels';
 export * from './video';
+export * from './media';

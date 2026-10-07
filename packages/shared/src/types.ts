@@ -299,16 +299,22 @@ export type AutodlState = {
   instance: AutodlInstance | null;
 };
 
-// 视频节点的生成设置，存在 node.video，见 docs/dev-plan.md 5.27：一采大小（百万像素）、放大倍数、种子（null 是每次随机）
-export type VideoSettings = { megapixels: number; upscale: number; seed: number | null };
+// 视频节点的生成设置，存在 node.video，见 docs/dev-plan.md 5.27：一采大小（百万像素）、放大倍数、种子（null 是每次随机）、
+// 主模型（生成视频那台 minimax/ 下的文件名）、挂的 LoRA（各带强度，只作用在主模型上）、加速还是不加速（定一采、二采每段几步）
+export type VideoLora = { name: string; strength: number };
+export type VideoSpeed = 'fast' | 'full';
+export type VideoSettings = { megapixels: number; upscale: number; seed: number | null; model: string; loras: VideoLora[]; speed: VideoSpeed };
 
 // 生成视频发出去的全部参数，「同样参数再来」照这个发，见 docs/dev-plan.md 5.26。
-// seconds 是写这条回复时的时长；frames 是整条、每段、相邻两段重叠几帧；width、height 是一采的，finalWidth、finalHeight 是出片的
+// seconds 是写这条回复时的时长；frames 是整条、每段、相邻两段重叠几帧；width、height 是一采的，finalWidth、finalHeight 是出片的。
+// aspectRatio 是 image 时宽高按首帧图的比例算；refs 是当参考图的槽位图 id，按 <Picture N> 的顺序；firstFrame 是钉在第 0 帧的那张
 export type VideoJobParams = {
   segments: string[];
   seconds: number;
   frames: { total: number; chunk: number; overlap: number };
-  aspectRatio: Exclude<AspectRatio, 'auto'>;
+  aspectRatio: Exclude<AspectRatio, 'auto'> | 'image';
+  refs?: string[];
+  firstFrame?: string;
   megapixels: number;
   width: number;
   height: number;
@@ -316,10 +322,51 @@ export type VideoJobParams = {
   finalWidth: number;
   finalHeight: number;
   model: string;
+  loras?: VideoLora[];
+  steps?: { pass1: number; pass2: number }; // 一采、二采每段几步；以前出的没记，按加速的算
+  media?: VideoMedia[]; // 带的视频和音频，按接进流程的顺序，见 docs/dev-plan.md 5.31
 };
+
+// 视频和音频参考，见 docs/dev-plan.md 5.31。放进画布的视频、音频存在画布的 media.json 里，键是 id；
+// seconds 是多长，宽高和有没有声音只有视频有，都是放进来时浏览器读的；从文件夹拖进来的 originalPath 是空的
+export type MediaKind = 'video' | 'audio';
+export type MediaRecord = {
+  id: string;
+  sha256: string;
+  kind: MediaKind;
+  ext: string;
+  originalPath: string;
+  originalName: string;
+  seconds: number;
+  width?: number;
+  height?: number;
+  hasAudio?: boolean;
+  bytes: number;
+  addedAt: string;
+};
+
+// 视频怎么用：只用画面、画面和声音、只用声音；音频怎么用：声音参考、配音
+export type VideoUse = 'picture' | 'both' | 'sound';
+export type AudioUse = 'voice' | 'dub';
+
+// 节点的视频、音频槽位一格：seconds 是这个文件多长，start 是从第几秒开始取；frame 是截给写提示词的模型看的那一帧，存成画布里的一张图
+// 视频的 end 是取到第几秒，没填的取到这段结束（参考的最多 15 秒）
+export type MediaSlot =
+  | { kind: 'video'; mediaId: string; seconds: number; start: number; end?: number; use: VideoUse; frame?: string }
+  | { kind: 'audio'; mediaId: string; seconds: number; start: number; use: AudioUse };
+
+// 发给模型的截帧：<Video N> 的那一帧
+export type FrameAttachment = { video: number; imageId: string };
+
+// 一条视频带的一段视频或音频：take 是取多少秒；宽高是视频的，读的时候按它缩
+export type VideoMedia = { kind: MediaKind; mediaId: string; use: VideoUse | AudioUse; start: number; take: number; width?: number; height?: number };
+
+// 一条视频在生成视频那台上存的一采、二采结果（output/MiniMaxH3/latent_checkpoints/ 下的文件名），重拍一截时读回来；instance 是存在哪台实例上，见 docs/dev-plan.md 5.30
+export type VideoLatents = { pass1: string; pass2: string; instance: string };
 
 // 点一次「生成视频」出的一条，挂在 assistant 消息的 videos 里，见 docs/dev-plan.md 5.27。
 // source 是照着哪条再来的；file 是临时文件夹里的视频，相对工作文件夹、用 / 隔开；bytes 是文件多大，ms 是从开始跑到出完用了多久，savedPath 是下载到哪。
+// 重拍一截出的是原来那条的一个版本：parent 是原片的 id，reshoot 是在哪一版上重拍、重拍第几帧到第几帧（不含），见 5.30。
 // rev 每改一次加一，前端拿它丢掉旧的
 export type VideoJob = {
   id: string;
@@ -327,6 +374,9 @@ export type VideoJob = {
   promptIndex: number;
   createdAt: string;
   source?: { jobId: string };
+  parent?: string;
+  reshoot?: { base: string; from: number; to: number };
+  latents?: VideoLatents;
   params: VideoJobParams;
   seed: number;
   promptId?: string;
@@ -341,12 +391,32 @@ export type VideoJob = {
 // 生成视频在做哪一步：编码提示词、一采、放大、二采、存文件
 export type VideoStage = 'encode' | 'pass1' | 'upscale' | 'pass2' | 'save';
 
+// 出完一条记下各步用了多久，存工作文件夹 video-timings.json，估还要多久用，见 docs/dev-plan.md 5.29。
+// 一采、二采记的是每一步多久（这一遍的总时间除以段数乘每段步数）；at 是什么时候出完的
+export type VideoTiming = {
+  at: string;
+  finalWidth: number;
+  finalHeight: number;
+  segments: number;
+  encodeMs: number;
+  pass1StepMs: number;
+  upscaleMs: number;
+  pass2StepMs: number;
+  saveMs: number;
+};
+
+// 视频任务小窗里的一条：在哪个画布、哪个节点，带上名字
+export type VideoTask = { canvasId: string; canvasTitle: string; nodeId: string; nodeTitle: string; messageId: string; job: VideoJob };
+
+// GET /api/video-jobs：在做的和排着的按点生成的先后，这次开程序以后完了的新的在前、最多 10 条，还有估时间用的记录
+export type VideoBoard = { live: VideoTask[]; done: VideoTask[]; timings: VideoTiming[] };
+
 // GET /api/video-jobs/events 推的事件：一条的状态变了发整条，删掉了发 removed；进度和排在第几不存盘，chunk 从 1 数，还没到一采、二采时是 0；
-// 生成视频那台的状态变了发整个状态
+// since 是这一步从什么时候开始的；生成视频那台的状态变了发整个状态
 export type VideoJobEvent =
   | { type: 'job'; canvasId: string; nodeId: string; messageId: string; job: VideoJob }
   | { type: 'removed'; canvasId: string; nodeId: string; messageId: string; jobId: string }
-  | { type: 'progress'; jobId: string; stage: VideoStage; chunk: number; chunks: number; step: number; steps: number }
+  | { type: 'progress'; jobId: string; stage: VideoStage; chunk: number; chunks: number; step: number; steps: number; since: number }
   | { type: 'queue'; jobId: string; position: number }
   | ({ type: 'autodl' } & AutodlState);
 
@@ -374,6 +444,9 @@ export type ComfyStatus =
 // 从 ComfyUI 读到的下拉选项；底模带着属于哪个系列（null 是两个都不是），guessed 是没在设置里标过、按文件名猜的。
 // detectors 是部位重绘用的检测模型，只列 .pt 的（同一个文件夹里放的 SAM 这类不是），sams 是 SAMLoader 的列表。preprocessors 是 ControlNet 的提取方式（AIO_Preprocessor 的列表）。
 // nodeTypes 是这台装了的全部节点类型，用来查缺不缺插件
+// 生成视频那台上能选的主模型（minimax/ 下的）和 LoRA，见 docs/dev-plan.md 5.27
+export type VideoOptions = { models: string[]; loras: string[] };
+
 export type ComfyOptions = {
   checkpoints: { name: string; family: Family | null; guessed: boolean }[];
   vaes: string[];
@@ -437,8 +510,8 @@ export type ImageRecord = {
   addedAt: string;
 };
 
-// 资产库里的一个文件；supported 为假的（heic 等）只显示不能用
-export type AssetFile = { path: string; name: string; size: number; mtime: number; supported: boolean };
+// 资产库里的一个文件；supported 为假的（heic 等）只显示不能用；kind 是图、视频还是音频
+export type AssetFile = { path: string; name: string; size: number; mtime: number; supported: boolean; kind: 'image' | MediaKind };
 // 资产库的排法：修改时间新的在前、旧的在前，文件名 A 到 Z、Z 到 A，见 docs/dev-plan.md 6.3
 export type AssetSort = 'time-desc' | 'time-asc' | 'name-asc' | 'name-desc';
 
@@ -470,9 +543,11 @@ export type Message = {
   slotSnapshot: string[];
   duration: number;
   aspectRatio: AspectRatio;
+  mediaSnapshot?: MediaSlot[]; // 发出、生成时的视频和音频槽位；没有是空
   // 只有 user 消息有
   systemNote?: string;
   attachments?: Attachment[];
+  frames?: FrameAttachment[]; // 发给模型的视频截帧
   // 只有 assistant 消息有
   modelConfigId?: string;
   modelName?: string;
@@ -506,6 +581,7 @@ export type ChatNode = {
   kind: NodeKind; // 建的时候定，之后不能改；没记的老节点读的时候按系统提示词补上
   systemPromptName: string; // 只能是这种节点用的
   slots: string[];
+  media?: MediaSlot[]; // 视频和音频槽位，只有视频节点有；没有是空
   duration: number;
   aspectRatio: AspectRatio;
   messages: Record<string, Message>;
@@ -597,7 +673,7 @@ export type NodeSummary = CanvasNodeLayout & {
 // originalMissing：原文件已经不在了（只查槽位里正放着的图）
 export type CanvasImage = ImageRecord & { originalMissing?: boolean };
 
-export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, CanvasImage> };
+export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, CanvasImage>; media: Record<string, MediaRecord> };
 
 // 上传清单里一张图该传哪个文件；size 是那个文件的字节数
 export type ChecklistPath = { path: string; kind: 'original' | 'canvas'; note?: string; size: number };
