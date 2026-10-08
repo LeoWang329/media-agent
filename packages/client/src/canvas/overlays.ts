@@ -1,6 +1,7 @@
 import type { Editor } from '@tiptap/react';
 import { create } from 'zustand';
 import { PICTURE_REF } from '../editor/document';
+import type { RefImage } from '@media-agent/shared';
 
 // 资产库弹窗的几种用法：往槽位里放、只是看看、换掉某个槽位的图、挑一张插进句子里
 export type AssetsMode = 'slots' | 'browse' | 'replace' | 'ref';
@@ -30,6 +31,7 @@ export type DownloadTarget = { nodeId: string; title: string; items: (ImageTarge
 export type VideoDownloadTarget = { nodeId: string; messageId: string; jobId: string; title: string; seed: number };
 
 type Overlays = {
+  fourView: { nodeId: string; reference: RefImage } | null;
   assets: { mode: AssetsMode; slot?: number } | null;
   upload: UploadTarget | null;
   collage: boolean;
@@ -47,6 +49,7 @@ type Overlays = {
 };
 
 export const CLOSED_OVERLAYS = {
+  fourView: null,
   assets: null,
   upload: null,
   collage: false,

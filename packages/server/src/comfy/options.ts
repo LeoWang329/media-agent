@@ -12,6 +12,7 @@ const MODEL_NODES = [
   'LoraLoader',
   'LoraLoaderModelOnly',
   'UNETLoader',
+  'CLIPLoader',
   'UpscaleModelLoader',
   'UltralyticsDetectorProvider',
   'SAMLoader',
@@ -61,6 +62,8 @@ export const videoOptions = (info: ObjectInfo): VideoOptions => ({
 
 export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | null>): ComfyOptions {
   return {
+    kreaModels: comboOptions(info, 'UNETLoader', 'unet_name').filter((name) => /krea/i.test(name) && !/raw|flux/i.test(name)),
+    textEncoders: comboOptions(info, 'CLIPLoader', 'clip_name').filter((name) => /qwen3vl/i.test(name) && !/minimax/i.test(name)),
     checkpoints: comfyCheckpoints(info).map((name) => ({ name, ...checkpointFamily(name, marked) })),
     vaes: comboOptions(info, 'VAELoader', 'vae_name'),
     loras: comboOptions(info, 'LoraLoader', 'lora_name'),

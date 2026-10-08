@@ -6,6 +6,7 @@ import { CollageDialog } from '../canvas/CollageDialog';
 import { DownloadDialog, VideoDownloadDialog } from '../canvas/DownloadDialog';
 import { Drawer } from '../canvas/Drawer';
 import { GenSettingsDialog } from '../canvas/GenSettings';
+import { FourViewDialog } from '../canvas/FourViewDialog';
 import { Graph } from '../canvas/Graph';
 import { onImageEvent } from '../canvas/imageActions';
 import { ImageViewer } from '../canvas/ImageViewer';
@@ -274,6 +275,7 @@ export function Canvas() {
       <WriteTagsEditor />
       <ZoomDialog />
       <GenSettingsDialog />
+      <FourViewDialog />
       <ImageViewer />
       <DownloadDialog />
       <VideoDownloadDialog />

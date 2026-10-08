@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { HttpError } from '../httpError';
 import { readJson, trashName, writeFileAtomic, writeJsonAtomic } from './jsonFile';
 
-// 程序固定用的说明只维护 docs/prompts/ 里这几份：接在系统提示词后面的格式要求（视频的、生图的）、翻译提示词框和中文转标签时的说明
+// 程序固定用的说明只维护 docs/prompts/ 里这几份：接在系统提示词后面的格式要求（视频、IL/Pony 标签、Krea2 段落）、翻译提示词框和中文转标签时的说明
 const doc = (name: string) => fileURLToPath(new URL(`../../../../docs/prompts/${name}.md`, import.meta.url));
 const FORMAT_REQUIREMENT_DOCS: Record<PromptMeta['use'], string> = { video: doc('format-requirement'), image: doc('format-requirement-image') };
 const TRANSLATE_DOC = doc('translate');
@@ -15,9 +15,9 @@ const TO_TAGS_DOC = doc('to-tags');
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
-// 自带的七套提示词，列表里按这个顺序排在前面：视频的五套（参考模式、图当首帧、纯文字、首尾帧、尾帧图），生图的两套（IL、Pony）。
+// 自带的八套提示词，列表里按这个顺序排在前面：视频的五套（参考模式、图当首帧、纯文字、首尾帧、尾帧图），生图的三套（IL、Pony、Krea2）。
 // 第一套是新建节点的默认。原文只维护 docs/prompts/ 里同名的那几份
-export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'il', 'pony'];
+export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'il', 'pony', 'krea2'];
 export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
 
 const promptsDir = (work: string) => path.join(work, 'prompts');
@@ -156,10 +156,12 @@ async function textBelowRule(file: string): Promise<string> {
   return lines.slice(lines.findIndex((line) => line.trim() === '---') + 1).join('\n').trim();
 }
 
-export const readFormatRequirement = (use: PromptMeta['use']) => textBelowRule(FORMAT_REQUIREMENT_DOCS[use]);
+export const readFormatRequirement = (use: PromptMeta['use'], family?: PromptMeta['family']) =>
+  textBelowRule(family === 'Krea2' ? doc('format-requirement-krea2') : FORMAT_REQUIREMENT_DOCS[use]);
 export const readFormatRequirements = async (): Promise<FormatRequirements> => ({
   video: await readFormatRequirement('video'),
   image: await readFormatRequirement('image'),
+  krea2: await readFormatRequirement('image', 'Krea2'),
 });
 export const readTranslateInstructions = () => textBelowRule(TRANSLATE_DOC);
 export const readToTagsInstructions = () => textBelowRule(TO_TAGS_DOC);

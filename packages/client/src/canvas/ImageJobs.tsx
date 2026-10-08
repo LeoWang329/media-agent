@@ -303,6 +303,7 @@ function Cell({ at, image, ro, picked, gone, onGone, steps, booting }: CellProps
       <span className="ig-seed mono" title="种子">
         {image.seed}
       </span>
+      {!ro && !gone && image.status === 'done' && <button type="button" className="btn btn-ghost btn-sm" onClick={() => useOverlays.setState({ fourView: { nodeId: at.nodeId, reference: { kind: 'generated', messageId: at.messageId, jobId: at.jobId, seed: image.seed } } })}>做四视图</button>}
     </div>
   );
 }

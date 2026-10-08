@@ -11,7 +11,7 @@ const presetsFile = (work: string) => path.join(work, 'image-presets.json');
 // 后来加的项（ControlNet、E02 的几样），之前存的预设里没有，按新节点的默认值补上
 export async function listPresets(work: string): Promise<ImagePreset[]> {
   return ((await readJson<ImagePreset[]>(presetsFile(work))) ?? []).map((preset) => {
-    const { count: _count, seed: _seed, ...settings } = imageSettingsOf(preset.settings, FAMILY_DEFAULTS[preset.family]);
+    const { count: _count, seed: _seed, ...settings } = imageSettingsOf(preset.settings, FAMILY_DEFAULTS[preset.family], preset.family);
     return { ...preset, settings };
   });
 }

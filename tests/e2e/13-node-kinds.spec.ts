@@ -10,7 +10,7 @@ test('10.3 第 17 条：「新建节点」点开选「生图节点」→ 卡片�
   const kinds = cards(page).locator('.gn-kind');
   const options = panel(page).locator('#cfgSys option');
   await expect(kinds).toHaveText(['生图 · IL']);
-  await expect(options).toHaveText(['il · IL', 'pony · Pony']);
+  await expect(options).toHaveText(['il · IL', 'pony · Pony', 'krea2 · Krea2']);
   await expect(panel(page).getByLabel('图的尺寸')).toHaveValue('832×1216');
   await panel(page).locator('#cfgSys').selectOption('pony');
   await expect(kinds).toHaveText(['生图 · Pony']);
@@ -34,5 +34,5 @@ test('10.3 第 17 条：「新建节点」点开选「生图节点」→ 卡片�
   await panel(page).locator('#drMenu').click();
   await page.getByRole('menuitem', { name: '从最后一条消息岔出' }).click();
   await expect(kinds).toHaveText(['生图 · Pony', '视频', '生图 · Pony']);
-  await expect(options).toHaveText(['il · IL', 'pony · Pony']);
+  await expect(options).toHaveText(['il · IL', 'pony · Pony', 'krea2 · Krea2']);
 });

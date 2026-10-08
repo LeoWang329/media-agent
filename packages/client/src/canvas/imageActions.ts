@@ -174,6 +174,7 @@ export function shortError(error: string): string {
 
 // 一组的叫法：照着哪张再来的、补做的是哪张，写清楚
 export function jobLabel(job: ImageJob, jobs: ImageJob[]): string {
+  if (job.kind === 'four-view') return '四视图';
   const source = job.source;
   if (job.kind === 'refine') {
     const from = source && jobs.find((j) => j.id === source.jobId);

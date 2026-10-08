@@ -21,3 +21,4 @@ export * from './workflow';
 export * from './remoteModels';
 export * from './video';
 export * from './media';
+export * from './krea2';

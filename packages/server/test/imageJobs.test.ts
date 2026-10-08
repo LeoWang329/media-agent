@@ -424,7 +424,7 @@ describe('出图设置', () => {
     expect((await t.call('PUT', '/settings', { checkpoints: { 'c.safetensors': 'SD' } })).status).toBe(400);
 
     const defaults = (await t.ok<SharedSettings>('PUT', '/settings', { defaults: { IL: { steps: 30 } } })).defaults;
-    expect(defaults).toEqual({ IL: { ...FAMILY_DEFAULTS.IL, steps: 30 }, Pony: FAMILY_DEFAULTS.Pony });
+    expect(defaults).toEqual({ IL: { ...FAMILY_DEFAULTS.IL, steps: 30 }, Pony: FAMILY_DEFAULTS.Pony, Krea2: FAMILY_DEFAULTS.Krea2 });
     expect((await t.call('PUT', '/settings', { defaults: { IL: { steps: 0 } } })).status).toBe(400);
     expect(JSON.parse(await fs.readFile(path.join(t.work, 'settings.json'), 'utf8')).defaults.IL.steps).toBe(30);
   });
@@ -443,7 +443,7 @@ describe('出图设置', () => {
       { name: 'il-test.safetensors', family: 'IL', guessed: true },
       { name: 'pony-test.safetensors', family: 'Pony', guessed: true },
     ]);
-    expect(options).toMatchObject({ loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
+    expect(options).toMatchObject({ loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
     expect(options.samplers).toContain('euler_ancestral');
 
     await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });

@@ -554,7 +554,7 @@ describe('生成视频任务', () => {
     await until(() => t.ok<AutodlState>('GET', '/comfy/video/status'), (state) => state.state === 'running', 3000);
     const options = await t.ok<VideoOptions>('GET', '/comfy/video/options');
     expect(options.models).toEqual([VIDEO_MODEL, 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors']);
-    expect(options.loras).toEqual(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors']);
+    expect(options.loras).toEqual(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors']);
 
     expect(await t.call('PATCH', nodeUrl(), { video: { loras: [{ name: 'detail-test.safetensors' }] } })).toMatchObject({ status: 400, body: { error: 'LoRA 强度格式不对' } });
     const loras = [

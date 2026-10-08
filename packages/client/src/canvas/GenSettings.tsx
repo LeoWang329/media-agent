@@ -11,6 +11,7 @@ import {
   type ImageSettings,
   type LoraTarget,
   type TagWeighting,
+  kreaDefaults,
 } from '@media-agent/shared';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { api } from '../api';
@@ -21,7 +22,7 @@ import { usePresetStore } from '../store/presetStore';
 import { useNodeWorkflow, useWorkflowStore } from '../store/workflowStore';
 import { anyNumber, CommitInput, integerFrom, numberFrom, trimmed } from '../ui/CommitInput';
 import { confirmBox } from '../ui/confirm';
-import { ControlList } from './ControlList';
+import { ControlList, RefButton } from './ControlList';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
@@ -46,7 +47,221 @@ const close = () => useOverlays.setState({ genSettings: null });
 export function GenSettingsDialog() {
   const nodeId = useOverlays((s) => s.genSettings);
   const node = useCanvasStore((s) => (nodeId ? s.nodes[nodeId] : undefined));
-  return node ? <GenSettings node={node} /> : null;
+  const family = usePromptInfo(node?.systemPromptName ?? '')?.family;
+  return node ? family === 'Krea2' ? <KreaGenSettings node={node} /> : <GenSettings node={node} /> : null;
+}
+
+function KreaGenSettings({ node }: { node: ChatNode }) {
+  const image = useImageSettings(node, 'Krea2');
+  const krea = image.krea!;
+  const options = useComfyStore((s) => s.options);
+  const target = useComfyStore((s) => s.target);
+  const status = useComfyStore((s) => s.status);
+  const autodl = useComfyStore((s) => s.autodl);
+  const checking = useComfyStore((s) => s.checking);
+  const optionsError = useComfyStore((s) => s.optionsError);
+  const presets = usePresetStore((s) => s.list)?.filter((p) => p.family === 'Krea2') ?? [];
+  useEffect(() => {
+    void useComfyStore.getState().loadTarget();
+    void useComfyStore.getState().loadOptions();
+    void useComfyStore.getState().checkStatus();
+    void useComfyStore.getState().checkAutodl();
+    void usePresetStore
+      .getState()
+      .load()
+      .catch((err: Error) => toast(err.message, { tone: 'danger' }));
+  }, []);
+  const save = (patch: Partial<ImageSettings>) => void useCanvasStore.getState().patchNode(node.id, { image: patch });
+  const select = (id: string, label: string, value: string, values: string[], onPick: (value: string) => void) => (
+    <label className="field" htmlFor={id}>
+      {label}
+      <select className="select" id={id} value={value} onChange={(e) => onPick(e.target.value)}>
+        {[...new Set([value, ...values])].filter(Boolean).map((name) => (
+          <option key={name} value={name}>
+            {name}
+            {options && !values.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  return (
+    <Dialog className="gc-dialog" label="出图设置" onClose={close}>
+      <div className="dialog-head">
+        <h2>Krea2 出图设置</h2>
+        <button type="button" className="btn btn-ghost btn-icon" aria-label="关闭" onClick={close}>
+          <Icon name="x" />
+        </button>
+      </div>
+      <div className="dialog-body gc-body">
+        <div className="gc-sec">
+          <h4>用哪台 ComfyUI</h4>
+          <div className="seg" role="group" aria-label="用哪台 ComfyUI">
+            {(['lan', 'autodl'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={target === value}
+                onClick={async () => {
+                  await useComfyStore.getState().setTarget(value);
+                  void useComfyStore.getState().loadOptions();
+                }}
+              >
+                {value === 'lan' ? '局域网那台' : 'AutoDL 实例'}
+              </button>
+            ))}
+          </div>
+          {target === 'autodl' ? <AutodlSource autodl={autodl} /> : <LanState status={status} checking={checking} />}
+          {optionsError && <p className="hint">{optionsError}</p>}
+        </div>
+        <div className="gc-sec">
+          <h4>预设</h4>
+          <div className="row">
+            <select
+              className="select"
+              id="gcPreset"
+              aria-label="套用预设"
+              value=""
+              onChange={(e) => {
+                const p = presets.find((p) => p.id === e.target.value);
+                if (p) save(p.settings);
+              }}
+            >
+              <option value="">套用 Krea2 预设…</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <SavePreset family="Krea2" image={image} />
+          </div>
+        </div>
+        <div className="gc-sec">
+          <h4>起图</h4>
+          <div className="seg" role="group" aria-label="起图">
+            {(['text', 'four-view'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={krea.mode === mode}
+                onClick={() => {
+                  if (mode === krea.mode) return;
+                  const defaults = kreaDefaults(mode);
+                  save({ ...defaults, count: image.count, krea: { ...defaults.krea!, reference: krea.reference, extra: krea.extra } });
+                }}
+              >
+                {mode === 'text' ? '文生图' : '四视图'}
+              </button>
+            ))}
+          </div>
+          {krea.mode === 'four-view' && (
+            <div className="stack">
+              <RefButton node={node} value={krea.reference} onPick={(reference) => save({ krea: { ...krea, reference } })} />
+              <label className="field">
+                参考图相似度
+                <CommitInput
+                  className="input mono"
+                  id="gcRefBoost"
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="10"
+                  aria-label="参考图相似度"
+                  value={String(krea.refBoost)}
+                  parse={numberFrom(0)}
+                  onCommit={(v) => save({ krea: { ...krea, refBoost: Number(v) } })}
+                />
+              </label>
+              <p className="hint">生成脸部特写、正面、侧面和背面全身四视图。框中文字作为额外要求；默认 1536×1024，尺寸可在面板上调整。</p>
+            </div>
+          )}
+        </div>
+        <div className="gc-sec">
+          {select('gcCkpt', '底模', image.checkpoint, options?.kreaModels ?? [], (checkpoint) => save({ checkpoint }))}
+          {select('gcTextEncoder', '文字理解模型', image.textEncoder ?? '', options?.textEncoders ?? [], (textEncoder) => save({ textEncoder }))}
+          {select('gcVae', 'VAE', image.vae, options?.vaes ?? [], (vae) => save({ vae }))}
+        </div>
+        <div className="gc-sec">
+          <h4>LoRA</h4>
+          <div className="gc-loras">
+            {image.loras.map((lora, i) => (
+              <div className="gc-lora" key={i}>
+                <LoraSelect
+                  value={lora.name}
+                  loras={[...new Set([lora.name, ...(options?.loras.filter((name) => /krea/i.test(name)) ?? [])])]}
+                  onPick={(name) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, name } : l)) })}
+                />
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  step="0.05"
+                  aria-label="强度"
+                  value={String(lora.strength)}
+                  parse={anyNumber}
+                  onCommit={(v) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, strength: Number(v) } : l)) })}
+                />
+                <button type="button" className="btn btn-ghost btn-icon" aria-label="去掉" onClick={() => save({ loras: image.loras.filter((_, j) => j !== i) })}>
+                  <Icon name="x" />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={!options?.loras.some((name) => /krea/i.test(name))}
+              onClick={() => save({ loras: [...image.loras, { name: options!.loras.find((name) => /krea/i.test(name))!, strength: 1 }] })}
+            >
+              <Icon name="plus" />
+              挂一个 LoRA
+            </button>
+          </div>
+        </div>
+        <div className="gc-sec gc-grid">
+          <label className="field">
+            步数
+            <CommitInput
+              className="input mono"
+              id="gcSteps"
+              type="number"
+              min="1"
+              aria-label="步数"
+              value={String(image.steps)}
+              parse={integerFrom(1)}
+              onCommit={(v) => save({ steps: Number(v) })}
+            />
+          </label>
+          <label className="field">
+            CFG
+            <CommitInput
+              className="input mono"
+              id="gcCfg"
+              type="number"
+              min="0"
+              step="0.1"
+              aria-label="CFG"
+              value={String(image.cfg)}
+              parse={numberFrom(0)}
+              onCommit={(v) => save({ cfg: Number(v) })}
+            />
+          </label>
+          {select('gcSampler', '采样器', image.sampler, options?.samplers ?? [], (sampler) => save({ sampler }))}
+          {select('gcScheduler', '调度器', image.scheduler, options?.schedulers ?? [], (scheduler) => save({ scheduler }))}
+          <label className="field">
+            种子（空着随机）
+            <CommitInput
+              className="input mono"
+              id="gcSeed"
+              aria-label="种子"
+              value={image.seed === null ? '' : String(image.seed)}
+              parse={(v) => (v.trim() ? integerFrom(0)(v) : '')}
+              onCommit={(v) => save({ seed: v === '' ? null : Number(v) })}
+            />
+          </label>
+        </div>
+      </div>
+    </Dialog>
+  );
 }
 
 function GenSettings({ node }: { node: ChatNode }) {

@@ -38,7 +38,7 @@ export async function readSettings(work: string): Promise<SharedSettings> {
       videoAutodl: { ...DEFAULT_AUTODL, ...saved?.comfy?.videoAutodl },
     },
     checkpoints: { ...saved?.checkpoints },
-    defaults: { IL: { ...FAMILY_DEFAULTS.IL, ...saved?.defaults?.IL }, Pony: { ...FAMILY_DEFAULTS.Pony, ...saved?.defaults?.Pony } },
+    defaults: { IL: { ...FAMILY_DEFAULTS.IL, ...saved?.defaults?.IL }, Pony: { ...FAMILY_DEFAULTS.Pony, ...saved?.defaults?.Pony }, Krea2: { ...FAMILY_DEFAULTS.Krea2, ...saved?.defaults?.Krea2 } },
   };
 }
 

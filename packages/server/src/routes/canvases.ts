@@ -116,18 +116,23 @@ export function canvasRoutes(configDir: string): express.Router {
     const { canvasId, nodeId } = ids(req);
     const w = await work();
     const body = (req.body ?? {}) as Record<string, unknown>;
+    let resetImage = false;
     // 节点的类型建好就定了，系统提示词只能换成这种节点用的
     if (typeof body.systemPromptName === 'string') {
       const [node, meta] = await Promise.all([readNode(w, canvasId, nodeId), readPromptMeta(w, body.systemPromptName)]);
       if ((meta?.use ?? 'video') !== node.kind) throw new HttpError(400, node.kind === 'image' ? '生图节点只能选生图用的系统提示词' : '视频节点只能选写视频提示词的系统提示词');
+      const old = await readPromptMeta(w, node.systemPromptName);
+      resetImage = meta?.family !== old?.family && (meta?.family === 'Krea2' || old?.family === 'Krea2');
+      if (resetImage && body.image === undefined) body.image = {};
     }
     // 改出图设置：节点还没改过的，先按它系列的默认值补全
     let imageBase: ImageSettings | undefined;
     if (body.image !== undefined) {
       const promptName = typeof body.systemPromptName === 'string' ? body.systemPromptName : (await readNode(w, canvasId, nodeId)).systemPromptName;
-      imageBase = defaultImageSettings((await readSettings(w)).defaults[await imageFamily(w, promptName)]);
+      const family = await imageFamily(w, promptName);
+      imageBase = defaultImageSettings((await readSettings(w)).defaults[family], family);
     }
-    const node = await updateNode(w, canvasId, nodeId, (current) => applyNodePatch(current, body, imageBase));
+    const node = await updateNode(w, canvasId, nodeId, (current) => applyNodePatch(resetImage ? { ...current, image: undefined } : current, body, imageBase));
     if (body.title !== undefined) await updateCanvas(w, canvasId, () => {});
     res.json(node);
   });

@@ -2,6 +2,8 @@
 
 写给负责实现的 agent。需求访谈记录在 `docs/requirements-interview.md`（生图那部分在 `docs/requirements-interview-image.md`），那两份讲的是「为什么这么定」；这份讲「具体怎么做」。它们不该冲突，发现冲突先停下来问用户。
 
+Krea2 文生图和四视图的新增需求及实现见 `docs/requirements-interview-krea2.md`、`docs/dev-plan-krea2.md`。
+
 ## 1. 一句话说明
 
 一个本机运行的网页：左边是资产库（导入本机文件夹里的图片），中间是画布（每个节点是一段和 agent 的对话，可以从任意一条消息 fork 出新节点），右边是当前节点的对话面板（上面有 9 个图片槽位、视频时长和画面比例）。agent 按 MiniMax H3 官方写法写视频提示词，图片在提示词里用 `<Picture 1>` 到 `<Picture 9>` 引用。第一版只出提示词，不生成视频。

@@ -28,6 +28,12 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
   });
   const imageIndex = (req: Request) => v.index(Number(req.params.index), '图片');
 
+  router.post('/canvases/:canvasId/nodes/:nodeId/four-view', async (req, res) => {
+    const reference = v.refImage(req.body?.reference);
+    if (!reference) throw new HttpError(400, '四视图还没选参考图');
+    res.status(201).json(await jobs.fourView({ work: await requireWorkFolder(configDir), canvasId: v.uuid(req.params.canvasId), nodeId: v.uuid(req.params.nodeId) }, reference, v.text(req.body?.extra ?? '', '额外要求')));
+  });
+
   // again 是「同样参数再来」「只换种子再来」，照着那一张出一张；refine 是出完的图上补做放大和部位重绘
   router.post(base, async (req, res) => {
     const again = req.body?.again === undefined ? undefined : againOf(req.body.again);

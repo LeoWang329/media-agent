@@ -40,11 +40,11 @@ const VIDEO = fs.readFileSync(new URL('../fixtures/video.mp4', import.meta.url))
 const MODELS = {
   checkpoints: ['il-test.safetensors', 'pony-test.safetensors'],
   // 后两个和下面三样是长视频用的，文件名照 AutoDL 上 H3 那台
-  vae: ['sdxl_vae.safetensors', 'minimax_h3_audio_vae_fp32.safetensors', 'minimax_h3_video_vae_fp16.safetensors'],
+  vae: ['sdxl_vae.safetensors', 'qwen_image_vae.safetensors', 'minimax_h3_audio_vae_fp32.safetensors', 'minimax_h3_video_vae_fp16.safetensors'],
   unet: ['minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors', 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors'],
-  textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors'],
+  textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors', 'qwen3vl_4b_uncensored_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
   latentUpscale: ['minimax_h3_latent_upscaler_3d_bf16.safetensors'],
-  loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors'],
+  loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors'],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
   schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
   upscale: ['4x-test.pth'],
@@ -98,6 +98,11 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
     ['CONDITIONING'],
   ),
   EmptyLatentImage: node({ width: ['INT', {}], height: ['INT', {}], batch_size: ['INT', {}] }, ['LATENT']),
+  EmptySD3LatentImage: node({ width: ['INT', {}], height: ['INT', {}], batch_size: ['INT', {}] }, ['LATENT']),
+  ConditioningZeroOut: node({ conditioning: ['CONDITIONING'] }, ['CONDITIONING']),
+  Krea2EditModelPatch: node({ model: ['MODEL'], source_latent: ['LATENT'] }, ['MODEL'], false, { target_latent: ['LATENT'], source_image: ['IMAGE'], vae: ['VAE'], ref_boost: ['FLOAT', {}], ref_boost_a: ['FLOAT', {}], fit_mode: combo(['fit', 'crop (legacy)']) }),
+  Krea2EditGroundedEncode: node({ clip: ['CLIP'], prompt: ['STRING', { multiline: true }] }, ['CONDITIONING'], false, { image: ['IMAGE'], grounding_px: ['INT', {}], system_prompt: ['STRING', {}] }),
+  ImageResizeKJv2: node({ image: ['IMAGE'], width: ['INT', {}], height: ['INT', {}], upscale_method: combo(['lanczos']), keep_proportion: combo(['resize']), pad_color: ['STRING', {}], crop_position: combo(['center']), divisible_by: ['INT', {}] }, ['IMAGE'], false, { device: combo(['cpu', 'gpu']) }),
   KSampler: node(
     {
       model: ['MODEL'],
@@ -135,11 +140,11 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   DWPreprocessor: node({}, ['IMAGE']),
   'WD14Tagger|pysssss': node({ model: combo(MODELS.tagger) }, ['STRING'], true),
   // 长视频流程用的，下拉项照 H3 那台
-  UNETLoader: node({ unet_name: combo(MODELS.unet), weight_dtype: combo(['default', 'fp8_e4m3fn', 'fp8_e4m3fn_fast', 'fp8_e5m2']) }, ['MODEL']),
+  UNETLoader: node({ unet_name: combo([...MODELS.unet, 'krea2/darkBeastINT8Convrot2_krea211INT8Convrot.safetensors', 'krea/krea2_turbo_int8_convrot.safetensors']), weight_dtype: combo(['default', 'fp8_e4m3fn', 'fp8_e4m3fn_fast', 'fp8_e5m2']) }, ['MODEL']),
   ModelAttentionBackend: node({ model: ['MODEL'], attention: comboV3(['pytorch attention', 'comfy kitchen attention']) }, ['MODEL']),
   MiniMaxLowVRAMAttention: node({ model: ['MODEL'], head_chunks: ['INT', {}] }, ['MODEL']),
   MiniMaxChunkFeedForward: node({ model: ['MODEL'], chunks: ['INT', {}], seq_threshold: ['INT', {}] }, ['MODEL']),
-  CLIPLoader: node({ clip_name: combo(MODELS.textEncoder), type: combo(['stable_diffusion', 'ltxv', 'minimax']) }, ['CLIP'], false, { device: combo(['default', 'cpu']) }),
+  CLIPLoader: node({ clip_name: combo(MODELS.textEncoder), type: combo(['stable_diffusion', 'ltxv', 'minimax', 'krea2']) }, ['CLIP'], false, { device: combo(['default', 'cpu']) }),
   MMH3ReferenceMultiPrompt: node(
     { clip: ['CLIP'], vae: ['VAE'], audio_vae: ['VAE'], width: ['INT', {}], height: ['INT', {}], length: ['INT', {}], ref_image_size: comboV3(['match', 'max']), prompts: ['STRING', {}] },
     ['MMH3_COND_SET', 'LATENT', 'INT', 'IMAGE'],
@@ -226,6 +231,7 @@ function textAbove(graph: Graph, value: unknown): string {
   const seen = new Set<unknown>();
   for (let item = linked(graph, value); item && !seen.has(item); item = linked(graph, item.inputs.positive)) {
     if (typeof item.inputs.text === 'string') return item.inputs.text;
+    if (typeof item.inputs.prompt === 'string') return item.inputs.prompt;
     seen.add(item);
   }
   return '';
@@ -531,7 +537,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
 
   async function outputSize(graph: Graph): Promise<{ width: number; height: number }> {
     const scale = findNode(graph, 'ImageScale');
-    const latent = findNode(graph, 'EmptyLatentImage');
+    const latent = findNode(graph, 'EmptyLatentImage') ?? findNode(graph, 'EmptySD3LatentImage');
     const load = findNode(graph, 'LoadImage');
     const from = scale ?? latent;
     if (from) return { width: Number(graph[from].inputs.width), height: Number(graph[from].inputs.height) };

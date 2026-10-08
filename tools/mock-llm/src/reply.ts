@@ -31,7 +31,8 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   // 中文转标签（标签编辑窗里「让 AI 转成标签」）：只回一串标签
   if (system.includes('转成 Danbooru 标签')) return { reply: 'sitting, window, book, reading', userText, fail: false, slow: false };
   // 生图节点：系统消息带着生图的固定格式要求，框里是一串标签。blond hair 是官方别名，goldish hair 词库里没有
-  const image = system.includes('框里只放英文标签');
+  const krea = system.includes('Krea2 Turbo');
+  const image = krea || system.includes('框里只放英文标签');
 
   const pictureLabels: string[] = [];
   let imageCount = 0;
@@ -53,7 +54,7 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   ];
   if (!userText.includes('只回答')) {
     const segments = segmentCount(messages);
-    const box = image ? tagBox : (summary: string, label?: string) => promptBox(summary, label, segments);
+    const box = krea ? (_summary: string, label?: string) => [label ? `<prompt label="${label}">` : '<prompt>', 'An adult woman stands by a sunlit window. Warm light reveals the woven texture of her jacket, with a quiet street visible behind her.', '</prompt>'].join('\n') : image ? tagBox : (summary: string, label?: string) => promptBox(summary, label, segments);
     const boxes = userText.includes('三个方向')
       ? ['一', '二', '三'].map((n) => box(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
       : [box('测试概述')];

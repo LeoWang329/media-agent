@@ -2,7 +2,6 @@ import {
   activePath,
   aspectRatioText,
   hasUnsentSettings,
-  IMAGE_SIZES,
   imageSizeFits,
   MEDIA_EXTENSIONS,
   roundSize,
@@ -27,7 +26,7 @@ import { showMenu, type MenuItem } from '../ui/menu';
 import { Popover } from '../ui/Popover';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
-import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
+import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, KREA2_SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
 import { MediaSlots } from './MediaSlots';
@@ -159,9 +158,10 @@ function VideoParams({ node }: { node: ChatNode }) {
 function ImageParams({ node }: { node: ChatNode }) {
   const image = imageSize(node);
   const [customAt, setCustomAt] = useState<DOMRect | null>(null);
-  const listed = IMAGE_SIZES.some((size) => size.width === image.width && size.height === image.height);
   const family = usePromptInfo(node.systemPromptName)?.family ?? 'IL';
   const settings = useImageSettings(node, family);
+  const sizeGroups = family === 'Krea2' ? KREA2_SIZE_GROUPS.map((g) => ({ ...g, sizes: g.sizes.filter((s) => settings.krea?.mode !== 'four-view' || (s.width % 16 === 0 && s.height % 16 === 0)) })) : SIZE_GROUPS;
+  const listed = sizeGroups.some((g) => g.sizes.some((size) => size.width === image.width && size.height === image.height));
   const options = useComfyStore((s) => s.options);
   const patchNode = useCanvasStore((s) => s.patchNode);
   const setCount = (count: number) => void patchNode(node.id, { image: { count } });
@@ -196,7 +196,7 @@ function ImageParams({ node }: { node: ChatNode }) {
             setSize({ width, height });
           }}
         >
-          {SIZE_GROUPS.map((group) => (
+          {sizeGroups.map((group) => (
             <optgroup key={group.label} label={group.label}>
               {group.sizes.map((size) => (
                 <option key={sizeText(size)} value={sizeText(size)}>
@@ -214,6 +214,7 @@ function ImageParams({ node }: { node: ChatNode }) {
           <CustomSize
             anchor={customAt}
             size={image}
+            krea={family === 'Krea2' ? settings.krea?.mode : undefined}
             onPick={(size) => {
               setCustomAt(null);
               setSize(size);
@@ -260,10 +261,13 @@ function ImageParams({ node }: { node: ChatNode }) {
 }
 
 // 尺寸自己填：宽高取最近的 8 的倍数，见 docs/dev-plan.md 5.21
-function CustomSize({ anchor, size, onPick, onClose }: { anchor: DOMRect; size: { width: number; height: number }; onPick: (size: { width: number; height: number }) => void; onClose: () => void }) {
+function CustomSize({ anchor, size, krea, onPick, onClose }: { anchor: DOMRect; size: { width: number; height: number }; krea?: 'text' | 'four-view'; onPick: (size: { width: number; height: number }) => void; onClose: () => void }) {
   const [draft, setDraft] = useState({ width: String(size.width), height: String(size.height) });
-  const rounded = { width: roundSize(Number(draft.width)), height: roundSize(Number(draft.height)) };
-  const ok = [rounded.width, rounded.height].every((side) => side >= SIZE_LIMITS.min && side <= SIZE_LIMITS.max);
+  const multiple = krea === 'four-view' ? 16 : 8;
+  const limits = krea ? { min: SIZE_LIMITS.min, max: 4096 } : SIZE_LIMITS;
+  const round = (value: string) => krea === 'four-view' ? Math.round(Number(value) / 16) * 16 : roundSize(Number(value));
+  const rounded = { width: round(draft.width), height: round(draft.height) };
+  const ok = [rounded.width, rounded.height].every((side) => side >= limits.min && side <= limits.max);
   const go = () => ok && onPick(rounded);
   const field = (side: 'width' | 'height', label: string, autofocus?: boolean) => (
     <input
@@ -271,9 +275,9 @@ function CustomSize({ anchor, size, onPick, onClose }: { anchor: DOMRect; size: 
       type="number"
       aria-label={label}
       data-autofocus={autofocus || undefined}
-      min={SIZE_LIMITS.min}
-      max={SIZE_LIMITS.max}
-      step="8"
+      min={limits.min}
+      max={limits.max}
+      step={multiple}
       value={draft[side]}
       onChange={(e) => setDraft({ ...draft, [side]: e.target.value })}
       onKeyDown={(e) => e.key === 'Enter' && go()}
@@ -290,7 +294,7 @@ function CustomSize({ anchor, size, onPick, onClose }: { anchor: DOMRect; size: 
         </button>
       </div>
       <p className="hint">
-        宽高取最近的 8 的倍数，能填 {SIZE_LIMITS.min} 到 {SIZE_LIMITS.max}。
+        宽高取最近的 {multiple} 的倍数，能填 {limits.min} 到 {limits.max}。
       </p>
     </Popover>
   );
@@ -366,6 +370,7 @@ function Slots({ node }: { node: ChatNode }) {
     if (processed) items.push({ note: processed });
     if (copyOnly) items.push({ note: copyOnly });
     items.push({ label: '放大看', icon: 'expand', onClick: () => useOverlays.setState({ zoom: { imageId: node.slots[index], title: `${index + 1} 号：${image?.originalName ?? ''}` } }) });
+    if (node.kind === 'image') items.push({ label: '做四视图', icon: 'image', onClick: () => useOverlays.setState({ fourView: { nodeId: node.id, reference: { kind: 'slot', imageId: node.slots[index] } } }) });
     items.push({ label: '换一张（从资产库挑）', icon: 'swap', onClick: () => openAssets('replace', index) });
     if (index > 0) items.push({ label: '往前挪一位', icon: 'chev-left', onClick: () => void moveSlot(node.id, index, index - 1) });
     if (index < node.slots.length - 1) items.push({ label: '往后挪一位', icon: 'chev-right', onClick: () => void moveSlot(node.id, index, index + 1) });
@@ -493,6 +498,7 @@ function Slots({ node }: { node: ChatNode }) {
 }
 
 function Composer({ node, image }: { node: ChatNode; image: boolean }) {
+  const family = usePromptInfo(node.systemPromptName)?.family;
   const busy = useCanvasStore((s) => Boolean(s.streams[node.id]) || Boolean(s.detail?.nodes.find((n) => n.id === node.id)?.generating));
   const focus = useCanvasStore((s) => (s.composerFocus?.nodeId === node.id ? s.composerFocus.seq : 0));
   const [empty, setEmpty] = useState(!node.draft.trim());
@@ -607,7 +613,7 @@ function Composer({ node, image }: { node: ChatNode; image: boolean }) {
           <Icon name="at" />
           引用图片
         </button>
-        {image && (
+        {image && family !== 'Krea2' && (
           <button
             type="button"
             className="btn btn-ghost btn-sm"

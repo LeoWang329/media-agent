@@ -25,11 +25,12 @@ const BUILTINS: PromptInfo[] = [
   { name: 'l2va', use: 'video', family: null },
   { name: 'il', use: 'image', family: 'IL' },
   { name: 'pony', use: 'image', family: 'Pony' },
+  { name: 'krea2', use: 'image', family: 'Krea2' },
 ];
 
 describe('系统提示词', () => {
   it('列表、新建、读、改、删除进 .trash；名字不合法返回 400', async () => {
-    // 自带七套，视频的五套在前、参考模式排第一，生图的两套标出系列
+    // 自带八套，视频的五套在前、参考模式排第一，生图的三套标出系列
     expect(await t.ok('GET', '/prompts')).toEqual(BUILTINS);
 
     await t.ok('POST', '/prompts', { name: '英文版', text: 'english' });
@@ -59,20 +60,21 @@ describe('系统提示词', () => {
     const prompts = path.join(t.work, 'prompts');
     for (const file of ['.builtin.json', 'il.md', 'pony.md', 't2v.md']) await fs.rm(path.join(prompts, file));
 
-    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'il', 'pony']);
+    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'il', 'pony', 'krea2']);
     expect(await fs.readFile(path.join(prompts, 'il.md'), 'utf8')).toBe(await fs.readFile(IL_PROMPT, 'utf8'));
     expect(JSON.parse(await fs.readFile(path.join(prompts, '.builtin.json'), 'utf8'))).toEqual(BUILTINS.map((p) => p.name));
 
     await t.ok('DELETE', '/prompts/il');
-    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'pony']);
+    expect((await t.ok<PromptInfo[]>('GET', '/prompts')).map((p) => p.name)).toEqual(['ref2va', 'i2v', 'fl2va', 'l2va', 'pony', 'krea2']);
   });
 
   it('固定格式要求：视频的取 format-requirement.md、生图的取 format-requirement-image.md，都是 --- 下面那段', async () => {
-    const { video, image } = await t.ok<FormatRequirements>('GET', '/format-requirement');
+    const { video, image, krea2 } = await t.ok<FormatRequirements>('GET', '/format-requirement');
     expect(video.startsWith('输出格式要求：')).toBe(true);
     expect(video).toContain('<prompt label="方向一：慢推近景，无台词">');
     expect(image.startsWith('输出格式要求：')).toBe(true);
     expect(image).toContain('框里只放英文标签');
-    for (const text of [video, image]) expect(text).not.toContain('---');
+    expect(krea2).toContain('英文自然语言描述');
+    for (const text of [video, image, krea2]) expect(text).not.toContain('---');
   });
 });

@@ -161,8 +161,8 @@ export function choice<T extends string>(value: unknown, what: string, choices: 
 }
 
 // 尺寸的宽或高：九档之一，或者自己填的，都是 8 的倍数，见 docs/dev-plan.md 5.21
-function side(value: unknown, what: string): number {
-  const { min, max } = SIZE_LIMITS;
+function side(value: unknown, what: string, limits = SIZE_LIMITS): number {
+  const { min, max } = limits;
   if (typeof value !== 'number' || !Number.isInteger(value) || value % 8 !== 0 || value < min || value > max) {
     throw new HttpError(400, `${what}要是 ${min} 到 ${max} 之间 8 的倍数`);
   }
@@ -181,12 +181,24 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (typeof value !== 'object' || value === null) throw new HttpError(400, '出图设置格式不对');
   const fields = value as Record<string, unknown>;
   const next = { ...base };
-  if (fields.width !== undefined) next.width = side(fields.width, '宽');
-  if (fields.height !== undefined) next.height = side(fields.height, '高');
+  const limits = base.krea ? { min: SIZE_LIMITS.min, max: 4096 } : SIZE_LIMITS;
+  if (fields.width !== undefined) next.width = side(fields.width, '宽', limits);
+  if (fields.height !== undefined) next.height = side(fields.height, '高', limits);
   if (fields.count !== undefined) next.count = integer(fields.count, '张数', 1, 8);
   if (fields.workflowId !== undefined) next.workflowId = fields.workflowId === null ? null : uuid(fields.workflowId);
   if (fields.checkpoint !== undefined) next.checkpoint = text(fields.checkpoint, '底模');
   if (fields.vae !== undefined) next.vae = text(fields.vae, 'VAE');
+  if (fields.textEncoder !== undefined) next.textEncoder = text(fields.textEncoder, '文字理解模型');
+  if (fields.krea !== undefined) {
+    if (typeof fields.krea !== 'object' || fields.krea === null || Array.isArray(fields.krea)) throw new HttpError(400, 'Krea2 设置格式不对');
+    const krea = fields.krea as Record<string, unknown>;
+    next.krea = {
+      mode: choice(krea.mode, 'Krea2 起图', ['text', 'four-view'] as const),
+      reference: refImage(krea.reference),
+      refBoost: between(krea.refBoost, '参考图相似度', 0, 10),
+      extra: text(krea.extra, '额外要求'),
+    };
+  }
   if (fields.loraTarget !== undefined) next.loraTarget = choice(fields.loraTarget, 'LoRA 作用在哪', LORA_TARGETS);
   if (fields.weighting !== undefined) next.weighting = choice(fields.weighting, '权重算法', WEIGHTINGS);
   if (fields.loras !== undefined) next.loras = loraList(fields.loras);
@@ -206,6 +218,7 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (fields.upscale !== undefined) next.upscale = upscaleSettings(fields.upscale);
   if (fields.details !== undefined) next.details = detailPasses(fields.details);
   if (fields.controls !== undefined) next.controls = controls(fields.controls);
+  if (next.krea?.mode === 'four-view' && (next.width % 16 !== 0 || next.height % 16 !== 0)) throw new HttpError(400, '四视图的宽高要是 16 的倍数');
   return next;
 }
 
@@ -293,7 +306,7 @@ export function controls(value: unknown): ControlSettings[] {
 }
 
 // 参考图：槽位里的图，或者这个节点出过的图；没选是 null
-function refImage(value: unknown): RefImage | null {
+export function refImage(value: unknown): RefImage | null {
   if (value === null) return null;
   const fields = (value ?? {}) as Record<string, unknown>;
   if (fields.kind === 'slot') return { kind: 'slot', imageId: nonEmptyText(fields.imageId, '参考图') };

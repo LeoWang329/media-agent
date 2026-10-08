@@ -507,7 +507,7 @@ export function CheckpointsTab({ workFolder }: { workFolder: string | null }) {
                 <span className="mono grow sx-ck">{c.name}</span>
                 {c.guessed && <span className="tag">按文件名猜的</span>}
                 <div className="seg" role="group" aria-label={`${c.name} 属于哪个系列`}>
-                  {[...FAMILIES, null].map((family) => (
+                  {[...FAMILIES.filter((family) => family !== 'Krea2'), null].map((family) => (
                     <button key={family ?? 'none'} type="button" aria-pressed={c.family === family} onClick={() => c.family !== family || c.guessed ? void mark(c.name, family) : undefined}>
                       {family ?? '都不是'}
                     </button>
@@ -556,28 +556,32 @@ function FamilyCard({ family, defaults, samplers, schedulers, onSave }: FamilyPr
         <span className="meta">新建生图节点时按这个填，节点里还能各自改</span>
       </div>
       <div className="mf-grid">
-        <div className="field mf-wide">
-          <label htmlFor={id('prefix')}>固定开头</label>
-          <CommitTextarea className="textarea mono sx-ta" id={id('prefix')} rows={2} value={defaults.prefix} parse={trimmed} onCommit={(v) => onSave({ prefix: String(v) })} />
-          <p className="hint">出图时加在正面提示词最前面。提示词框里不显示，也不用写。</p>
-        </div>
-        <div className="field mf-wide">
-          <label htmlFor={id('negative')}>默认负面词</label>
-          <CommitTextarea className="textarea mono sx-ta" id={id('negative')} rows={2} value={defaults.negative} parse={trimmed} onCommit={(v) => onSave({ negative: String(v) })} />
-          <p className="hint">不想在图里出现的东西。节点的出图设置里还能再加。</p>
-        </div>
-        <div className="field mf-wide">
-          <span className="label">评级词的写法</span>
-          <div className="sx-rate">
-            {RATING_FIELDS.map(([key, label]) => (
-              <label key={key}>
-                <span className="meta">{label}</span>
-                <CommitInput className="input mono" value={defaults.rating[key]} parse={trimmed} onCommit={(v) => onSave({ rating: { ...defaults.rating, [key]: String(v) } })} />
-              </label>
-            ))}
-          </div>
-          <p className="hint">出图设置里选了评级，就把对应的词加在固定开头后面。</p>
-        </div>
+        {family !== 'Krea2' && (
+          <>
+            <div className="field mf-wide">
+              <label htmlFor={id('prefix')}>固定开头</label>
+              <CommitTextarea className="textarea mono sx-ta" id={id('prefix')} rows={2} value={defaults.prefix} parse={trimmed} onCommit={(v) => onSave({ prefix: String(v) })} />
+              <p className="hint">出图时加在正面提示词最前面。提示词框里不显示，也不用写。</p>
+            </div>
+            <div className="field mf-wide">
+              <label htmlFor={id('negative')}>默认负面词</label>
+              <CommitTextarea className="textarea mono sx-ta" id={id('negative')} rows={2} value={defaults.negative} parse={trimmed} onCommit={(v) => onSave({ negative: String(v) })} />
+              <p className="hint">不想在图里出现的东西。节点的出图设置里还能再加。</p>
+            </div>
+            <div className="field mf-wide">
+              <span className="label">评级词的写法</span>
+              <div className="sx-rate">
+                {RATING_FIELDS.map(([key, label]) => (
+                  <label key={key}>
+                    <span className="meta">{label}</span>
+                    <CommitInput className="input mono" value={defaults.rating[key]} parse={trimmed} onCommit={(v) => onSave({ rating: { ...defaults.rating, [key]: String(v) } })} />
+                  </label>
+                ))}
+              </div>
+              <p className="hint">出图设置里选了评级，就把对应的词加在固定开头后面。</p>
+            </div>
+          </>
+        )}
         <div className="field">
           <label htmlFor={id('steps')}>步数</label>
           <CommitInput className="input mono" id={id('steps')} value={String(defaults.steps)} parse={integerFrom(1)} onCommit={(v) => onSave({ steps: Number(v) })} />
@@ -606,11 +610,13 @@ function FamilyCard({ family, defaults, samplers, schedulers, onSave }: FamilyPr
           </select>
           <p className="hint">每一步画多少的节奏。</p>
         </div>
-        <div className="field">
-          <label htmlFor={id('clip')}>clip skip</label>
-          <CommitInput className="input mono" id={id('clip')} value={String(defaults.clipSkip)} parse={integerFrom(1)} onCommit={(v) => onSave({ clipSkip: Number(v) })} />
-          <p className="hint">这两个系列都要设 2，不设出来是糊的。</p>
-        </div>
+        {family !== 'Krea2' && (
+          <div className="field">
+            <label htmlFor={id('clip')}>clip skip</label>
+            <CommitInput className="input mono" id={id('clip')} value={String(defaults.clipSkip)} parse={integerFrom(1)} onCommit={(v) => onSave({ clipSkip: Number(v) })} />
+            <p className="hint">这两个系列都要设 2，不设出来是糊的。</p>
+          </div>
+        )}
       </div>
     </section>
   );

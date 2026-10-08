@@ -70,7 +70,7 @@ export type ImageErrorKind = 'down' | 'checkpoint' | 'rejected' | 'missing' | 'm
 
 export function imageErrorKind(error: string): ImageErrorKind {
   if (error.startsWith('连不上 ComfyUI')) return 'down';
-  if (error.startsWith('ComfyUI 不收这个任务')) return /CheckpointLoaderSimple[\s\S]*ckpt_name/.test(error) ? 'checkpoint' : 'rejected';
+  if (error.startsWith('ComfyUI 不收这个任务')) return /CheckpointLoaderSimple[\s\S]*ckpt_name|UNETLoader[\s\S]*unet_name/.test(error) ? 'checkpoint' : 'rejected';
   if (error.startsWith('这台 ComfyUI 缺插件')) return 'missing';
   if (error.startsWith('显存不够')) return 'memory';
   if (error.startsWith('程序重启')) return 'restart';

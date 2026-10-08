@@ -1,4 +1,11 @@
 import {
+  activePath,
+  addMessage,
+  defaultImageSettings,
+  fourViewPrompt,
+  kreaDefaults,
+  kreaGraph,
+  parseReply,
   BUILTIN_WORKFLOW,
   builtinGraph,
   checkpointFamily,
@@ -26,6 +33,8 @@ import {
   type ImageJobEvent,
   type ImageJobParams,
   type ImageRating,
+  type ImageSettings,
+  type Message,
   type JobImage,
   type RefImage,
   type SharedSettings,
@@ -40,7 +49,7 @@ import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases, readNode, updateNode } from '../store/canvases';
 import { withLock } from '../store/locks';
 import { canvasImagePath, readImage } from '../store/images';
-import { readPrompt } from '../store/prompts';
+import { readPrompt, snapshotPrompt } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import { readWorkflow } from '../store/workflows';
 import { loadLibrary } from '../tags/library';
@@ -81,7 +90,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function imageFamily(work: string, promptName: string): Promise<Family> {
   const meta = parsePromptMeta(await readPrompt(work, promptName));
   if (meta.use !== 'image') throw new HttpError(400, '这个节点用的不是生图提示词');
-  if (!meta.family) throw new HttpError(400, `系统提示词「${promptName}」开头没写底模是 IL 还是 Pony`);
+  if (!meta.family) throw new HttpError(400, `系统提示词「${promptName}」开头没写底模是 IL、Pony 还是 Krea2`);
   return meta.family;
 }
 
@@ -148,7 +157,8 @@ const e02Params = ({ vae, weighting, loraTarget }: Pick<ImageJobParams, 'vae' | 
 async function paramsFor(work: string, node: ChatNode, text: string, settings: SharedSettings): Promise<{ params: ImageJobParams; seeds: number[] }> {
   const family = await imageFamily(work, node.systemPromptName);
   const defaults = settings.defaults[family];
-  const image = imageSettingsOf(node.image, defaults);
+  const image = imageSettingsOf(node.image, defaults, family);
+  if (family === 'Krea2') return { params: kreaParams(image, text), seeds: jobSeeds(image.seed ?? randomSeed(), image.count) };
   const compose = await tagComposer(work, defaults);
   const workflow = await chosenWorkflow(work, image.workflowId);
   const prompts = { family, positive: positivePrompt(defaults, image.rating, compose(text)), negative: negativePrompt(defaults, image.negativeExtra) };
@@ -178,6 +188,7 @@ async function paramsFor(work: string, node: ChatNode, text: string, settings: S
 // 出完的图上补做放大和部位重绘，见 docs/dev-plan.md 5.21：提示词、底模、VAE、LoRA、种子这些用原图那一组记的，
 // 原图是导入的工作流出的，底模这些用节点现在的出图设置；尺寸是原图的
 async function refineParams(work: string, node: ChatNode, from: ImageJobParams, image: JobImage, refine: Refine, settings: SharedSettings): Promise<ImageJobParams> {
+  if (from.family === 'Krea2') throw new HttpError(400, 'Krea2 这期不支持放大和部位重绘');
   if (!refine.upscale.on && !refine.details.some((pass) => pass.on)) throw new HttpError(400, '放大和部位重绘至少开一样');
   const defaults = settings.defaults[from.family];
   const current = imageSettingsOf(node.image, defaults);
@@ -198,6 +209,20 @@ async function refineParams(work: string, node: ChatNode, from: ImageJobParams, 
 
 export type Again = { jobId: string; index: number; sameSeed: boolean };
 export type Refine = { jobId: string; index: number; upscale: UpscaleSettings; details: DetailPass[] };
+type FourView = { reference: RefImage; extra: string };
+
+function kreaParams(image: ImageSettings, text: string): ImageJobParams {
+  const krea = image.krea!;
+  if (krea.mode === 'four-view' && !krea.reference) throw new HttpError(400, '四视图还没选参考图');
+  if (image.workflowId) throw new HttpError(400, 'Krea2 使用内置流程，请先取消导入的工作流');
+  if (image.upscale.on || image.details.some((p) => p.on) || image.controls.some((c) => c.on)) throw new HttpError(400, 'Krea2 这期不支持放大、部位重绘和 ControlNet');
+  return {
+    family: 'Krea2', positive: krea.mode === 'four-view' ? fourViewPrompt(text, krea.extra) : text.trim(), negative: '',
+    workflow: BUILTIN_WORKFLOW, width: image.width, height: image.height,
+    checkpoint: image.checkpoint, textEncoder: image.textEncoder, vae: image.vae, loras: image.loras,
+    steps: image.steps, cfg: image.cfg, sampler: image.sampler, scheduler: image.scheduler, krea,
+  };
+}
 
 export type ImageJobs = ReturnType<typeof createImageJobs>;
 
@@ -265,7 +290,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     );
 
   // 点「生图」出这个框；again 是「同样参数再来」「只换种子再来」，refine 是出完的图上补做放大和部位重绘
-  async function create(place: JobPlace, promptIndex: number, { again, refine }: { again?: Again; refine?: Refine } = {}): Promise<ImageJob> {
+  async function create(place: JobPlace, promptIndex: number, { again, refine, fourView }: { again?: Again; refine?: Refine; fourView?: FourView } = {}): Promise<ImageJob> {
     const settings = await readSettings(place.work);
     const { comfyTarget: target, autodlToken } = await readComfyConfig(configDir);
     const lanUrl = settings.comfy.lanUrl;
@@ -276,7 +301,14 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
 
     let source: { promptIndex: number; kind: ImageJob['kind']; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
-    if (again) {
+    if (fourView) {
+      const family = await imageFamily(place.work, node.systemPromptName);
+      const current = imageSettingsOf(node.image, settings.defaults[family], family);
+      const image = family === 'Krea2' && current.krea?.mode === 'four-view'
+        ? current : { ...defaultImageSettings(settings.defaults.Krea2, 'Krea2'), ...kreaDefaults('four-view'), seed: current.seed };
+      const krea = { ...image.krea!, reference: fourView.reference, extra: fourView.extra };
+      source = { promptIndex, kind: 'four-view', params: kreaParams({ ...image, krea }, ''), seeds: [image.seed ?? randomSeed()] };
+    } else if (again) {
       // 「同样参数再来」用同一个种子，「只换种子再来」随机一个，都只出一张；记下照着哪张出的。
       // 补做出的图再来，是把原来那张原图再补做一次
       const job = message.images?.find((j) => j.id === again.jobId);
@@ -304,7 +336,11 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
-      source = { promptIndex, kind: 'txt2img', ...(await paramsFor(place.work, node, box.text, settings)) };
+      const previous = message.systemPromptName === 'krea2' && message.handwritten && message.images?.findLast((job) => job.promptIndex === promptIndex && job.params.krea?.mode === 'four-view');
+      const made = previous && await imageFamily(place.work, node.systemPromptName) !== 'Krea2'
+        ? { params: { ...previous.params, positive: box.text.trim() }, seeds: [node.image?.seed ?? randomSeed()] }
+        : await paramsFor(place.work, node, box.text, settings);
+      source = { promptIndex, kind: made.params.krea?.mode === 'four-view' ? 'four-view' : 'txt2img', ...made };
     }
 
     const job: ImageJob = {
@@ -398,6 +434,17 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
   async function graphMaker(place: JobPlace, jobId: string, url: string): Promise<(params: ImageJobParams, seed: number) => ComfyGraph> {
     const job = await readJob(place, jobId);
     const { params } = job;
+    if (params.family === 'Krea2') {
+      await requireNodes(url, kreaGraph(params, 0));
+      let uploaded = '';
+      if (params.krea?.mode === 'four-view') {
+        const node = await readNode(place.work, place.canvasId, place.nodeId);
+        const file = params.krea.reference && await refFile(place, node, params.krea.reference);
+        if (!file) throw new comfy.ComfyError('四视图的参考图找不到了：删掉了，或者临时文件清掉了又没下载过');
+        uploaded = await comfy.uploadFile(url, file);
+      }
+      return (jobParams, seed) => kreaGraph(jobParams, seed, uploaded);
+    }
     if (!params.workflow.id) {
       const refine = job.kind === 'refine';
       await requireNodes(url, builtinGraph(params, 0, refine ? { image: '' } : {}));
@@ -726,5 +773,30 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     listeners.clear();
   }
 
-  return { create, stop, removeImage, updateImage, subscribe, resume, close };
+  async function fourView(at: Omit<JobPlace, 'messageId'>, reference: RefImage, extra: string) {
+    let node = await readNode(at.work, at.canvasId, at.nodeId);
+    if (node.kind !== 'image') throw new HttpError(400, '做四视图需要生图节点');
+    if (reference.kind === 'slot' && !node.slots.includes(reference.imageId)) throw new HttpError(400, '这张图不在当前节点的槽位里');
+    if (!await refFile({ ...at, messageId: '' }, node, reference)) throw new HttpError(404, '四视图的参考图找不到了');
+    let messageId: string;
+    let promptIndex = 0;
+    if (reference.kind === 'generated') {
+      messageId = reference.messageId;
+      promptIndex = node.messages[messageId].images!.find((job) => job.id === reference.jobId)!.promptIndex;
+    } else {
+      messageId = randomUUID();
+      const text = `<prompt label="四视图">\n${fourViewPrompt(extra)}\n</prompt>`;
+      const prompt = await snapshotPrompt(at.work, 'krea2');
+      const message: Message = {
+        id: messageId, parentId: activePath(node).at(-1)?.id ?? null, role: 'assistant', createdAt: new Date().toISOString(), text,
+        slotSnapshot: [...node.slots], duration: node.duration, aspectRatio: node.aspectRatio,
+        systemPromptName: 'krea2', systemPromptHash: prompt.hash, handwritten: true, parsed: { prompts: parseReply(text).prompts },
+      };
+      node = await updateNode(at.work, at.canvasId, at.nodeId, (current) => addMessage(current, message));
+    }
+    const job = await create({ ...at, messageId }, promptIndex, { fourView: { reference, extra } });
+    return { node: await readNode(at.work, at.canvasId, at.nodeId), job, messageId };
+  }
+
+  return { create, fourView, stop, removeImage, updateImage, subscribe, resume, close };
 }

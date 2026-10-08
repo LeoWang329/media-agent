@@ -8,11 +8,11 @@ import * as v from './validate';
 // 预设存张数、种子以外的全部出图设置，ControlNet 的参考图也不存，见 docs/dev-plan.md 5.21。按出图设置的规矩校验，没带的项用 base 的
 function presetSettings(value: unknown, base: PresetSettings): PresetSettings {
   const { count: _count, seed: _seed, ...settings } = v.imageSettings(value, { ...base, count: 1, seed: null } satisfies ImageSettings);
-  return { ...settings, controls: settings.controls.map((control) => ({ ...control, image: null })) };
+  return { ...settings, controls: settings.controls.map((control) => ({ ...control, image: null })), ...(settings.krea && { krea: { ...settings.krea, reference: null } }) };
 }
 
 function family(value: unknown): Family {
-  if (!FAMILIES.includes(value as Family)) throw new HttpError(400, '系列只能是 IL 或 Pony');
+  if (!FAMILIES.includes(value as Family)) throw new HttpError(400, '系列只能是 IL、Pony 或 Krea2');
   return value as Family;
 }
 
@@ -29,7 +29,7 @@ export function presetRoutes(configDir: string): express.Router {
   router.post('/image-presets', async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const which = family(body.family);
-    const { count: _count, seed: _seed, ...base } = defaultImageSettings(FAMILY_DEFAULTS[which]);
+    const { count: _count, seed: _seed, ...base } = defaultImageSettings(FAMILY_DEFAULTS[which], which);
     res.status(201).json(await createPreset(await work(), { name: name(body.name), family: which, settings: presetSettings(body.settings, base) }));
   });
 

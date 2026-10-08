@@ -252,7 +252,7 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
           <Icon name="sparkles" />
           只换种子再来
         </button>
-        {done && (
+        {done && family !== 'Krea2' && (
           <button
             type="button"
             className={`btn btn-secondary btn-sm${refining ? ' is-on' : ''}`}
@@ -265,6 +265,7 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             放大和重绘
           </button>
         )}
+        {done && <button type="button" className="btn btn-secondary btn-sm" disabled={Boolean(gone)} onClick={() => useOverlays.setState({ fourView: { nodeId: target.nodeId, reference: { kind: 'generated', messageId: target.messageId, jobId: target.jobId, seed: image.seed } } })}><Icon name="image" />做四视图</button>}
       </div>
       {refining && done && !gone && <RefineForm key={`${target.jobId}:${target.index}`} target={target} family={family} size={{ width: image.width ?? params.width, height: image.height ?? params.height }} />}
       <div className="ib-params" data-od-id="image-params">
@@ -308,6 +309,8 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             <Kv k="底模">
               <span className="mono">{shortCheckpoint(params.checkpoint ?? '')}</span> <span className="tag">{family}</span>
             </Kv>
+            {params.textEncoder && <Kv k="文字理解模型"><span className="mono">{shortCheckpoint(params.textEncoder)}</span></Kv>}
+            {params.krea && <Kv k="起图">{params.krea.mode === 'four-view' ? `四视图 · 相似度 ${params.krea.refBoost}` : '文生图'}</Kv>}
             {params.vae && (
               <Kv k="VAE">
                 <span className="mono">{shortCheckpoint(params.vae)}</span>

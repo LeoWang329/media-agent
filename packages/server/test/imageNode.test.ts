@@ -164,6 +164,8 @@ describe('节点类型', () => {
     await t.ok('DELETE', '/prompts/il');
     expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'pony' });
     await t.ok('DELETE', '/prompts/pony');
+    expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'krea2' });
+    await t.ok('DELETE', '/prompts/krea2');
     expect(await create({ kind: 'image' })).toMatchObject({ status: 400, body: { error: '设置里还没有生图用的系统提示词' } });
     expect(await create({ kind: 'audio' })).toMatchObject({ status: 400, body: { error: '节点类型只能是 video 或 image' } });
   });

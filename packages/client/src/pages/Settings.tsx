@@ -374,6 +374,7 @@ const BUILTIN: Record<string, string> = {
   t2v: '纯文字，不用图',
   il: '写 Illustrious 系列底模用的 Danbooru 标签',
   pony: '写 Pony 系列底模用的 Danbooru 标签',
+  krea2: '写 Krea2 Turbo 用的英文段落提示词',
 };
 const DEFAULT_PROMPT = 'ref2va';
 
@@ -607,7 +608,7 @@ function NewPromptDialog({ from, existing, onClose, onCreated }: NewPromptProps)
 }
 
 function FormatTab() {
-  const [texts, setTexts] = useState<FormatRequirements>({ video: '', image: '' });
+  const [texts, setTexts] = useState<FormatRequirements>({ video: '', image: '', krea2: '' });
 
   useEffect(() => {
     api<FormatRequirements>('/format-requirement').then(setTexts, failed);
@@ -624,8 +625,10 @@ function FormatTab() {
       </div>
       <h3 className="ro-title">写视频提示词的那几套用这份</h3>
       <pre className="ro" data-od-id="format-requirement">{texts.video}</pre>
-      <h3 className="ro-title">写生图标签的那几套（开头写了「用途: 生图」的）用这份</h3>
+      <h3 className="ro-title">写生图标签的 IL、Pony 用这份</h3>
       <pre className="ro" data-od-id="format-requirement-image">{texts.image}</pre>
+      <h3 className="ro-title">Krea2 写英文段落用这份</h3>
+      <pre className="ro" data-od-id="format-requirement-krea2">{texts.krea2}</pre>
     </>
   );
 }

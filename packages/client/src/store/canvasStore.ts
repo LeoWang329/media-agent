@@ -2,6 +2,7 @@ import {
   activePath,
   addMessage,
   FAMILY_DEFAULTS,
+  defaultImageSettings,
   hiddenNodeIds,
   imageSettingsOf,
   isSupportedImageName,
@@ -173,8 +174,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     }));
   const imageName = (imageId: string) => get().detail?.images[imageId]?.originalName ?? '这张图';
   // 节点现在的出图设置：改过的用节点自己的，没改过的按系列的默认值，和服务端一样
-  const nodeImageSettings = (node: ChatNode): ImageSettings =>
-    imageSettingsOf(node.image, get().defaults[get().prompts.find((p) => p.name === node.systemPromptName)?.family ?? 'IL']);
+  const nodeImageSettings = (node: ChatNode): ImageSettings => {
+    const family = get().prompts.find((p) => p.name === node.systemPromptName)?.family ?? 'IL';
+    return imageSettingsOf(node.image, get().defaults[family], family);
+  };
 
   // 卡片上的标题、概述、槽位缩略图由服务端算，改完重新读一遍画布；读不到只提示，不算这次操作失败
   const refreshCanvas = () => get().refresh().catch(failed);
@@ -682,6 +685,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
     // 改名、时长、比例能撤销；模型配置、系统提示词、草稿这些不算
     patchNode: (nodeId, patch) => {
       const node = get().nodes[nodeId];
+      if (node && patch.systemPromptName) {
+        const from = get().prompts.find((p) => p.name === node.systemPromptName)?.family;
+        const to = get().prompts.find((p) => p.name === patch.systemPromptName)?.family;
+        if (to && from !== to && (from === 'Krea2' || to === 'Krea2')) patch = { ...patch, image: { ...defaultImageSettings(get().defaults[to], to), ...patch.image } };
+      }
       const changed = UNDOABLE_FIELDS.filter((key) => key in patch && node && patch[key] !== node[key]);
       let step: UndoStep | undefined;
       if (node && changed.length) {

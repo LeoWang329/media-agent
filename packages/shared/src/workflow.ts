@@ -6,6 +6,9 @@ export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 // 内置流程用到的插件节点是哪个插件的：缺了告诉用户装哪个。部位重绘用前三个，ControlNet 的提取用 AIO_Preprocessor，A1111 的权重算法用 BNK_CLIPTextEncodeAdvanced；
 // 后面的是长视频流程用的，见 docs/dev-plan.md 5.26
 export const PLUGIN_OF: Record<string, string> = {
+  Krea2EditModelPatch: 'ComfyUI-Krea2Edit',
+  Krea2EditGroundedEncode: 'ComfyUI-Krea2Edit',
+  ImageResizeKJv2: 'ComfyUI-KJNodes',
   FaceDetailer: 'ComfyUI-Impact-Pack',
   SAMLoader: 'ComfyUI-Impact-Pack',
   RemoveNoiseMask: 'ComfyUI-Impact-Pack',

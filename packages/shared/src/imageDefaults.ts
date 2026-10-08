@@ -1,7 +1,8 @@
 import { splitTags, tagKey } from './tags';
+import { kreaDefaults, KREA2_TEXT_SIZE } from './krea2';
 import type { AutodlSettings, CardImageInfo, ChatNode, ControlSettings, ControlType, DetailPass, Family, FamilyDefaults, ImageSettings, PromptMeta, UpscaleSettings } from './types';
 
-export const FAMILIES: Family[] = ['IL', 'Pony'];
+export const FAMILIES: Family[] = ['IL', 'Pony', 'Krea2'];
 
 // 尺寸九档：正方形一档，竖的四档，横的是竖的宽高对调，见 docs/dev-plan.md 5.14
 const PORTRAIT = [
@@ -27,8 +28,9 @@ export const roundSize = (side: number) => Math.round(side / 8) * 8;
 export const DEFAULT_AUTODL: AutodlSettings = { instanceUuid: null, idleMinutes: 15 };
 export const AUTODL_IDLE_MINUTES = { min: 5, max: 240 };
 
-// 两个系列的初始默认值，按常见用法填，见 docs/dev-plan.md 5.18；设置里能改
+// 各系列的初始默认值，见 docs/dev-plan.md 5.18 和 docs/dev-plan-krea2.md；设置里能改
 export const FAMILY_DEFAULTS: Record<Family, FamilyDefaults> = {
+  Krea2: { prefix: '', negative: '', rating: { general: '', sensitive: '', explicit: '' }, steps: 8, cfg: 1, sampler: 'euler', scheduler: 'simple', clipSkip: 0 },
   IL: {
     prefix: 'masterpiece, best quality',
     negative: 'lowres, worst quality, bad quality, bad anatomy, bad hands, extra digits, jpeg artifacts, signature, watermark, username, text',
@@ -126,7 +128,7 @@ export function unionType({ type, preprocessor }: Pick<ControlSettings, 'type' |
 // 节点还没改过出图设置时用的：参数取这个系列的默认值，竖的 832×1216，一次 4 张，放大、部位重绘、ControlNet 都不开；
 // 底模空着，出图时用这台 ComfyUI 上这个系列的第一个，见 docs/dev-plan.md 5.19。E02 的几样照原来的：底模自带的 VAE、
 // LoRA 两边都作用、ComfyUI 自带的权重算法
-export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
+export function defaultImageSettings(defaults: FamilyDefaults, family: Family = 'IL'): ImageSettings {
   return {
     ...DEFAULT_IMAGE_SIZE,
     count: 4,
@@ -146,13 +148,14 @@ export function defaultImageSettings(defaults: FamilyDefaults): ImageSettings {
     upscale: DEFAULT_UPSCALE,
     details: [],
     controls: [],
+    ...(family === 'Krea2' && { ...kreaDefaults('text'), steps: defaults.steps, cfg: defaults.cfg, sampler: defaults.sampler, scheduler: defaults.scheduler }),
   };
 }
 
 // 节点的出图设置：改过的用节点自己的；没改过的项（比如放大、部位重绘是后来加的）用这个系列的默认值。
 // 部位重绘的 SAM 是 P16 加的，之前加的那几道没有，算不用
-export function imageSettingsOf(image: Partial<ImageSettings> | undefined, defaults: FamilyDefaults): ImageSettings {
-  const settings = { ...defaultImageSettings(defaults), ...image };
+export function imageSettingsOf(image: Partial<ImageSettings> | undefined, defaults: FamilyDefaults, family: Family = 'IL'): ImageSettings {
+  const settings = { ...defaultImageSettings(defaults, family), ...image };
   return { ...settings, details: settings.details.map((pass) => ({ ...pass, sam: pass.sam ?? '' })) };
 }
 
@@ -170,7 +173,7 @@ export function cardImageInfo(node: Pick<ChatNode, 'kind' | 'image'>, meta: Pick
   if (node.kind !== 'image') return null;
   return {
     family: meta?.use === 'image' ? meta.family : null,
-    width: node.image?.width ?? DEFAULT_IMAGE_SIZE.width,
-    height: node.image?.height ?? DEFAULT_IMAGE_SIZE.height,
+    width: node.image?.width ?? (meta?.family === 'Krea2' ? KREA2_TEXT_SIZE.width : DEFAULT_IMAGE_SIZE.width),
+    height: node.image?.height ?? (meta?.family === 'Krea2' ? KREA2_TEXT_SIZE.height : DEFAULT_IMAGE_SIZE.height),
   };
 }

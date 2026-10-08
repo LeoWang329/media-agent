@@ -351,7 +351,7 @@ test('出图设置：LoRA 点开能按名字搜，空格隔开的几个词都对
   await field.click();
   const picker = page.getByRole('dialog', { name: '选 LoRA' });
   const options = picker.getByRole('option');
-  await expect(options).toHaveText(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors']);
+  await expect(options).toHaveText(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors']);
   const search = picker.getByRole('textbox', { name: '搜 LoRA' });
   await expect(search).toBeFocused();
   await search.fill('il ANIME');

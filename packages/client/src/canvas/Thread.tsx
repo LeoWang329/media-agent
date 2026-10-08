@@ -432,7 +432,7 @@ function AssistantMessage({ node, message, ro, busy, live, stream, images }: Ass
             </div>
           );
         }
-        if (writtenWith?.use === 'image') {
+        if (writtenWith?.use === 'image' && writtenWith.family !== 'Krea2') {
           return (
             <TagBox
               key={i}

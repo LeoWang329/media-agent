@@ -25,7 +25,7 @@ export type ModelConfig = {
 };
 
 // 生图底模的系列
-export type Family = 'IL' | 'Pony';
+export type Family = 'IL' | 'Pony' | 'Krea2';
 
 // 出图用哪台 ComfyUI：局域网那台，或者 AutoDL 上租的实例
 export type ComfyTarget = 'lan' | 'autodl';
@@ -52,7 +52,7 @@ export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family 
 export type NodeKind = PromptMeta['use'];
 
 // 两份固定格式要求：视频节点的、生图节点的
-export type FormatRequirements = { video: string; image: string };
+export type FormatRequirements = { video: string; image: string; krea2: string };
 
 // 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18。
 // 用哪个放大、检测模型不在这里，由预设管
@@ -129,6 +129,8 @@ export type ImageRating = 'none' | 'general' | 'sensitive' | 'explicit';
 export type TagWeighting = 'comfy' | 'a1111';
 export type LoraTarget = 'both' | 'model';
 export type ImageSettings = {
+  textEncoder?: string;
+  krea?: KreaSettings;
   width: number; // 宽高是九档之一，或者自己填的 8 的倍数
   height: number;
   count: number; // 一次出几张，1 到 8
@@ -172,6 +174,7 @@ export type DetailPass = {
 // preprocessor 是 AIO_Preprocessor 列表里的提取方式，none 是不提取、直接用这张；model 是 ControlNetLoader 的文件名，空着是还没选
 export type ControlType = 'pose' | 'depth' | 'lineart' | 'edge' | 'other';
 export type RefImage = { kind: 'slot'; imageId: string } | { kind: 'generated'; messageId: string; jobId: string; seed: number };
+export type KreaSettings = { mode: 'text' | 'four-view'; reference: RefImage | null; refBoost: number; extra: string };
 export type ControlSettings = {
   on: boolean;
   type: ControlType;
@@ -210,6 +213,8 @@ export type ImportedWorkflow = {
 // 出完的图上补做的，宽高是原图的。放大、部位重绘、ControlNet 开着的才记；部位重绘的 positive、negative 是拼好的，空着是和原图一样。
 // VAE、权重算法、LoRA 作用在哪不是默认的才记
 export type ImageJobParams = {
+  textEncoder?: string;
+  krea?: KreaSettings;
   family: Family;
   positive: string;
   negative: string;
@@ -254,7 +259,7 @@ export type ImageJob = {
   rev?: number;
   promptIndex: number;
   createdAt: string;
-  kind: 'txt2img' | 'refine';
+  kind: 'txt2img' | 'refine' | 'four-view';
   source?: { kind: 'generated'; jobId: string; seed: number };
   target: ComfyTarget;
   params: ImageJobParams;
@@ -448,6 +453,8 @@ export type ComfyStatus =
 export type VideoOptions = { models: string[]; loras: string[] };
 
 export type ComfyOptions = {
+  kreaModels: string[];
+  textEncoders: string[];
   checkpoints: { name: string; family: Family | null; guessed: boolean }[];
   vaes: string[];
   loras: string[];

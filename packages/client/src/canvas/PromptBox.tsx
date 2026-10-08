@@ -11,6 +11,8 @@ import { closeRefPicker, openRefPicker, useOverlays } from './overlays';
 import { promptBody } from './tokens';
 import { generateVideo } from './videoActions';
 import { VideoJobs } from './VideoJobs';
+import { generate } from './imageActions';
+import { ImageJobs } from './ImageJobs';
 
 type Props = {
   node: ChatNode;
@@ -35,6 +37,7 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
   const imgs = message.slotSnapshot;
   // 视频节点的框能生成视频，框下面挂着生成的视频，见 docs/dev-plan.md 5.27
   const video = node.kind === 'video';
+  const image = node.kind === 'image';
 
   if (editing) {
     return <BoxEditor node={node} message={message} index={index} label={label} text={text} busy={busy} versions={versions} onClose={() => setEditing(false)} />;
@@ -54,6 +57,7 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
         <span className={`pb-label${label ? '' : ' is-plain'}`}>{label || '提示词'}</span>
         <div className="pb-actions">
           {act('copy', '复制', 'copy', () => copyText(text, `已复制提示词（${fmtNum(text.length)} 字）`))}
+          {image && editable && <button type="button" className="btn btn-secondary btn-sm" data-act="generate" onClick={() => void generate({ nodeId: node.id, messageId: message.id }, index)}><Icon name="image" /><span className="lbl">生图</span></button>}
           {video && editable && (
             <button
               type="button"
@@ -119,6 +123,7 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
         </div>
       )}
       {video && !writing && !incomplete && <VideoJobs node={node} message={message} promptIndex={index} text={text} ro={ro} />}
+      {image && !writing && !incomplete && <ImageJobs node={node} message={message} promptIndex={index} ro={ro} />}
     </div>
   );
 }
