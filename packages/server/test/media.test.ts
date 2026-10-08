@@ -39,7 +39,7 @@ async function send(text: string, parentId: string | null): Promise<{ user: Mess
 }
 
 describe('资产库里的视频和音频', () => {
-  it('列出来，标着是视频还是音频；原文件能按 Range 取，图不从这里给', async () => {
+  it('列出来，标着是视频还是音频；原文件能按 Range 取，图片也能取原文件', async () => {
     const files = await t.ok<AssetFile[]>('GET', `/assets/list?folder=${encodeURIComponent(library)}`);
     expect(files.map((f) => [f.name, f.kind, f.supported])).toEqual([
       ['silent.mp4', 'video', true],
@@ -52,7 +52,9 @@ describe('资产库里的视频和音频', () => {
     const image = await t.addImage(canvasId, '#123456');
     expect(image).toBeTruthy();
     const jpg = path.join(t.work, 'test-images', '123456-300x300.jpg');
-    expect((await t.call('GET', `/assets/file?path=${encodeURIComponent(jpg)}`)).status).toBe(415);
+    const picture = await fetch(`${t.base}/assets/file?path=${encodeURIComponent(jpg)}`);
+    expect(picture.status).toBe(200);
+    expect(Buffer.from(await picture.arrayBuffer())).toEqual(await fs.readFile(jpg));
   });
 });
 

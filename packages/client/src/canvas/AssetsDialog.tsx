@@ -12,6 +12,7 @@ import { showMenu } from '../ui/menu';
 import { toast } from '../ui/toast';
 import { closeAssets, useOverlays, type AssetsMode } from './overlays';
 import { referLibraryImage } from './RefPicker';
+import { ZoomView } from './ZoomDialog';
 
 const PAGE = 120;
 
@@ -39,6 +40,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
   const [selected, setSelected] = useState<AssetFile[]>([]);
   const [limit, setLimit] = useState(PAGE);
   const [importing, setImporting] = useState(false);
+  const [zoomed, setZoomed] = useState<AssetFile | null>(null);
   const grid = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -173,6 +175,26 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
           <img className="im" src={assetThumbUrl(file.path, file.mtime)} alt={file.name} loading="lazy" draggable={false} />
           {mode === 'slots' && <span className="check">{order >= 0 ? order + 1 : ''}</span>}
           {at !== undefined && <span className="tag in-slot">在 {at + 1} 号</span>}
+          {/* 在格子按钮里面，不能再套按钮，用 span 接点击 */}
+          <span
+            className="tile-zoom"
+            role="button"
+            tabIndex={0}
+            aria-label="放大看"
+            title="放大看"
+            onClick={(e) => {
+              e.stopPropagation();
+              setZoomed(file);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              e.stopPropagation();
+              setZoomed(file);
+            }}
+          >
+            <Icon name="expand" className="icon-sm" />
+          </span>
         </div>
         <div className="tile-name">{file.name}</div>
         {sub}
@@ -401,6 +423,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
         )}
       </div>
       {importing && <ImportFolder onClose={() => setImporting(false)} />}
+      {zoomed && <ZoomView key={zoomed.path} src={assetFileUrl(zoomed.path, zoomed.mtime)} title={zoomed.name} meta={fmtSize(zoomed.size)} onClose={() => setZoomed(null)} />}
     </Dialog>
   );
 }

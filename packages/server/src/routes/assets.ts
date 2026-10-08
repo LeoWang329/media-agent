@@ -82,10 +82,10 @@ export function assetRoutes(configDir: string): express.Router {
     res.sendFile(await thumbnail(configDir, file), { dotfiles: 'allow' });
   });
 
-  // 资产库里的视频、音频原文件：格子上显示开头的画面、放进节点前读多长，支持 Range
+  // 资产库里的图片、视频、音频原文件：放大看原图、显示视频开头的画面、读媒体时长，支持 Range
   router.get('/assets/file', async (req, res) => {
     const file = await allowedPath(configDir, req.query.path);
-    if (!mediaKindOf(file)) throw new HttpError(415, '这里只给视频和音频');
+    if (!isSupportedImage(file) && !mediaKindOf(file)) throw new HttpError(415, '这里只给图片、视频和音频');
     res.sendFile(file, { dotfiles: 'allow' });
   });
 

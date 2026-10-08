@@ -284,6 +284,44 @@ test('点槽位选「放大看」：弹窗里是画布存的那张图，能切�
   await expect(zoom).toHaveCount(0);
 });
 
+test('资产库里的图能放大看原图、切原始大小；关闭后保留资产库和选中状态；搜索结果也能放大', async ({ page }) => {
+  await importFixtures(page);
+  await newCanvasWithNode(page, '资产库放大看');
+  await panel(page).locator('#slotAssets').click();
+  await assetsDialog(page).locator('.as-folder').filter({ hasText: FIXTURES_DIR }).first().click();
+  const tile = assetTile(page, FIXTURES.big);
+  const zoomButton = tile.getByRole('button', { name: '放大看', exact: true });
+  await expect(zoomButton).toHaveCSS('opacity', '0');
+  await tile.hover();
+  await expect(zoomButton).toHaveCSS('opacity', '1');
+  await zoomButton.click();
+  const zoom = page.getByRole('dialog', { name: '放大看图' });
+  const image = zoom.locator('.zoom-stage img');
+  await expect(zoom).toContainText(FIXTURES.big);
+  await expect(image).toHaveAttribute('src', /\/api\/assets\/file\?/);
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(6000);
+  await zoom.getByRole('button', { name: '看原始大小' }).click();
+  await expect(zoom.locator('.zoom-stage')).toHaveClass(/is-actual/);
+  await image.click();
+  await expect(zoom.locator('.zoom-stage')).not.toHaveClass(/is-actual/);
+  await page.keyboard.press('Escape');
+  await expect(zoom).toHaveCount(0);
+  await expect(assetsDialog(page)).toBeVisible();
+  await expect(tile).not.toHaveClass(/is-selected/);
+  await expect(assetsDialog(page).locator('#asConfirm')).toBeDisabled();
+
+  await assetsDialog(page).locator('#asSearch').fill(FIXTURES.big);
+  await expect(assetsDialog(page).getByTestId('asset-tile')).toHaveCount(1);
+  await tile.click();
+  await expect(tile).toHaveClass(/is-selected/);
+  await zoomButton.click();
+  await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(6000);
+  await zoom.locator('.zoom-stage').click({ position: { x: 4, y: 4 } });
+  await expect(zoom).toHaveCount(0);
+  await expect(tile).toHaveClass(/is-selected/);
+  await expect(assetsDialog(page).locator('#asConfirm')).toHaveText('放进槽位（1）');
+});
+
 test('从 Windows 文件夹直接把两张图拖进槽位，不用先导入文件夹；「电脑里的图」也能选', async ({ page }) => {
   await newCanvasWithNode(page, '从文件夹拖进来');
   const names = [FIXTURES.third, FIXTURES.fourth];

@@ -104,6 +104,25 @@ describe('资产库', () => {
     expect(bad.body.error).toBe('排序方式只能是 time-desc、time-asc、name-asc、name-desc');
   });
 
+  it('图片原文件保持尺寸和内容；支持点开头的目录；不支持的格式和库外路径不能读取', async () => {
+    const root = path.join(tmp, '.library');
+    const original = path.join(root, 'wide.jpg');
+    const outside = path.join(tmp, 'outside', 'secret.jpg');
+    await image(original, 1000, 500);
+    await image(outside);
+    await fs.writeFile(path.join(root, 'notes.txt'), 'x');
+    await t.ok('POST', '/assets/folders', { path: root });
+
+    const res = await fetch(`${t.base}${query('/assets/file', { path: original })}`);
+    expect(res.status).toBe(200);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes).toEqual(await fs.readFile(original));
+    expect(await sharp(bytes).metadata()).toMatchObject({ format: 'jpeg', width: 1000, height: 500 });
+    expect((await t.call('GET', query('/assets/file', { path: path.join(root, 'notes.txt') }))).status).toBe(415);
+    expect((await t.call('GET', query('/assets/file', { path: outside }))).status).toBe(403);
+    expect((await t.call('GET', query('/assets/file', { path: path.join(root, '..', 'outside', 'secret.jpg') }))).status).toBe(403);
+  });
+
   it('缩略图长边 256；不在导入的文件夹里的路径返回 403', async () => {
     const root = path.join(tmp, 'root');
     await image(path.join(root, 'wide.jpg'), 1000, 500);
