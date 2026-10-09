@@ -1,8 +1,11 @@
 import { expect, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
-import { E2E_APP_PORT, E2E_WORK_FOLDER, MOCK_LLM_PORT } from './env';
+import { E2E_APP_PORT, E2E_WORK_FOLDER, MOCK_COMFY_PORT, MOCK_LLM_PORT } from './env';
 
 // 用接口直接设好工作文件夹和 mock 模型配置，不走设置页
 export async function setupWorkFolder(playwright: PlaywrightWorkerArgs['playwright']) {
+  // 假的 AutoDL 和那台上的文件都是 mock 进程里留着的，跨文件、跨轮次都在：每个文件开头清一次。
+  // 不清的话上一轮传上去的模型、开着的实例会让这一轮的列表和「写着已关机」的用例对不上
+  await fetch(`http://127.0.0.1:${MOCK_COMFY_PORT}/_reset`, { method: 'POST' }).catch(() => undefined);
   const request = await playwright.request.newContext({ baseURL: `http://127.0.0.1:${E2E_APP_PORT}` });
   expect((await request.put('/api/config', { data: { workFolder: E2E_WORK_FOLDER } })).ok()).toBe(true);
   const pricing = { currency: '¥', input: 3, output: 15, cached: 0.3 };

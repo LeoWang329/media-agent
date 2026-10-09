@@ -1,5 +1,6 @@
-import { builtinGraph, imageErrorKind, type AutodlState, type ChatNode, type ImageJob, type ImageJobEvent, type Message } from '@media-agent/shared';
+import { builtinGraph, imageErrorKind, type AutodlState, type ChatNode, type ComfyOptions, type ImageJob, type ImageJobEvent, type Message } from '@media-agent/shared';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,21 +13,41 @@ import { sleep, startTestApp, type TestApp } from './helpers';
 
 const MINUTE_MS = 40;
 
+// AutoDL 边缘在老域名上回的那张 404 页，正文照真的抄（真的正文里有 autodl.com/docs/port 这个链接）
+const EDGE_404 =
+  '<!DOCTYPE html>\n<html>\n<head>\n<title>Not Found</title>\n<style>\nbody { width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }\n</style>\n</head>\n<body>\n<h1>404 Not Found</h1>\n<p><a href="https://www.autodl.com/docs/port/">查看FAQ文档</a>.</p>\n</body>\n</html>';
+
 let t: TestApp;
 let mock: MockComfy;
 let comfyUrl: string;
 let canvasId: string;
 let nodeId: string;
 let replyId: string;
+// AutoDL 快照里给的 6006 域名，默认指回 mock 自己；测换域名时改它
+let where: { domain: string };
+// 假的 AutoDL 边缘：老域名返回上面那张 404 页
+let edge: http.Server | null = null;
 
 const nodeUrl = () => `/canvases/${canvasId}/nodes/${nodeId}`;
 const imagesUrl = () => `${nodeUrl()}/messages/${replyId}/images`;
 const readJsonFile = async (file: string) => JSON.parse(await fs.readFile(file, 'utf8'));
+const hostOf = (url: string) => url.replace(/^https?:\/\//, '');
+
+// 老域名活着，但上面没有 ComfyUI：AutoDL 边缘替它回 404。返回它的地址（只有域名和端口）
+function staleDomain(): Promise<string> {
+  edge = http.createServer((_req, res) => {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(EDGE_404);
+  });
+  return new Promise((resolve) => edge!.listen(0, '127.0.0.1', () => resolve(`127.0.0.1:${(edge!.address() as AddressInfo).port}`)));
+}
 
 beforeEach(async () => {
-  mock = createMockComfy({ stepMs: 15, slowStepMs: 100, autodl: { bootMs: 100, stopMs: 50 } });
+  where = { domain: '' };
+  mock = createMockComfy({ stepMs: 15, slowStepMs: 100, autodl: { bootMs: 100, stopMs: 50, domain: () => where.domain } });
   await new Promise<void>((resolve) => mock.server.listen(0, '127.0.0.1', () => resolve()));
   comfyUrl = `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}`;
+  where.domain = hostOf(comfyUrl);
   t = await startTestApp({ autodl: { api: `${comfyUrl}${MOCK_AUTODL_PATH}`, pollMs: 20, bootTimeoutMs: 1500, minuteMs: MINUTE_MS } });
   await fs.mkdir(path.join(t.work, 'tags'), { recursive: true });
   await fs.writeFile(path.join(t.work, 'tags', 'tags.csv'), 'tag,category,count,deprecated\n1girl,0,8000000,0\n');
@@ -40,6 +61,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (edge) {
+    edge.closeAllConnections();
+    await new Promise((resolve) => edge!.close(resolve));
+    edge = null;
+  }
   await t.cleanup();
   await mock.close();
 });
@@ -197,6 +223,33 @@ describe('AutoDL', () => {
     expect((await readJob(job.id))!.images.map((image) => image.status)).toEqual(['done', 'done', 'done']);
     expect(mock.autodl.calls.filter((c) => c.action === 'power_on')).toEqual([]);
     await until(status, (s) => s.state === 'off');
+  });
+
+  it('AutoDL 换了 6006 的域名（重启、迁移都会换）：地址过期时说人话，点重读会重新问一次地址', async () => {
+    await useAutodl(240);
+    mock.autodl.instance.status = 'running';
+    mock.autodl.instance.startedAt = new Date().toISOString();
+    expect((await t.ok<ComfyOptions>('GET', '/comfy/options?target=autodl')).checkpoints.length).toBeGreaterThan(0);
+
+    // 实例重启，AutoDL 分了个新域名，老的那个成了它边缘上的一张 404 页
+    const stale = await staleDomain();
+    where.domain = stale;
+    mock.autodl.instance.startedAt = new Date(Date.now() + 60_000).toISOString();
+    await status();
+
+    // 开机时间变了：存的那个地址跟着作废，重新问了一次，打在老域名上。
+    // 给用户看的得是人话，不是一堆 HTML
+    const expired = await t.call('GET', '/comfy/options?target=autodl');
+    expect(expired.status).toBe(502);
+    expect(expired.body.error).toContain('AutoDL 的 6006 端口转发替它回了 404');
+    expect(expired.body.error).not.toContain('<!DOCTYPE html>');
+
+    // 又换了一次，这次开机时间没变，服务这边看不出来：不重读就还用存着的那个老地址
+    where.domain = hostOf(comfyUrl);
+    expect((await t.call('GET', '/comfy/options?target=autodl')).status).toBe(502);
+
+    // 点「重新读底模和 LoRA 列表」：重新向 AutoDL 要一次地址，用新的那个
+    expect((await t.ok<ComfyOptions>('GET', '/comfy/options?target=autodl&refresh=1')).checkpoints.length).toBeGreaterThan(0);
   });
 
   it('空闲到点时 ComfyUI 的队列里还有任务（比如在网页上直接出的图）就不关；队列空了，再空闲够了才关', async () => {

@@ -41,7 +41,7 @@ test('Krea2 是英文段落框；模型和参数能改，多 LoRA、种子和尺
   await panel(page).locator('#imgSize').selectOption('1024×1024');
   await panel(page).locator('#btnGenCfg').click();
   await expect(settings(page)).toContainText('Krea2 出图设置');
-  await expect(settings(page).locator('#gcCkpt')).toHaveValue('krea2/darkBeastINT8Convrot2_krea211INT8Convrot.safetensors');
+  await expect(settings(page).locator('#gcCkpt')).toHaveText('krea2/darkBeastINT8Convrot2_krea211INT8Convrot.safetensors');
   await expect(settings(page).locator('#gcTextEncoder')).toHaveValue('qwen3vl_4b_uncensored_int8_convrot.safetensors');
   await settings(page).getByRole('button', { name: '挂一个 LoRA' }).click();
   await settings(page).locator('#gcSeed').fill('123');
@@ -81,7 +81,7 @@ test('四视图模式的框文字追加到固定指令；参考图、相似度�
   await panel(page).locator('#btnGenCfg').click();
   await settings(page).getByRole('button', { name: '四视图', exact: true }).click();
   await expect(settings(page).locator('#gcSteps')).toHaveValue('10');
-  await expect(settings(page).locator('#gcCkpt')).toHaveValue('krea/krea2_turbo_int8_convrot.safetensors');
+  await expect(settings(page).locator('#gcCkpt')).toHaveText('krea/krea2_turbo_int8_convrot.safetensors');
   await settings(page).getByRole('button', { name: '参考图', exact: true }).click();
   await page.getByRole('button', { name: '槽位 1 号', exact: true }).click();
   await settings(page).locator('#gcRefBoost').fill('4');

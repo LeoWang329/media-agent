@@ -55,6 +55,9 @@ export function createAutodl(
   // 上面这些说的是哪个实例；url 是它上面 ComfyUI 的地址，关机后也留着，读过的下拉选项还能用
   let uuid: string | null = null;
   let url: string | null = null;
+  // 这个地址是哪一次开机问来的（那次的 upSince）。AutoDL 每次开机分到的 6006 域名不一定一样，
+  // 重启、迁移都会换；开机时间变了就当存的地址过期，重新问一次，见 docs/dev-plan.md 5.17
+  let urlFor: number | null = null;
   let boot: { run: Promise<string>; abort: AbortController } | null = null;
   let stopping: { sent: Promise<void>; done: Promise<void> } | null = null;
   let refreshing: Promise<AutodlState> | null = null;
@@ -76,6 +79,7 @@ export function createAutodl(
     if (settings.instanceUuid !== uuid) {
       uuid = settings.instanceUuid;
       url = null;
+      urlFor = null;
       disarm();
       state = { ...state, state: 'unset', raw: null, since: null, upSince: null, byApp: false, error: null, instance: null };
     }
@@ -164,10 +168,10 @@ export function createAutodl(
     try {
       let raw = await instanceStatus(t, t.uuid);
       if (raw === 'running') {
-        url ??= await comfyAddress(t, t.uuid);
-        if (!(await unreachable(url))) {
+        const running = await comfyUrl(t);
+        if (!(await unreachable(running))) {
           if (state.state !== 'running') apply(raw);
-          return url;
+          return running;
         }
       }
       publish({ state: 'booting', raw, since: started, error: null });
@@ -185,8 +189,8 @@ export function createAutodl(
         raw = await instanceStatus(t, t.uuid);
         publish({ raw });
       }
-      url = await comfyAddress(t, t.uuid);
-      for (let problem = await unreachable(url); problem && !signal.aborted; problem = await unreachable(url)) {
+      const ready = await comfyUrl(t, true);
+      for (let problem = await unreachable(ready); problem && !signal.aborted; problem = await unreachable(ready)) {
         if (late()) throw new AutodlError(`等了 ${waited}还没开好：实例开了，但上面的 ComfyUI 一直连不上（${problem}）。可以再试一次${lan}`);
         await sleep(pollMs);
       }
@@ -197,7 +201,7 @@ export function createAutodl(
       }
       publish({ state: 'running', raw, since: null, upSince: sent ? Date.now() : (state.upSince ?? Date.now()), error: null });
       armIdle();
-      return url;
+      return ready;
     } catch (err) {
       if (err instanceof BootCancelled || signal.aborted) throw new BootCancelled();
       publish({ state: 'failed', since: null, error: (err as Error).message });
@@ -308,8 +312,7 @@ export function createAutodl(
   // ComfyUI 的队列里有没有任务，不管是谁发的。看不了（ComfyUI 连不上）当没有：连不上的 ComfyUI 谁也用不了
   async function comfyHasTasks(t: Target): Promise<boolean> {
     try {
-      url ??= await comfyAddress(t, t.uuid);
-      const { running, pending } = await queueState(url);
+      const { running, pending } = await queueState(await comfyUrl(t));
       return running.length + pending.length > 0;
     } catch {
       return false;
@@ -325,12 +328,22 @@ export function createAutodl(
     if (!busyWith.length) armIdle();
   }
 
-  // 开着的实例上 ComfyUI 的地址，关着的是 null
-  async function address(): Promise<string | null> {
+  // 这台实例上 ComfyUI 的地址。存下来的只在这一次开机里算数：开机时间变了（重启、迁移）就重新问一次，
+  // reload 是「重新读」，不管存的、直接重问。见 docs/dev-plan.md 5.17
+  async function comfyUrl(t: Target, reload = false): Promise<string> {
+    const run = state.upSince;
+    if (!reload && url && urlFor === run) return url;
+    url = await comfyAddress(t, t.uuid);
+    urlFor = run;
+    return url;
+  }
+
+  // 开着的实例上 ComfyUI 的地址，关着的是 null。reload 是重新读：重新向 AutoDL 要一次地址
+  async function address(reload = false): Promise<string | null> {
     const t = await target();
     if (!t) return null;
     if (state.state !== 'running' && !boot) await refresh();
-    return state.state === 'running' ? (url ??= await comfyAddress(t, t.uuid)) : null;
+    return state.state === 'running' ? await comfyUrl(t, reload) : null;
   }
 
   // 传模型用：选的那个实例的 SSH 地址和密码，每次现查

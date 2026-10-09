@@ -49,7 +49,8 @@ export function comfyRoutes(configDir: string, autodl: Autodl, videoAutodl: Auto
     const refresh = req.query.refresh === '1';
     let url: string | null;
     if (target === 'autodl') {
-      url = await autodl.address();
+      // 点「重新读」时连地址也重新问一次：AutoDL 重启、迁移会换 6006 的域名，存的地址可能已经过期
+      url = await autodl.address(refresh);
       const last = autodl.lastAddress();
       if (!url && !refresh && last && hasObjectInfo(last)) url = last;
       if (!url) {
@@ -84,7 +85,8 @@ export function comfyRoutes(configDir: string, autodl: Autodl, videoAutodl: Auto
   // 生成设置里的主模型和 LoRA：从生成视频那台读，关着时读过的照样给，refresh=1 重读
   router.get('/comfy/video/options', async (req, res) => {
     const refresh = req.query.refresh === '1';
-    let url = await videoAutodl.address();
+    // 同上：点「重新读」时连地址也重新问一次
+    let url = await videoAutodl.address(refresh);
     const last = videoAutodl.lastAddress();
     if (!url && !refresh && last && hasObjectInfo(last)) url = last;
     if (!url) throw new HttpError(400, videoAutodl.current().state === 'unset' ? '先在设置里选好生成视频用的实例' : '生成视频那台关着，开机后才读得到主模型和 LoRA');

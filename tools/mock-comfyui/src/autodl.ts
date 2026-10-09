@@ -3,7 +3,7 @@ import { MOCK_SSH_PASSWORD } from './ssh';
 
 // 假的 AutoDL Art 开发者接口，返回的样子照真的，见 docs/dev-plan.md 9.5。
 // 两个实例：出图用的那台和生成视频用的那台，开始都是关着的；开机后 bootMs 变成运行中，关机后 stopMs 变成关机，各开各的。
-// 6006 的访问地址都指回 mock 自己，所以开机后连的还是这个假的 ComfyUI
+// 6006 的访问地址都指回 mock 自己，所以开机后连的还是这个假的 ComfyUI；domain 给了就按它（测换域名）
 
 export const MOCK_AUTODL_PATH = '/autodl/api/v1/adl_dev/dev/instance/pro';
 export const MOCK_AUTODL_TOKEN = 'mock-autodl-token';
@@ -13,7 +13,8 @@ export const MOCK_AUTODL_VIDEO_UUID = 'pro-mock00000002';
 type InstanceState = { status: string; startedAt: string | null; stoppedAt: string | null };
 
 // sshCommand 给快照里的 ssh_command，指向假的 SSH
-export type MockAutodlOptions = { bootMs?: number; stopMs?: number; sshCommand?: () => string };
+// domain 给快照里的 6006 访问地址，默认指回 mock 自己；测换域名时给一个自己会变的
+export type MockAutodlOptions = { bootMs?: number; stopMs?: number; sshCommand?: () => string; domain?: () => string };
 export type MockAutodl = {
   router: express.Router;
   // 测试用：出图那台（instance）、按 uuid 的两台现在的状态、收到的开机关机请求；fail 里放了的，下一次这个接口按它返回错误
@@ -21,12 +22,14 @@ export type MockAutodl = {
   instances: Record<string, InstanceState>;
   calls: { action: string; body: unknown }[];
   fail: Partial<Record<'power_on' | 'power_off' | 'status' | 'list', { code: string; msg: string }>>;
+  // 测试用：两台都回到关着、开机关机记录清零。状态是跨用例、跨轮次留着的，e2e 每个文件开头清一次
+  reset(): void;
   close(): void;
 };
 
 const time = (iso: string | null) => ({ Time: iso ?? '0001-01-01T00:00:00Z', Valid: Boolean(iso) });
 
-export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () => 'ssh -p 10000 root@mock' }: MockAutodlOptions = {}): MockAutodl {
+export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () => 'ssh -p 10000 root@mock', domain }: MockAutodlOptions = {}): MockAutodl {
   const router = express.Router();
   const off = (): InstanceState => ({ status: 'shutdown', startedAt: null, stoppedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() });
   const instances: Record<string, InstanceState> = { [MOCK_AUTODL_UUID]: off(), [MOCK_AUTODL_VIDEO_UUID]: off() };
@@ -105,7 +108,7 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
       ssh_command: sshCommand(),
       root_password: MOCK_SSH_PASSWORD,
       jupyter_token: 'mock-jupyter',
-      service_6006_domain: req.headers.host,
+      service_6006_domain: domain ? domain() : req.headers.host,
       service_6006_port: 6006,
       service_6006_port_protocol: 'http',
       cg_application_info: apps[String(req.query.instance_uuid)],
@@ -144,6 +147,13 @@ export function createMockAutodl({ bootMs = 2000, stopMs = 500, sshCommand = () 
     instances,
     calls,
     fail,
+    // 就地改，别换成新对象：instance 那个引用是外面拿着的
+    reset() {
+      timers.forEach(clearTimeout);
+      timers.clear();
+      for (const one of Object.values(instances)) Object.assign(one, off());
+      calls.length = 0;
+    },
     close() {
       timers.forEach(clearTimeout);
       timers.clear();

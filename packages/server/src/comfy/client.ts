@@ -31,15 +31,31 @@ async function call(url: string, path: string, init: RequestInit = {}, timeoutMs
   }
 }
 
+// AutoDL 代理那页 404 的正文里有这个链接，认它
+const AUTODL_PORT_DOC = 'autodl.com/docs/port';
+
+// 不是 2xx 时给用户看的话。ComfyUI 自己的 404 是空的，AutoDL 的 6006 转发在「实例开着、但里面的 ComfyUI
+// 没应答」时回的是它自己的一张 HTML 404 页，原样贴给用户是一堆 HTML，什么也看不出来，见 docs/dev-plan.md 5.17
+async function notOk(url: string, res: Response): Promise<ComfyError> {
+  const body = await res.text();
+  if (body.includes(AUTODL_PORT_DOC)) {
+    return new ComfyError(
+      `连不上 ${url} 里面的 ComfyUI：AutoDL 的 6006 端口转发替它回了 ${res.status}。实例是开着的，但 6006 上没有 ComfyUI 应答——` +
+        '多半还在起，也可能是存的地址过期了（AutoDL 重启、迁移会换域名）。等一会儿再点一次「重新读底模和 LoRA 列表」，重读会重新问一次地址',
+    );
+  }
+  return new ComfyError(`ComfyUI 返回 ${res.status}：${body.slice(0, 500)}`);
+}
+
 async function json<T>(url: string, path: string, timeoutMs?: number): Promise<T> {
   const res = await call(url, path, {}, timeoutMs);
-  if (!res.ok) throw new ComfyError(`ComfyUI 返回 ${res.status}：${(await res.text()).slice(0, 500)}`);
+  if (!res.ok) throw await notOk(url, res);
   return (await res.json()) as T;
 }
 
 async function post(url: string, path: string, body: unknown): Promise<Response> {
   const res = await call(url, path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new ComfyError(`ComfyUI 返回 ${res.status}：${(await res.text()).slice(0, 500)}`);
+  if (!res.ok) throw await notOk(url, res);
   return res;
 }
 

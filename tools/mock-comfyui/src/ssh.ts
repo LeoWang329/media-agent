@@ -21,6 +21,9 @@ export type MockSsh = {
   state: { free: number };
   // 那台上的一个绝对路径对应到本机哪里
   local(remote: string): string;
+  // 测试用：那台上的文件全清掉、命令记录清空、剩余空间复原。
+  // 文件是落在一个临时文件夹里的，跨用例、跨轮次都在，e2e 每个文件开头清一次
+  reset(): void;
   close(): Promise<void>;
 };
 
@@ -261,6 +264,12 @@ export function createMockSsh(): MockSsh {
     commands,
     state,
     local,
+    reset() {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.mkdirSync(root, { recursive: true });
+      commands.length = 0;
+      state.free = 14 * 1024 ** 3;
+    },
     async close() {
       clients.forEach((client) => client.end());
       await new Promise((resolve) => server.close(resolve));

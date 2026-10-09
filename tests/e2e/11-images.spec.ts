@@ -372,6 +372,49 @@ test('出图设置：LoRA 点开能按名字搜，空格隔开的几个词都对
   expect(node.image.loras).toEqual([{ name: 'IL/detail-tweaker-test.safetensors', strength: 0.8 }]);
 });
 
+test('出图设置：底模点开能按名字搜，只列这个系列的；这台 ComfyUI 上没有的也列出来并标明，选一个换掉存进节点', async ({ page }) => {
+  await useMockComfy(page);
+  await newCanvasWithNode(page, '底模', '生图节点');
+  const settings = page.getByRole('dialog', { name: '出图设置' });
+  await panel(page).locator('#btnGenCfg').click();
+  await expect(settings.locator('#gcCkpt')).toHaveText('il-test.safetensors');
+
+  await settings.locator('#gcCkpt').click();
+  const picker = page.getByRole('dialog', { name: '选 底模' });
+  const options = picker.getByRole('option');
+  // pony-test 这台上有，但不是 IL 系列，不列
+  await expect(options).toHaveText(['il-test.safetensors']);
+  const search = picker.getByRole('textbox', { name: '搜 底模' });
+  await expect(search).toBeFocused();
+  await search.fill('pony');
+  await expect(picker).toContainText('没有名字里带「pony」的 底模');
+  await search.press('Escape');
+  await settings.getByRole('button', { name: '好了' }).click();
+
+  // 节点上写着这台 ComfyUI 没有的底模：照样列出来、后面标一句，也能换回有的那个
+  const canvasId = new URL(page.url()).pathname.split('/').at(-1)!;
+  const nodeId = (await cardTitled(page, (await drawerTitle(page).textContent())!).getAttribute('data-id'))!;
+  const patched = await page.request.patch(`/api/canvases/${canvasId}/nodes/${nodeId}`, { data: { image: { checkpoint: 'gone-test.safetensors' } } });
+  expect(patched.ok()).toBe(true);
+  await page.reload();
+  await expect(cards(page)).toHaveCount(1);
+  if (!(await panel(page).locator('#btnGenCfg').count())) await cards(page).first().click();
+  await panel(page).locator('#btnGenCfg').click();
+  await expect(settings.locator('#gcCkpt')).toHaveText('gone-test.safetensors');
+
+  await settings.locator('#gcCkpt').click();
+  await expect(options).toHaveText(['gone-test.safetensors（这台 ComfyUI 上没有）', 'il-test.safetensors']);
+  await picker.getByRole('textbox', { name: '搜 底模' }).fill('il');
+  await expect(options).toHaveText(['il-test.safetensors']);
+  await picker.getByRole('textbox', { name: '搜 底模' }).press('Enter');
+  await expect(picker).toHaveCount(0);
+  await expect(settings.locator('#gcCkpt')).toHaveText('il-test.safetensors');
+  await settings.getByRole('button', { name: '好了' }).click();
+
+  const node = (await (await page.request.get(`/api/canvases/${canvasId}/nodes/${nodeId}`)).json()) as { image: { checkpoint: string } };
+  expect(node.image.checkpoint).toBe('il-test.safetensors');
+});
+
 test('写标签：不问 AI 写成一个框，标着「自己写的」，能直接生图；再写一串、带一句要求让 AI 优化，自己写的存下来留着，AI 带着前面的对话回一个新框', async ({ page }) => {
   await useMockComfy(page);
   await newCanvasWithNode(page, '写标签', '生图节点');

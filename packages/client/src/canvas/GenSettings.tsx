@@ -178,7 +178,18 @@ function KreaGenSettings({ node }: { node: ChatNode }) {
           )}
         </div>
         <div className="gc-sec">
-          {select('gcCkpt', '底模', image.checkpoint, options?.kreaModels ?? [], (checkpoint) => save({ checkpoint }))}
+          <label className="field">
+            底模
+            <NameSelect
+              id="gcCkpt"
+              what="底模"
+              className="gc-lora-name"
+              value={image.checkpoint}
+              names={[...new Set([image.checkpoint, ...(options?.kreaModels ?? [])])].filter(Boolean)}
+              onPick={(checkpoint) => save({ checkpoint })}
+              note={(name) => (options && !(options.kreaModels ?? []).includes(name) ? '（这台 ComfyUI 上没有）' : undefined)}
+            />
+          </label>
           {select('gcTextEncoder', '文字理解模型', image.textEncoder ?? '', options?.textEncoders ?? [], (textEncoder) => save({ textEncoder }))}
           {select('gcVae', 'VAE', image.vae, options?.vaes ?? [], (vae) => save({ vae }))}
         </div>
@@ -187,10 +198,12 @@ function KreaGenSettings({ node }: { node: ChatNode }) {
           <div className="gc-loras">
             {image.loras.map((lora, i) => (
               <div className="gc-lora" key={i}>
-                <LoraSelect
+                <NameSelect
+                  className="gc-lora-name"
                   value={lora.name}
-                  loras={[...new Set([lora.name, ...(options?.loras.filter((name) => /krea/i.test(name)) ?? [])])]}
+                  names={[...new Set([lora.name, ...(options?.loras.filter((name) => /krea/i.test(name)) ?? [])])]}
                   onPick={(name) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, name } : l)) })}
+                  what="LoRA"
                 />
                 <CommitInput
                   className="input mono"
@@ -420,15 +433,17 @@ function GenSettings({ node }: { node: ChatNode }) {
                   只列标成 {family} 的{others > 0 ? `，另有 ${others} 个不是 ${family}` : ''}
                 </span>
               </h4>
-              <select className="select" id="gcCkpt" aria-label="底模" value={checkpoint} onChange={(e) => save({ checkpoint: e.target.value })} disabled={!checkpointList.length}>
-                {!checkpointList.length && <option value="">{optionsError ? '读不到底模列表' : '正在读底模列表…'}</option>}
-                {checkpointList.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                    {options && !familyCheckpoints.includes(name) ? '（这台 ComfyUI 上没有）' : ''}
-                  </option>
-                ))}
-              </select>
+              <NameSelect
+                id="gcCkpt"
+                what="底模"
+                className="gc-lora-name"
+                value={checkpoint}
+                names={checkpointList}
+                onPick={(checkpoint) => save({ checkpoint })}
+                note={(name) => (options && !familyCheckpoints.includes(name) ? '（这台 ComfyUI 上没有）' : undefined)}
+                disabled={!checkpointList.length}
+                empty={optionsError ? '读不到底模列表' : '正在读底模列表…'}
+              />
               {optionsError && (
                 <p className="hint">
                   <Icon name="info" className="icon-sm" />
@@ -449,10 +464,12 @@ function GenSettings({ node }: { node: ChatNode }) {
               <div className="gc-loras">
                 {image.loras.map((lora, i) => (
                   <div className="gc-lora" key={i}>
-                    <LoraSelect
+                    <NameSelect
+                      className="gc-lora-name"
                       value={lora.name}
-                      loras={pick(loras, lora.name)}
+                      names={pick(loras, lora.name)}
                       onPick={(name) => save({ loras: image.loras.map((l, j) => (j === i ? { ...l, name } : l)) })}
+                      what="LoRA"
                     />
                     <CommitInput
                       className="input mono"
@@ -723,21 +740,52 @@ function SavePreset({ family, image }: { family: Family; image: ImageSettings })
   );
 }
 
-// 选 LoRA：点开能按名字搜。几个词用空格隔开，名字里都有才列出来，不分大小写；上下键挑、回车选。
-// 视频节点选主模型也用它，what 是选的是什么
-export function LoraSelect({ value, loras, onPick, what = 'LoRA' }: { value: string; loras: string[]; onPick: (name: string) => void; what?: string }) {
+// 选名字：点开能按名字搜。几个词用空格隔开，名字里都有才列出来，不分大小写；上下键挑、回车选。
+// LoRA、视频节点的主模型、底模都用它，what 是选的是什么。
+// note 给某个名字后面加一句小字（比如「这台 ComfyUI 上没有」）；names 是空的时候按钮上写 empty 那句话、点不动
+export function NameSelect({
+  id,
+  value,
+  names,
+  onPick,
+  what,
+  className = '',
+  note,
+  disabled,
+  empty,
+}: {
+  id?: string;
+  value: string;
+  names: string[];
+  onPick: (name: string) => void;
+  what: string;
+  className?: string;
+  note?: (name: string) => string | undefined;
+  disabled?: boolean;
+  empty?: string;
+}) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const said = names.length ? value : (empty ?? value);
   return (
     <>
-      <button type="button" className="select gc-lora-name" aria-label={what} title={value} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
-        {value}
+      <button
+        type="button"
+        id={id}
+        className={`select${className ? ` ${className}` : ''}`}
+        aria-label={what}
+        title={said}
+        disabled={disabled}
+        onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}
+      >
+        {said}
       </button>
       {anchor && (
-        <LoraSearch
+        <NameSearch
           anchor={anchor}
           value={value}
-          loras={loras}
+          names={names}
           what={what}
+          note={note}
           onPick={(name) => {
             setAnchor(null);
             onPick(name);
@@ -749,13 +797,13 @@ export function LoraSelect({ value, loras, onPick, what = 'LoRA' }: { value: str
   );
 }
 
-function LoraSearch({ anchor, value, loras, what, onPick, onClose }: { anchor: DOMRect; value: string; loras: string[]; what: string; onPick: (name: string) => void; onClose: () => void }) {
+function NameSearch({ anchor, value, names, what, note, onPick, onClose }: { anchor: DOMRect; value: string; names: string[]; what: string; note?: (name: string) => string | undefined; onPick: (name: string) => void; onClose: () => void }) {
   const [q, setQ] = useState('');
   // 刚打开时停在现在选的那个上
-  const [active, setActive] = useState(() => Math.max(0, loras.indexOf(value)));
+  const [active, setActive] = useState(() => Math.max(0, names.indexOf(value)));
   const list = useRef<HTMLDivElement>(null);
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = loras.filter((name) => words.every((word) => name.toLowerCase().includes(word)));
+  const shown = names.filter((name) => words.every((word) => name.toLowerCase().includes(word)));
 
   useEffect(() => {
     list.current?.querySelector('.is-on')?.scrollIntoView({ block: 'nearest' });
@@ -773,10 +821,10 @@ function LoraSearch({ anchor, value, loras, what, onPick, onClose }: { anchor: D
   };
 
   return (
-    <Popover anchor={anchor} className="gc-lora-pop" odId="popover-pick-lora" label={`选 ${what}`} onClose={onClose}>
+    <Popover anchor={anchor} className="gc-lora-pop" odId="popover-pick-name" label={`选 ${what}`} onClose={onClose}>
       <input
         className="input"
-        placeholder={`搜名字，一共 ${loras.length} 个`}
+        placeholder={`搜名字，一共 ${names.length} 个`}
         aria-label={`搜 ${what}`}
         data-autofocus
         value={q}
@@ -787,19 +835,24 @@ function LoraSearch({ anchor, value, loras, what, onPick, onClose }: { anchor: D
         onKeyDown={onKeyDown}
       />
       <div className="gc-lora-list" role="listbox" aria-label={`${what} 列表`} ref={list}>
-        {shown.map((name, i) => (
-          <button
-            key={name}
-            type="button"
-            role="option"
-            aria-selected={name === value}
-            className={`gc-lora-opt${i === active ? ' is-on' : ''}`}
-            onMouseMove={() => setActive(i)}
-            onClick={() => onPick(name)}
-          >
-            {name}
-          </button>
-        ))}
+        {shown.map((name, i) => {
+          const hint = note?.(name);
+          return (
+            <button
+              key={name}
+              type="button"
+              role="option"
+              aria-selected={name === value}
+              title={name}
+              className={`gc-lora-opt${i === active ? ' is-on' : ''}`}
+              onMouseMove={() => setActive(i)}
+              onClick={() => onPick(name)}
+            >
+              {name}
+              {hint && <span className="gc-opt-note">{hint}</span>}
+            </button>
+          );
+        })}
         {!shown.length && <p className="gp-none">没有名字里带「{q.trim()}」的 {what}</p>}
       </div>
     </Popover>
