@@ -271,5 +271,7 @@ MiniMax H3 官方：
 本机与本项目：
 
 - 本机已有的 H3 工程实践（MMH3Tools 的 Context-IR 系统提示词；含台词语速预算 2.5 词/秒、时长离散值、续写接缝经验）：`outputs/mmh3tools/ComfyUI-MMH3Tools/docs/context-ir-system-prompt.md`（不进 git）
+- 外部 skill（已克隆到本机审阅，`outputs/` 不进 git）：[adoin/video-generation-skills](https://github.com/adoin/video-generation-skills) 的 `prompt-director`（中文视频提示词方法论，20 个 reference / 约 145 KB，65 节），clone 在 `outputs/video-generation-skills/`。审阅后采入 `docs/prompts/h3-change.md` 的条目：情绪强度降维、动作归因（动作在前表情在后）、生理动作链、微表情多时锁固定镜头、四层动态（身体→跟随物→环境光→声音同向）、微弱生命反应、起态带前史痕迹、悬念写预备动作、不写物理参数只写可见后果、台词语气按时间递进、静音按层处理、微表情清单。没有采纳的是别家模型专属语法（时间戳格式、`@图片N` 引用、负面词框、JSON 反推、捏脸流程）和图片模型专属的假因果/时间词技巧。
+- 另一个相关 skill（未逐节采入，仅参考）：[Square-Zero-Labs/video-prompting-skill](https://github.com/Square-Zero-Labs/video-prompting-skill) 的 `minimax-h3/prompting.md`（23 KB），里面大块是**参考视频的表演迁移**（performer → performance Subject → target Subject 的映射、口型归属、跨风格锁画风），本项目第一版没有视频参考槽位，加槽位时值得回来抄。
 - 本项目：[docs/research-h3-long-video.md](research-h3-long-video.md)（帧数 17j+5、时长对齐）、[docs/h3-guide-check.md](h3-guide-check.md)（默认提示词对着官方指南的逐条核对）、[docs/prompts/format-requirement.md](prompts/format-requirement.md)（程序固定的输出格式）
 
