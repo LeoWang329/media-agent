@@ -1,5 +1,5 @@
 import express, { type Request } from 'express';
-import { copyVideoToFolder, videoFile } from '../comfy/files';
+import { copyVideoToFolder, imageFile, videoFile } from '../comfy/files';
 import type { VideoAgain, VideoJobs, VideoPlace, VideoReshoot } from '../comfy/videoJobs';
 import { requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
@@ -38,6 +38,16 @@ export function videoRoutes(configDir: string, jobs: VideoJobs): express.Router 
   // 临时文件清掉了用下载的那份；都不在返回 404，界面上显示「已清理」。sendFile 认 Range，能拖进度条
   router.get(`${base}/:jobId/file`, async (req, res) => {
     res.sendFile((await findVideo(await place(req), String(req.params.jobId))).file, { dotfiles: 'allow' });
+  });
+
+  // 二采还在跑时的那份一采低清预览；还没拿到返回 404，界面上不画播放器。sendFile 认 Range，能拖进度条
+  router.get(`${base}/:jobId/preview`, async (req, res) => {
+    const at = await place(req);
+    const node = await readNode(at.work, at.canvasId, at.nodeId);
+    const job = node.messages[at.messageId]?.videos?.find((one) => one.id === String(req.params.jobId));
+    const file = job?.preview ? await imageFile(at.work, { file: job.preview }) : null;
+    if (!file) throw new HttpError(404, '这条还没出预览');
+    res.sendFile(file, { dotfiles: 'allow' });
   });
 
   // 下载：复制到选好的文件夹，记下存到哪。视频不进资产库，不问要不要导入

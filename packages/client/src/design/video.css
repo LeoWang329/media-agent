@@ -8,8 +8,8 @@
 .dur-pop .hint { margin-top: 8px; }
 #durSegs { margin-left: 6px; font-size: 11.5px; }
 
-/* 生成设置 */
-.vc-pop { width: 360px; }
+/* 生成设置：项目多，比屏幕高的自己滚，见 docs/dev-plan.md 5.32 */
+.vc-pop { width: 360px; max-height: calc(100vh - 24px); overflow-y: auto; }
 .vc-sec { display: flex; flex-direction: column; gap: 6px; padding: 2px 2px 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
 .vc-sec h4 { margin: 0; }
 .vc-sec .select { width: 100%; }
@@ -17,12 +17,21 @@
 .vc-sec h4 .meta { font-weight: 400; font-size: 11.5px; }
 .vc-refresh { margin-left: auto; }
 .vc-final { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; padding: 0 2px; font-size: 12.5px; }
+/* 自己改的一采、二采每段几步，见 docs/dev-plan.md 5.27 */
+.vc-steps { align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.vc-steps .field { gap: 2px; }
+.vc-steps .input { width: 76px; }
+.vc-steps-now { padding-bottom: 8px; }
 
 /* 框下面的视频 */
 .vj-job.is-running .ig-state, .vj-job.is-queued .ig-state { color: var(--fg); }
 .vj-job.is-failed .ig-state { color: var(--danger); }
 .vj-player { display: block; width: 100%; max-height: 420px; border-radius: 10px; background: oklch(14% 0.01 255); }
 .vj-gone { display: flex; align-items: center; gap: 6px; padding: 18px 12px; border: 1px dashed var(--border); border-radius: 10px; font-size: 12.5px; color: var(--muted); }
+/* 二采还在跑时先给看的一采低清版，见 docs/dev-plan.md 5.27 */
+.vj-preview { margin-top: 10px; padding: 8px; border: 1px dashed var(--border); border-radius: 12px; }
+.vj-preview .hint, .vj-partial { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; }
+.vj-preview .hint > .icon, .vj-partial > .icon { margin-top: 2px; flex: none; }
 .vj-info { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; margin-top: 8px; }
 .vj-info > span + span::before { content: "·"; margin: 0 6px; color: color-mix(in oklch, var(--muted) 60%, transparent); }
 .vj-info .mono { font-size: 11.5px; }
@@ -72,6 +81,9 @@
 .vt-live { display: inline-flex; align-items: center; gap: 6px; }
 .vt-left { font-size: 12px; }
 .vt-state .btn { margin-left: auto; }
+/* 完了的那条：播放和下载两个按钮靠右一排，见 docs/dev-plan.md 5.29 */
+.vt-acts { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.vt-acts .btn { margin-left: 0; }
 .vt-failed { display: inline-flex; align-items: center; gap: 4px; color: var(--danger); }
 
 /* 视频和音频参考，见 docs/dev-plan.md 5.31：图的槽位下面那一排、点开的小窗、资产库里的格子、消息里的截帧 */

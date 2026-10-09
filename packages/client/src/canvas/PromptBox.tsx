@@ -1,4 +1,4 @@
-import { directionDraft, type CanvasImage, type ChatNode, type Message } from '@media-agent/shared';
+import { directionDraft, lengthProblem, splitSegments, type CanvasImage, type ChatNode, type Message } from '@media-agent/shared';
 import { EditorContent } from '@tiptap/react';
 import { useState } from 'react';
 import { docPictures, docToText } from '../editor/document';
@@ -38,6 +38,9 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
   // 视频节点的框能生成视频，框下面挂着生成的视频，见 docs/dev-plan.md 5.27
   const video = node.kind === 'video';
   const image = node.kind === 'image';
+  // 框里写的段数不够，出来的片子会比时长短：先说清楚，别点下去白跑一趟，见 docs/dev-plan.md 5.24。
+  // 比的是节点现在的时长（面板上那个），和服务端生成时用的是同一个，不按写这条回复时记的
+  const tooShort = video ? lengthProblem(node.duration, splitSegments(text).length) : null;
 
   if (editing) {
     return <BoxEditor node={node} message={message} index={index} label={label} text={text} busy={busy} versions={versions} onClose={() => setEditing(false)} />;
@@ -63,7 +66,8 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
               type="button"
               className="btn btn-secondary btn-sm"
               data-act="genVideo"
-              title="按这条回复的时长、比例和节点的生成设置，在生成视频用的 AutoDL 实例上生成"
+              disabled={Boolean(tooShort)}
+              title={tooShort ?? '按这条回复的时长、比例和节点的生成设置，在生成视频用的 AutoDL 实例上生成'}
               onClick={() => void generateVideo({ nodeId: node.id, messageId: message.id }, index)}
             >
               <Icon name="film" />
@@ -95,6 +99,12 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
           {!writing && act('continue', '沿这个方向继续', 'arrow-right', () => void useCanvasStore.getState().fork(node.id, message.id, directionDraft(index, label)))}
         </div>
       </div>
+      {tooShort && (
+        <p className="pb-warn" data-od-id="video-length-mismatch">
+          <Icon name="warn" className="icon-sm" />
+          <span>{tooShort}</span>
+        </p>
+      )}
       <div className={`pb-body${long ? ' is-clamped' : ''}`}>
         {promptBody(text, imgs, images)}
         {writing && <span className="caret" />}

@@ -1,25 +1,33 @@
 import {
+  selfliftOfSettings,
+  stepsOfSettings,
+  VIDEO_DENOISE,
   VIDEO_DURATION,
   VIDEO_MEGAPIXELS,
+  VIDEO_SELFLIFT,
   VIDEO_SPEEDS,
+  VIDEO_STEPS,
   VIDEO_UPSCALES,
+  VIDEO_WORKFLOWS,
   videoAspect,
   videoImageUse,
   videoRatioOf,
   videoSettingsOf,
   videoSizes,
+  workflowOfSettings,
   type AspectRatio,
   type ChatNode,
   type VideoSettings,
   type VideoSpeed,
+  type VideoWorkflow,
 } from '@media-agent/shared';
 import { useEffect, useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 import { useVideoStore } from '../store/videoStore';
-import { anyNumber, CommitInput, integerFrom } from '../ui/CommitInput';
+import { anyNumber, CommitInput, integerBetween, integerFrom } from '../ui/CommitInput';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
-import { LoraSelect } from './GenSettings';
+import { NameSelect } from './GenSettings';
 
 // 视频节点的时长和生成设置，见 docs/dev-plan.md 5.24、5.27
 
@@ -73,6 +81,7 @@ export function useVideoRatio(promptName: string | undefined, ratio: AspectRatio
 }
 
 const SPEED_LABELS: Record<VideoSpeed, string> = { fast: '加速', full: '不加速' };
+const WORKFLOW_LABELS: Record<VideoWorkflow, string> = { 'two-pass': '两遍生成', selflift: 'SelfLift 一遍' };
 
 // 槽位区右边的「生成设置」：按钮上写着出片多大，点开改加速还是不加速、一采大小、放大倍数、种子、主模型、LoRA
 export function VideoGenButton({ node }: { node: ChatNode }) {
@@ -102,6 +111,9 @@ export function VideoGenButton({ node }: { node: ChatNode }) {
 
 function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: ChatNode; onClose: () => void }) {
   const settings = videoSettingsOf(node.video);
+  const workflow = workflowOfSettings(settings);
+  const selflift = selfliftOfSettings(settings);
+  const steps = stepsOfSettings(settings);
   const sized = useVideoRatio(node.systemPromptName, node.aspectRatio, node.slots[0]);
   const ratioText = typeof sized !== 'string' ? '，比例自动的按当首帧的那张图' : node.aspectRatio === 'auto' ? '，比例自动的按 16:9' : `，现在是 ${videoAspect(node.aspectRatio)}`;
   const final = videoSizes(settings.megapixels, settings.upscale, sized);
@@ -114,24 +126,163 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
   }, []);
   const models = options?.models ?? [];
   const loras = options?.loras ?? [];
+  // SelfLift 能用的放大器也是从那一台读的（装了那套节点才有）；没读到就只列默认那个和「不用放大器」
+  const upscalers = options?.selfliftUpscalers?.length ? options.selfliftUpscalers : [VIDEO_SELFLIFT.none, VIDEO_SELFLIFT.upscaler];
   // 节点选的那台上没有：也列出来
   const pick = (list: string[], value: string) => (value && !list.includes(value) ? [value, ...list] : list);
   return (
     <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg, .gc-lora-pop'))}>
       <div className="vc-sec">
-        <h4>加速</h4>
+        <h4>
+          流程<span className="meta">这个节点走哪套内置流程</span>
+        </h4>
+        <div className="seg" role="group" aria-label="走哪套流程" id="vcWorkflow">
+          {VIDEO_WORKFLOWS.map((one) => (
+            <button key={one} type="button" aria-pressed={workflow === one} onClick={() => save({ workflow: one })}>
+              {WORKFLOW_LABELS[one]}
+            </button>
+          ))}
+        </div>
+        <p className="hint">
+          {workflow === 'two-pass'
+            ? `两遍生成：先按一采大小出一遍，不解码放大到出片大小，再按「二采重画多少」细修一遍。分段接续、重拍一截都在这套上。`
+            : `SelfLift：一套调度跑完——前 ${selflift.transitionStep} 步低分辨率，抬到出片大小再跑完剩下的 ${selflift.steps - selflift.transitionStep} 步，没有放大这一步。一段一个采样器；这套不能重拍一截。`}
+        </p>
+      </div>
+      <div className="vc-sec">
+        <h4>
+          加速
+          <span className="meta">{workflow === 'two-pass' ? '一键设好主模型和步数，设完两样都能自己改' : '只换主模型'}</span>
+        </h4>
         <div className="seg" role="group" aria-label="加速还是不加速" id="vcSpeed">
           {(Object.keys(SPEED_LABELS) as VideoSpeed[]).map((speed) => (
-            <button key={speed} type="button" aria-pressed={settings.speed === speed} onClick={() => save({ speed, model: VIDEO_SPEEDS[speed].model })}>
+            <button
+              key={speed}
+              type="button"
+              aria-pressed={settings.speed === speed}
+              // 切的时候主模型和一采、二采的步数一起换成这个预设的，换完下面还能改，见 docs/dev-plan.md 5.27
+              onClick={() => save({ speed, model: VIDEO_SPEEDS[speed].model, steps: VIDEO_SPEEDS[speed].steps })}
+            >
               {SPEED_LABELS[speed]}
             </button>
           ))}
         </div>
         <p className="hint">
-          加速用 DaSiWa V2 加速版，一采 {VIDEO_SPEEDS.fast.steps.pass1} 步、二采 {VIDEO_SPEEDS.fast.steps.pass2} 步；不加速用完整版，一采 {VIDEO_SPEEDS.full.steps.pass1} 步、二采{' '}
-          {VIDEO_SPEEDS.full.steps.pass2} 步，同样长度多花七成左右的时间。切的时候主模型跟着换，换完还能在下面改。
+          {workflow === 'two-pass' ? (
+            <>
+              加速用 DaSiWa V2 加速版，一采 {VIDEO_SPEEDS.fast.steps.pass1} 步、二采 {VIDEO_SPEEDS.fast.steps.pass2} 步；不加速用完整版，一采 {VIDEO_SPEEDS.full.steps.pass1} 步、二采{' '}
+              {VIDEO_SPEEDS.full.steps.pass2} 步，同样长度多花七成左右的时间。
+            </>
+          ) : (
+            <>
+              加速用 DaSiWa V2 加速版，不加速用完整版；SelfLift 那套的步数在下面自己填，切加速不动它。
+            </>
+          )}
         </p>
       </div>
+      {workflow === 'two-pass' ? (
+        <>
+          <div className="vc-sec">
+            <h4>
+              步数<span className="meta">一采、二采每段各几步</span>
+            </h4>
+            <div className="row vc-steps">
+              {(
+                [
+                  ['一采', 'pass1', 'vcSteps1', VIDEO_STEPS.pass1],
+                  ['二采', 'pass2', 'vcSteps2', VIDEO_STEPS.pass2],
+                ] as const
+              ).map(([label, pass, id, limit]) => (
+                <label className="field" key={pass}>
+                  <span className="meta">{label}</span>
+                  <CommitInput
+                    className="input mono"
+                    type="number"
+                    id={id}
+                    aria-label={`${label}步数`}
+                    min={limit.min}
+                    max={limit.max}
+                    value={String(steps[pass])}
+                    parse={integerBetween(limit.min, limit.max)}
+                    onCommit={(v) => save({ steps: { ...steps, [pass]: Number(v) } })}
+                  />
+                </label>
+              ))}
+              <span className="meta vc-steps-now">
+                现在是{settings.steps ? '自己改的' : `照「${SPEED_LABELS[settings.speed]}」`}
+              </span>
+            </div>
+            <p className="hint">
+              能填一采 {VIDEO_STEPS.pass1.min}–{VIDEO_STEPS.pass1.max}、二采 {VIDEO_STEPS.pass2.min}–{VIDEO_STEPS.pass2.max}。步数越多越细，同样长度花的时间大致按步数涨。
+            </p>
+          </div>
+          <div className="vc-sec">
+            <h4>
+              二采重画多少<span className="meta">放大完那一遍按多少重画（denoise）</span>
+            </h4>
+            <div className="row vc-steps">
+              <label className="field">
+                <span className="meta">重画多少</span>
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  id="vcDenoise"
+                  aria-label="二采重画多少"
+                  step={VIDEO_DENOISE.step}
+                  min={VIDEO_DENOISE.min}
+                  max={VIDEO_DENOISE.max}
+                  value={String(settings.denoise ?? VIDEO_DENOISE.default)}
+                  parse={anyNumber}
+                  onCommit={(v) => save({ denoise: Number(v) })}
+                />
+              </label>
+              <span className="meta vc-denoise-now">{settings.denoise === undefined ? `现在是默认的 ${VIDEO_DENOISE.default}` : '现在是自己改的'}</span>
+            </div>
+            <p className="hint">
+              放大完那一遍只重画多少：默认 {VIDEO_DENOISE.default} 是留着构图细修，越大改得越多、越容易跑偏，1 是照放大后的重出一遍。能填 {VIDEO_DENOISE.min} 到 {VIDEO_DENOISE.max}。
+            </p>
+          </div>
+        </>
+      ) : (
+        <div className="vc-sec">
+          <h4>
+            步数<span className="meta">SelfLift 一套调度总共几步、前几步在低分辨率跑</span>
+          </h4>
+          <div className="row vc-steps">
+            <label className="field">
+              <span className="meta">总步数</span>
+              <CommitInput
+                className="input mono"
+                type="number"
+                id="vcSelfSteps"
+                aria-label="SelfLift 总步数"
+                min={VIDEO_SELFLIFT.steps.min}
+                max={VIDEO_SELFLIFT.steps.max}
+                value={String(selflift.steps)}
+                parse={integerBetween(VIDEO_SELFLIFT.steps.min, VIDEO_SELFLIFT.steps.max)}
+                onCommit={(v) => save({ selflift: { ...selflift, steps: Number(v) } })}
+              />
+            </label>
+            <label className="field">
+              <span className="meta">低分辨率跑几步</span>
+              <CommitInput
+                className="input mono"
+                type="number"
+                id="vcSelfTransition"
+                aria-label="低分辨率跑几步"
+                min={VIDEO_SELFLIFT.transitionStep.min}
+                max={Math.max(VIDEO_SELFLIFT.transitionStep.min, selflift.steps - 1)}
+                value={String(selflift.transitionStep)}
+                parse={integerBetween(VIDEO_SELFLIFT.transitionStep.min, Math.max(VIDEO_SELFLIFT.transitionStep.min, selflift.steps - 1))}
+                onCommit={(v) => save({ selflift: { ...selflift, transitionStep: Number(v) } })}
+              />
+            </label>
+          </div>
+          <p className="hint">
+            总步数 {VIDEO_SELFLIFT.steps.min}–{VIDEO_SELFLIFT.steps.max}，低分辨率那几步要比总步数少至少 1（剩下的在高分辨率跑）。前面几步在低分辨率跑，是省时间的关键；抬上去之前跑得越多越省，也越容易在接缝上出问题。
+          </p>
+        </div>
+      )}
       <div className="vc-sec">
         <h4>一采大小</h4>
         <select className="select select-sm mono" id="vcMp" aria-label="一采大小" value={settings.megapixels} onChange={(e) => save({ megapixels: Number(e.target.value) })}>
@@ -145,7 +296,9 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
           })}
         </select>
         <p className="hint">
-          先按这个大小生成一遍（一采），宽高按节点的比例算{ratioText}。越大越慢，要的显存越多。
+          {workflow === 'two-pass'
+            ? `先按这个大小生成一遍（一采），宽高按节点的比例算${ratioText}。越大越慢，要的显存越多。`
+            : `这是出片大小除以放大倍数那个数（SelfLift 的 latent 按出片大小定，低分辨率那段由它自己缩），宽高按节点的比例算${ratioText}。越大越慢，要的显存越多。`}
         </p>
       </div>
       <div className="vc-sec">
@@ -157,8 +310,47 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
             </button>
           ))}
         </div>
-        <p className="hint">一采完不解码直接放大，再细修一遍（二采）。</p>
+        <p className="hint">
+          {workflow === 'two-pass' ? '一采完不解码直接放大，再细修一遍（二采）。' : `乘上面那个数就是出片大小：出片 ${final.finalWidth}×${final.finalHeight}，低分辨率那段按这个的 ${selflift.lowresScale} 出。`}
+        </p>
       </div>
+      {workflow === 'selflift' && (
+        <div className="vc-sec">
+          <h4>
+            低分辨率倍数、放大器<span className="meta">SelfLift 那套怎么抬上去</span>
+          </h4>
+          <div className="row vc-steps">
+            <label className="field">
+              <span className="meta">低分辨率倍数</span>
+              <CommitInput
+                className="input mono"
+                type="number"
+                id="vcSelfLowres"
+                aria-label="低分辨率倍数"
+                step={VIDEO_SELFLIFT.lowresScale.step}
+                min={VIDEO_SELFLIFT.lowresScale.min}
+                max={VIDEO_SELFLIFT.lowresScale.max}
+                value={String(selflift.lowresScale)}
+                parse={anyNumber}
+                onCommit={(v) => save({ selflift: { ...selflift, lowresScale: Number(v) } })}
+              />
+            </label>
+            <span className="meta vc-lowres-now">
+              低分辨率那段 {Math.round(final.finalWidth * selflift.lowresScale / 32) * 32}×{Math.round(final.finalHeight * selflift.lowresScale / 32) * 32}
+            </span>
+          </div>
+          <select className="select select-sm mono" id="vcSelfUpscaler" aria-label="提升用哪个放大器" value={selflift.upscaler} onChange={(e) => save({ selflift: { ...selflift, upscaler: e.target.value } })}>
+            {pick(upscalers, selflift.upscaler).map((name) => (
+              <option key={name} value={name}>
+                {name === VIDEO_SELFLIFT.none ? '不用放大器（靠模型自己的像素锚点修）' : name}
+              </option>
+            ))}
+          </select>
+          <p className="hint">
+            低分辨率缩到多少：{VIDEO_SELFLIFT.lowresScale.min} 到 {VIDEO_SELFLIFT.lowresScale.max}。抬上去用的是 H3 的潜空间放大器（照那份「U37 无色差」默认选 {VIDEO_SELFLIFT.upscaler}）；选「不用放大器」就走 SelfLift-zero，靠模型自己的 VAE 锚点修，接缝更稳但多一趟解码。
+          </p>
+        </div>
+      )}
       <div className="vc-sec">
         <h4>种子</h4>
         <div className="row">
@@ -183,7 +375,7 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
             刷新
           </button>
         </h4>
-        <LoraSelect what="主模型" value={settings.model} loras={pick(models, settings.model)} onPick={(model) => save({ model })} />
+        <NameSelect what="主模型" className="gc-lora-name" value={settings.model} names={pick(models, settings.model)} onPick={(model) => save({ model })} />
         {optionsError && !options && (
           <p className="hint is-error" id="vcOptionsError">
             {optionsError}
@@ -197,7 +389,7 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
         <div className="gc-loras" id="vcLoras">
           {settings.loras.map((lora, i) => (
             <div className="gc-lora" key={i}>
-              <LoraSelect value={lora.name} loras={pick(loras, lora.name)} onPick={(name) => save({ loras: settings.loras.map((l, j) => (j === i ? { ...l, name } : l)) })} />
+              <NameSelect className="gc-lora-name" value={lora.name} names={pick(loras, lora.name)} onPick={(name) => save({ loras: settings.loras.map((l, j) => (j === i ? { ...l, name } : l)) })} what="LoRA" />
               <CommitInput
                 className="input mono"
                 type="number"
@@ -231,7 +423,7 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
         <b className="mono" id="vcFinal">
           {final.finalWidth}×{final.finalHeight}
         </b>
-        <span className="meta">步数、采样器、分段重叠照内置流程，不用调</span>
+        <span className="meta">采样器、调度器、分段重叠照内置流程，不用调</span>
       </div>
     </Popover>
   );

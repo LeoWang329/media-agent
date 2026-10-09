@@ -27,8 +27,9 @@ export type ImageTarget = { nodeId: string; messageId: string; jobId: string; in
 // 下载窗口：要下的几张，文件名用节点标题加种子
 export type DownloadTarget = { nodeId: string; title: string; items: (ImageTarget & { seed: number })[] };
 
-// 下载一条视频：哪条回复的哪一条，文件名用节点标题加种子
-export type VideoDownloadTarget = { nodeId: string; messageId: string; jobId: string; title: string; seed: number };
+// 下载一条视频：哪条回复的哪一条，文件名用节点标题加种子。
+// canvasId 给了就用它：视频任务小窗里点下载的可能是别的画布上那条，见 docs/dev-plan.md 5.29
+export type VideoDownloadTarget = { canvasId?: string; nodeId: string; messageId: string; jobId: string; title: string; seed: number };
 
 type Overlays = {
   fourView: { nodeId: string; reference: RefImage } | null;

@@ -67,7 +67,9 @@ export const ICONS = {
   server: '<rect x="4" y="4.5" width="16" height="6" rx="1.5"/><rect x="4" y="13.5" width="16" height="6" rx="1.5"/><path d="M7.5 7.5h.01M7.5 16.5h.01" stroke-width="2.4"/>',
   sliders: '<path d="M5 6.5h8M17 6.5h2M5 12h2M11 12h8M5 17.5h10M19 17.5h0"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/>',
   // 原型里 AutoDL 开机关机用了 power，但没画，照同样的线条补上
-  power: '<path d="M12 4v7.5"/><path d="M7.6 7.3a6.5 6.5 0 1 0 8.8 0"/>'
+  power: '<path d="M12 4v7.5"/><path d="M7.6 7.3a6.5 6.5 0 1 0 8.8 0"/>',
+  // 视频任务小窗里「播放」用的
+  play: '<path d="M8.5 5.5l9 6.5-9 6.5z"/>'
 };
 
 export type IconName = keyof typeof ICONS;

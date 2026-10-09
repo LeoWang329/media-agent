@@ -305,10 +305,28 @@ export type AutodlState = {
 };
 
 // 视频节点的生成设置，存在 node.video，见 docs/dev-plan.md 5.27：一采大小（百万像素）、放大倍数、种子（null 是每次随机）、
-// 主模型（生成视频那台 minimax/ 下的文件名）、挂的 LoRA（各带强度，只作用在主模型上）、加速还是不加速（定一采、二采每段几步）
+// 主模型（生成视频那台 minimax/ 下的文件名）、挂的 LoRA（各带强度，只作用在主模型上）、加速还是不加速（一键设好主模型和一采、二采每段几步）、
+// steps 是自己改过的一采、二采每段几步；没改过（undefined）就照加速还是不加速那个预设。
+// workflow 走哪套内置流程（没记的是两遍生成）；denoise 是两遍生成里二采重画多少；selflift 是 SelfLift 那套的参数，见 docs/dev-plan.md 5.32
 export type VideoLora = { name: string; strength: number };
 export type VideoSpeed = 'fast' | 'full';
-export type VideoSettings = { megapixels: number; upscale: number; seed: number | null; model: string; loras: VideoLora[]; speed: VideoSpeed };
+export type VideoSteps = { pass1: number; pass2: number };
+// 两遍生成（一采 → 潜空间放大 → 二采）还是 SelfLift（一套调度里前几步低分辨率、抬上去再跑完）
+export type VideoWorkflow = 'two-pass' | 'selflift';
+// SelfLift：总共几步、前几步在低分辨率跑、低分辨率缩到多少、提升用哪个放大器（'none' 是不用放大器，走模型自己的像素锚点）
+export type VideoSelfLift = { steps: number; transitionStep: number; lowresScale: number; upscaler: string };
+export type VideoSettings = {
+  megapixels: number;
+  upscale: number;
+  seed: number | null;
+  model: string;
+  loras: VideoLora[];
+  speed: VideoSpeed;
+  steps?: VideoSteps;
+  workflow?: VideoWorkflow;
+  denoise?: number;
+  selflift?: VideoSelfLift;
+};
 
 // 生成视频发出去的全部参数，「同样参数再来」照这个发，见 docs/dev-plan.md 5.26。
 // seconds 是写这条回复时的时长；frames 是整条、每段、相邻两段重叠几帧；width、height 是一采的，finalWidth、finalHeight 是出片的。
@@ -329,6 +347,9 @@ export type VideoJobParams = {
   model: string;
   loras?: VideoLora[];
   steps?: { pass1: number; pass2: number }; // 一采、二采每段几步；以前出的没记，按加速的算
+  workflow?: VideoWorkflow; // 走哪套内置流程；以前出的没记，按两遍生成算
+  denoise?: number; // 两遍生成里二采重画多少；没记按 0.2
+  selflift?: VideoSelfLift; // SelfLift 那套的参数；缺的按默认值补
   media?: VideoMedia[]; // 带的视频和音频，按接进流程的顺序，见 docs/dev-plan.md 5.31
 };
 
@@ -387,6 +408,10 @@ export type VideoJob = {
   promptId?: string;
   status: 'queued' | 'running' | 'done' | 'failed' | 'stopped';
   file?: string;
+  // 一采出完先存的那一份低清预览，相对工作文件夹；二采跑着的时候就能看，叫停时它转正成 file，见 docs/dev-plan.md 5.27
+  preview?: string;
+  // 这条是叫停时留下的一采低清版，不是完整出完的
+  partial?: boolean;
   bytes?: number;
   ms?: number;
   savedPath?: string;
@@ -408,6 +433,8 @@ export type VideoTiming = {
   upscaleMs: number;
   pass2StepMs: number;
   saveMs: number;
+  // 这条是照哪套流程出的；以前记的没有这一项，按两遍生成算。两套的每步用时不一样，比的时候只跟同一套的比
+  workflow?: VideoWorkflow;
 };
 
 // 视频任务小窗里的一条：在哪个画布、哪个节点，带上名字
@@ -450,7 +477,7 @@ export type ComfyStatus =
 // detectors 是部位重绘用的检测模型，只列 .pt 的（同一个文件夹里放的 SAM 这类不是），sams 是 SAMLoader 的列表。preprocessors 是 ControlNet 的提取方式（AIO_Preprocessor 的列表）。
 // nodeTypes 是这台装了的全部节点类型，用来查缺不缺插件
 // 生成视频那台上能选的主模型（minimax/ 下的）和 LoRA，见 docs/dev-plan.md 5.27
-export type VideoOptions = { models: string[]; loras: string[] };
+export type VideoOptions = { models: string[]; loras: string[]; selfliftUpscalers?: string[] };
 
 export type ComfyOptions = {
   kreaModels: string[];

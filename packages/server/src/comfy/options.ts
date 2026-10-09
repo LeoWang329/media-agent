@@ -54,10 +54,12 @@ function comboOptions(info: ObjectInfo, nodeType: string, input: string): string
 // 这台 ComfyUI 上的底模文件名
 export const comfyCheckpoints = (info: ObjectInfo) => comboOptions(info, 'CheckpointLoaderSimple', 'ckpt_name');
 
-// 生成视频那台：主模型只列 minimax/ 下的 H3 模型，LoRA 列 LoraLoaderModelOnly 能选的
+// 生成视频那台：主模型只列 minimax/ 下的 H3 模型，LoRA 列 LoraLoaderModelOnly 能选的，
+// SelfLift 能用的放大器列 SelfLiftH3Sampler 那个下拉（没装这套节点时是空的），见 docs/dev-plan.md 5.32
 export const videoOptions = (info: ObjectInfo): VideoOptions => ({
   models: comboOptions(info, 'UNETLoader', 'unet_name').filter(isVideoModel),
   loras: comboOptions(info, 'LoraLoaderModelOnly', 'lora_name'),
+  selfliftUpscalers: comboOptions(info, 'SelfLiftH3Sampler', 'upscaler_model'),
 });
 
 export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | null>): ComfyOptions {

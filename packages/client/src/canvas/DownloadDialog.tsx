@@ -169,7 +169,7 @@ function VideoDownload({ target }: { target: VideoDownloadTarget }) {
     setSaving(true);
     try {
       const { nodeId, messageId, jobId } = target;
-      const item = { canvasId: useCanvasStore.getState().canvasId, nodeId, messageId, jobId };
+      const item = { canvasId: target.canvasId ?? useCanvasStore.getState().canvasId, nodeId, messageId, jobId };
       const result = await trackWrite(api<{ path: string }>('/videos/download', { method: 'POST', body: { item, folder } }));
       const job = useCanvasStore.getState().nodes[nodeId]?.messages[messageId]?.videos?.find((j) => j.id === jobId);
       if (job) putVideo({ nodeId, messageId }, { ...job, savedPath: result.path } satisfies VideoJob);

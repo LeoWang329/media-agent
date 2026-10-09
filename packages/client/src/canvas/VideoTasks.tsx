@@ -7,6 +7,7 @@ import { useVideoStore, type VideoProgress } from '../store/videoStore';
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
 import { elapsedText, LiveState } from './VideoJobs';
+import { useOverlays } from './overlays';
 import { showVideo, stopVideo } from './videoActions';
 
 // 画布顶上视频那台的状态旁边的「视频任务」：列出所有画布的视频任务，见 docs/dev-plan.md 5.29
@@ -101,10 +102,17 @@ function VideoTasksPop({ anchor, onClose }: { anchor: DOMRect; onClose: () => vo
   );
 }
 
-// 一条：画布名、节点标题、第几个框、多长、出片宽高；在做什么、跑了多久、预计还要多久；在做的和排着的能叫停
+// 一条：画布名、节点标题、第几个框、多长、出片宽高；在做什么、跑了多久、预计还要多久；在做的和排着的能叫停；
+// 完了的能直接播、直接下（叫停时留下低清版的也算），见 docs/dev-plan.md 5.29
 function Row({ task, left, onOpen }: { task: VideoTask; left?: number | null; onOpen: () => void }) {
   const { job } = task;
   const live = job.status === 'queued' || job.status === 'running';
+  // 出完的，和叫停时留下了一采低清版的：都有文件能播能下
+  const playable = job.status === 'done' || (job.status === 'stopped' && job.partial === true && Boolean(job.file));
+  const download = () =>
+    useOverlays.setState({
+      videoDownload: { canvasId: task.canvasId, nodeId: task.nodeId, messageId: task.messageId, jobId: job.id, title: task.nodeTitle, seed: job.seed },
+    });
   return (
     <div className={`vt-row is-${job.status}`} data-task={job.id} role="button" tabIndex={0} onClick={onOpen} onKeyDown={(e) => e.key === 'Enter' && onOpen()}>
       <div className="vt-where">
@@ -149,7 +157,19 @@ function Row({ task, left, onOpen }: { task: VideoTask; left?: number | null; on
         ) : (
           <span className="meta">
             <Icon name="stop" className="icon-sm" />
-            已叫停
+            已叫停{job.partial && '（留下一采低清版）'}
+          </span>
+        )}
+        {!live && playable && (
+          <span className="vt-acts">
+            <button type="button" className="btn btn-secondary btn-sm" data-vact="play" title="跳到那个节点看这条" onClick={(e) => { e.stopPropagation(); onOpen(); }}>
+              <Icon name="play" />
+              播放
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" data-vact="download" title="复制一份到文件夹" onClick={(e) => { e.stopPropagation(); download(); }}>
+              <Icon name="download" />
+              下载
+            </button>
           </span>
         )}
       </div>

@@ -4,9 +4,13 @@ import {
   SIZE_LIMITS,
   TRANSLATE_LANGUAGES,
   UPSCALE_SCALES,
+  VIDEO_DENOISE,
   VIDEO_DURATION,
   VIDEO_MEGAPIXELS,
+  VIDEO_SELFLIFT,
+  VIDEO_STEPS,
   VIDEO_UPSCALES,
+  VIDEO_WORKFLOWS,
   MAX_MEDIA,
   type AspectRatio,
   type CanvasNodeLayout,
@@ -22,7 +26,9 @@ import {
   type TagWeighting,
   type TranslateLanguage,
   type UpscaleSettings,
+  type VideoSelfLift,
   type VideoSettings,
+  type VideoSteps,
 } from '@media-agent/shared';
 import { HttpError } from '../httpError';
 
@@ -242,7 +248,7 @@ function oneOf(value: unknown, what: string, choices: number[]): number {
   return value as number;
 }
 
-// 视频节点的生成设置只改带了的项：一采大小、放大倍数、种子，见 docs/dev-plan.md 5.27
+// 视频节点的生成设置只改带了的项：一采大小、放大倍数、种子、走哪套流程、二采重画多少、SelfLift 的参数，见 docs/dev-plan.md 5.27、5.32
 export function videoSettings(value: unknown, base: VideoSettings): VideoSettings {
   if (typeof value !== 'object' || value === null) throw new HttpError(400, '生成设置格式不对');
   const fields = value as Record<string, unknown>;
@@ -252,8 +258,37 @@ export function videoSettings(value: unknown, base: VideoSettings): VideoSetting
   if (fields.seed !== undefined) next.seed = fields.seed === null ? null : integer(fields.seed, '种子', 0);
   if (fields.model !== undefined) next.model = nonEmptyText(fields.model, '主模型');
   if (fields.speed !== undefined) next.speed = choice(fields.speed, '加速还是不加速', ['fast', 'full'] as const);
+  if (fields.steps !== undefined) next.steps = videoSteps(fields.steps);
   if (fields.loras !== undefined) next.loras = loraList(fields.loras);
+  if (fields.workflow !== undefined) next.workflow = choice(fields.workflow, '走哪套流程', VIDEO_WORKFLOWS);
+  if (fields.denoise !== undefined) next.denoise = between(fields.denoise, '二采重画多少', VIDEO_DENOISE.min, VIDEO_DENOISE.max);
+  if (fields.selflift !== undefined) next.selflift = selfliftSettings(fields.selflift);
   return next;
+}
+
+// SelfLift 那套的参数：总共几步、前几步低分辨率、低分辨率缩到多少、提升用哪个放大器，见 docs/dev-plan.md 5.32
+function selfliftSettings(value: unknown): VideoSelfLift {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, 'SelfLift 的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const steps = integer(fields.steps, 'SelfLift 总步数', VIDEO_SELFLIFT.steps.min, VIDEO_SELFLIFT.steps.max);
+  // 低分辨率那段至少要 1 步、最后留至少 1 步在高分辨率上跑，插件自己也是这么卡的
+  const transitionStep = integer(fields.transitionStep, '低分辨率跑几步', VIDEO_SELFLIFT.transitionStep.min, Math.min(VIDEO_SELFLIFT.transitionStep.max, steps - 1));
+  return {
+    steps,
+    transitionStep,
+    lowresScale: between(fields.lowresScale, '低分辨率倍数', VIDEO_SELFLIFT.lowresScale.min, VIDEO_SELFLIFT.lowresScale.max),
+    upscaler: nonEmptyText(fields.upscaler, '放大器'),
+  };
+}
+
+// 自己改的一采、二采每段几步，见 docs/dev-plan.md 5.27
+function videoSteps(value: unknown): VideoSteps {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, '一采、二采的步数格式不对');
+  const fields = value as Record<string, unknown>;
+  return {
+    pass1: integer(fields.pass1, '一采步数', VIDEO_STEPS.pass1.min, VIDEO_STEPS.pass1.max),
+    pass2: integer(fields.pass2, '二采步数', VIDEO_STEPS.pass2.min, VIDEO_STEPS.pass2.max),
+  };
 }
 
 // 放大：开关、放大模型、倍数、重绘强度，见 docs/dev-plan.md 5.21

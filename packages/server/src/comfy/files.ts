@@ -11,12 +11,13 @@ export async function saveTemp(work: string, data: Uint8Array, seed: number, whe
   return `image-temp/${folder}/${name}`;
 }
 
-// 出的视频存工作文件夹 video-temp/当天/，write 往给的路径写，见 docs/dev-plan.md 5.27
-export async function saveVideoTemp(work: string, seed: number, write: (target: string) => Promise<void>, when = new Date()): Promise<string> {
+// 出的视频存工作文件夹 video-temp/当天/，write 往给的路径写，见 docs/dev-plan.md 5.27。
+// tail 给一采那份低清预览用「-preview」，免得和成片重名
+export async function saveVideoTemp(work: string, seed: number, write: (target: string) => Promise<void>, when = new Date(), tail = ''): Promise<string> {
   const folder = tempFolderName(when);
   const dir = path.join(work, 'video-temp', folder);
   await fs.mkdir(dir, { recursive: true });
-  const name = await writeNew(dir, videoTempFileName(when, seed), write);
+  const name = await writeNew(dir, videoTempFileName(when, seed, tail), write);
   return `video-temp/${folder}/${name}`;
 }
 

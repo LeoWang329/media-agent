@@ -15,6 +15,7 @@ import {
   type Message,
   type VideoImageUse,
   type VideoJob,
+  type VideoWorkflow,
 } from '@media-agent/shared';
 import { useEffect, useRef, useState } from 'react';
 import { useVideoRatio } from './VideoSettings';
@@ -23,7 +24,7 @@ import { useVideoStore, type VideoProgress } from '../store/videoStore';
 import { clock, fmtSize } from '../ui/format';
 import { Icon } from '../ui/Icon';
 import { useOverlays } from './overlays';
-import { againVideo, removeVideo, stopVideo, videoSrc } from './videoActions';
+import { againVideo, previewSrc, removeVideo, stopVideo, videoSrc } from './videoActions';
 import { VideoReshoot } from './VideoReshoot';
 
 // 框下面挂着的视频：点一次「生成视频」一条，按生成的先后排，见 docs/dev-plan.md 5.28；重拍一截出的版本挂在原片下面，见 5.30
@@ -69,7 +70,7 @@ export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
       <div className="ig-empty meta" data-od-id="video-empty">
         还没生成过视频。点「生成视频」按节点的生成设置生成{carriesText(use, message.slotSnapshot.length, message.mediaSnapshot ?? [])}
         {segments > 1 ? `，分 ${segments} 段` : ''}，约{' '}
-        <span className="mono">{videoSecondsText(videoFrames(message.duration, segments).total)}</span>，出片{' '}
+        <span className="mono">{videoSecondsText(videoFrames(node.duration, segments).total)}</span>，出片{' '}
         <span className="mono">
           {finalWidth}×{finalHeight}
         </span>
@@ -98,11 +99,11 @@ function videoLabel(job: VideoJob, jobs: VideoJob[]): string {
 
 const STAGE_TEXT = { encode: '编码提示词', upscale: '放大', save: '存文件' };
 
-// 在做哪一步：一采、二采写第几段第几步
-export function stageText(progress: VideoProgress | undefined): string {
+// 在做哪一步：一采、二采写第几段第几步；SelfLift 那套一段一个采样器，写成「生成」
+export function stageText(progress: VideoProgress | undefined, workflow?: VideoWorkflow): string {
   if (!progress) return '正在跑';
   if (progress.stage === 'pass1' || progress.stage === 'pass2') {
-    const name = progress.stage === 'pass1' ? '一采' : '二采';
+    const name = workflow === 'selflift' ? '生成' : progress.stage === 'pass1' ? '一采' : '二采';
     return progress.chunk ? `${name} 第 ${progress.chunk}/${progress.chunks} 段 ${progress.step}/${progress.steps} 步` : name;
   }
   return STAGE_TEXT[progress.stage];
@@ -150,7 +151,7 @@ export function LiveState({ job }: { job: VideoJob }) {
     <>
       <span className="dot dot-live" />
       <span className="mono" data-stage={progress?.stage}>
-        {stageText(progress)}
+        {stageText(progress, job.params.workflow)}
       </span>
       {since}
     </>
@@ -164,6 +165,11 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
   const [picked, setPicked] = useState<string | null>(null);
   const job = all.find((j) => j.id === picked) ?? all.at(-1)!;
   const live = isLiveVideo(job);
+  // 叫停时留下的一采低清版：整条的，能播能下载，见 docs/dev-plan.md 5.27
+  const partial = job.status === 'stopped' && job.partial === true && Boolean(job.file);
+  const playable = job.status === 'done' || partial;
+  // 二采还在跑、一采那份已经取回来了：先给看个大概
+  const preview = live && job.preview ? previewSrc(place, job) : null;
   // 播不了时看一眼文件还在不在：不在了是「已清理」。每一版各记各的
   const [problems, setProblems] = useState<Record<string, 'gone' | 'unplayable'>>({});
   const problem = problems[job.id] ?? null;
@@ -237,7 +243,18 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
           </button>
         )}
       </header>
-      {job.status === 'done' &&
+      {preview && (
+        <div className="vj-preview" data-od-id="video-preview">
+          <video className="vj-player" controls preload="metadata" src={preview} style={{ aspectRatio: `${params.finalWidth} / ${params.finalHeight}` }} />
+          <p className="hint">
+            <Icon name="info" className="icon-sm" />
+            {params.workflow === 'selflift'
+              ? '这是第 1 段出的（后面的段还在跑、整条还没接起来）。看着不行就现在叫停，这一版归你，能播能下载'
+              : '这是一采（低清）出的整条，二采还在跑。看着不行就现在叫停，这一版归你，能播能下载'}
+          </p>
+        </div>
+      )}
+      {playable &&
         (problem === 'gone' ? (
           <div className="vj-gone">
             <Icon name="trash" className="icon-sm" />
@@ -255,8 +272,14 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
             onError={checkFile}
           />
         ))}
+      {partial && problem !== 'gone' && (
+        <p className="vj-partial hint">
+          <Icon name="info" className="icon-sm" />
+          {params.workflow === 'selflift' ? '这是叫停时留下的第 1 段，后面的段没跑完。想要整条，同样参数再来一遍' : '这是叫停时留下的一采低清版，二采没跑完。想要高清的，同样参数再来一遍'}
+        </p>
+      )}
       {!ro && job.status === 'done' && job.latents && problem !== 'gone' && <VideoReshoot key={`reshoot-${job.id}`} place={place} job={job} seek={seek} onStart={() => setPicked(null)} />}
-      {job.status === 'done' && (
+      {playable && (
         <div className="vj-info meta">
           <span className="mono">
             {params.finalWidth}×{params.finalHeight}
@@ -285,7 +308,7 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
       )}
       {!ro && !live && (
         <div className="vj-acts">
-          {job.status === 'done' && problem !== 'gone' && (
+          {playable && problem !== 'gone' && (
             <button
               type="button"
               className="btn btn-secondary btn-sm"

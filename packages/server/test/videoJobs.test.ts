@@ -73,6 +73,9 @@ async function send(text: string, parentId: string): Promise<string> {
   return ((await t.stream(`${nodeUrl()}/send`, { parentId, text })).at(-1) as { message: Message }).message.id;
 }
 
+// 手动改的框也得分段写：beforeEach 把时长设成 60，一段最长 15 秒，写少了会被拦下来，见 docs/dev-plan.md 5.24
+const fourWay = (first: string) => [first, '第二段', '第三段', '第四段'].join('\n|\n');
+
 // 画布里存的那份图在哪、内容的 sha256
 async function canvasImageFile(imageId: string): Promise<string> {
   const records = JSON.parse(await fs.readFile(path.join(t.work, 'canvases', canvasId, 'images.json'), 'utf8')) as Record<string, { sha256: string; ext: string }>;
@@ -95,7 +98,7 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, tim
 }
 
 const settled = (job: VideoJob | undefined) => job?.status !== 'queued' && job?.status !== 'running';
-const settledJob = async (jobId: string, messageId = replyId) => (await until(() => readJob(jobId, messageId), settled))!;
+const settledJob = async (jobId: string, messageId = replyId, timeoutMs?: number) => (await until(() => readJob(jobId, messageId), settled, timeoutMs))!;
 const lastGraph = async () => ((await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: ComfyGraph }[]).at(-1)!.prompt;
 const ofType = (graph: ComfyGraph, type: string) => Object.values(graph).filter((node) => node.class_type === type);
 const from = (graph: ComfyGraph, value: unknown) => graph[String((value as [string, number])[0])];
@@ -207,6 +210,14 @@ describe('生成视频任务', () => {
     await useVideoAutodl();
     const five = await edited(['一', '二', '三', '四', '五'].join('\n|\n'));
     expect(await t.call('POST', videosUrl(five), { promptIndex: 0 })).toMatchObject({ status: 400, body: { error: '这个框分了 5 段，最多 4 段' } });
+
+    // 时长 60 秒要 4 段，框里只写了 1 段：拦下来，别白跑一趟，见 docs/dev-plan.md 5.24
+    await t.ok('PATCH', nodeUrl(), { duration: 60 });
+    const oneSegment = await edited('就一段，没有分隔线');
+    const short = await t.call('POST', videosUrl(oneSegment), { promptIndex: 0 });
+    expect(short).toMatchObject({ status: 400 });
+    expect(short.body.error).toBe('时长 60 秒至少要分 4 段（一段最长 15 秒），这个框里只写了 1 段，这样出来只有 15.1 秒。让模型照 60 秒重写这个框，或者把时长改成 15 秒');
+    await t.ok('PATCH', nodeUrl(), { duration: 8 });
     expect((await t.call('POST', videosUrl(), { promptIndex: 3 })).status).toBe(404);
 
     for (const prompt of ['fl2va', 'l2va']) {
@@ -309,7 +320,7 @@ describe('生成视频任务', () => {
 
   it('叫停：在 ComfyUI 排队的直接停，正在跑的等 ComfyUI 说停了；出错的写原因', async () => {
     await useVideoAutodl();
-    const slowId = await edited('慢慢地走');
+    const slowId = await edited(fourWay('慢慢地走'));
     const running = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
     await until(() => readJob(running.id, slowId), (job) => job?.status === 'running');
     const waiting = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
@@ -319,13 +330,41 @@ describe('生成视频任务', () => {
     expect(await t.ok<VideoJob>('POST', `${videosUrl(slowId)}/${running.id}/stop`)).toMatchObject({ status: 'running' });
     expect(await settledJob(running.id, slowId)).toMatchObject({ status: 'stopped' });
 
-    const brokenId = await edited('报错');
+    const brokenId = await edited(fourWay('报错'));
     const broken = await t.ok<VideoJob>('POST', videosUrl(brokenId), { promptIndex: 0 });
     expect(await settledJob(broken.id, brokenId)).toMatchObject({ status: 'failed', error: '生成视频出错（MMH3LoopingSampler）：mock-comfyui：提示词含「报错」，按约定出错' });
-    const memoryId = await edited('显存');
+    const memoryId = await edited(fourWay('显存'));
     const memory = await t.ok<VideoJob>('POST', videosUrl(memoryId), { promptIndex: 0 });
     expect(await settledJob(memory.id, memoryId)).toMatchObject({ status: 'failed', error: '显存不够：CUDA out of memory. Tried to allocate 20.00 GiB' });
   });
+
+  it('一采出完先出一版低清预览（二采还在跑），叫停时这一版转正成结果，能播能下载', async () => {
+    await useVideoAutodl();
+    const slowId = await edited(fourWay('慢慢地走'));
+    const job = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
+
+    // 一采跑完、二采还在跑：预览有了，成片还没
+    const withPreview = (await until(() => readJob(job.id, slowId), (current) => Boolean(current?.preview) && current?.status === 'running', 30_000))!;
+    expect(withPreview.file).toBeUndefined();
+    expect(withPreview.partial).toBeUndefined();
+    expect(withPreview.preview).toMatch(/^video-temp\/\d{4}-\d{2}-\d{2}\/\d{6}-\d+-preview\.mp4$/);
+    // 文件真在临时文件夹里，能播
+    expect((await fs.stat(path.join(t.work, withPreview.preview!))).isFile()).toBe(true);
+    const preview = await fetch(`${t.base}${videosUrl(slowId)}/${job.id}/preview`);
+    expect(preview.status).toBe(200);
+    expect(Number(preview.headers.get('content-length'))).toBeGreaterThan(0);
+
+    // 二采途中叫停：这一版留下当结果
+    await t.ok('POST', `${videosUrl(slowId)}/${job.id}/stop`);
+    const stopped = await settledJob(job.id, slowId, 30_000);
+    expect(stopped).toMatchObject({ status: 'stopped', partial: true, file: withPreview.preview });
+    // 转正以后 /file 认了，下载也照样能用
+    expect((await fetch(`${t.base}${videosUrl(slowId)}/${job.id}/file`)).status).toBe(200);
+    const folder = path.join(t.work, 'downloads');
+    await fs.mkdir(folder, { recursive: true });
+    const item = { canvasId, nodeId, messageId: slowId, jobId: job.id };
+    expect(await t.ok('POST', '/videos/download', { item, folder })).toEqual({ path: path.join(folder, `测试标题-${job.seed}.mp4`) });
+  }, 90_000);
 
   it('同样参数再来用同一个种子，只换种子再来换一个；删掉：临时文件直接删，下载过的那份不动；没出完的不让删', async () => {
     await useVideoAutodl();
@@ -356,7 +395,7 @@ describe('生成视频任务', () => {
     expect((await fs.stat(path.join(folder, '测试标题-77.mp4'))).isFile()).toBe(true);
     expect((await readJob(first.id))).toBeUndefined();
 
-    const slowId = await edited('慢慢地走');
+    const slowId = await edited(fourWay('慢慢地走'));
     const slow = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
     expect((await t.call('DELETE', `${videosUrl(slowId)}/${slow.id}`)).status).toBe(409);
     await t.ok('POST', `${videosUrl(slowId)}/${slow.id}/stop`);
@@ -386,7 +425,7 @@ describe('生成视频任务', () => {
 
   it('服务重启后：还在跑的接着等，出完照样取回来；还没发出去的标失败', async () => {
     await useVideoAutodl();
-    const slowId = await edited('慢慢地走');
+    const slowId = await edited(fourWay('慢慢地走'));
     const job = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
     await until(() => readJob(job.id, slowId), (current) => current?.status === 'running');
     await t.restart();
@@ -398,9 +437,10 @@ describe('生成视频任务', () => {
     await fs.writeFile(file, JSON.stringify(node));
 
     await t.videoJobs().resume();
-    expect(await settledJob(job.id, slowId)).toMatchObject({ status: 'done', file: expect.stringMatching(/\.mp4$/) });
+    // 含「慢」的四段要跑一阵，等久一点
+    expect(await settledJob(job.id, slowId, 30_000)).toMatchObject({ status: 'done', file: expect.stringMatching(/\.mp4$/) });
     expect(await readJob('lost-job', slowId)).toMatchObject({ status: 'failed', error: '程序重启时这条还没出完' });
-  }, 15_000);
+  }, 45_000);
 
   it('视频任务小窗：所有画布在做的、排着的按先后，完了的新的在前；出完记下各步用时，同样大小的只留 5 条', async () => {
     await useVideoAutodl();
@@ -408,7 +448,7 @@ describe('生成视频任务', () => {
     const otherNode = (await t.ok('POST', `/canvases/${otherCanvas}/nodes`, { x: 0, y: 0 })).id;
     const otherReply = ((await t.stream(`/canvases/${otherCanvas}/nodes/${otherNode}/send`, { parentId: null, text: '写一个' })).at(-1) as { message: Message }).message.id;
 
-    const slowId = await edited('慢慢地走');
+    const slowId = await edited(fourWay('慢慢地走'));
     const running = await t.ok<VideoJob>('POST', videosUrl(slowId), { promptIndex: 0 });
     await until(() => readJob(running.id, slowId), (job) => job?.status === 'running');
     const waiting = await t.ok<VideoJob>('POST', `/canvases/${otherCanvas}/nodes/${otherNode}/messages/${otherReply}/videos`, { promptIndex: 0 });
@@ -425,7 +465,8 @@ describe('生成视频任务', () => {
     expect(board.timings).toEqual([]);
 
     await t.ok('POST', `/canvases/${otherCanvas}/nodes/${otherNode}/messages/${otherReply}/videos/${waiting.id}/stop`);
-    await settledJob(running.id, slowId);
+    // 含「慢」的四段要跑一阵，等久一点
+    await settledJob(running.id, slowId, 30_000);
     const after = await t.ok<VideoBoard>('GET', '/video-jobs');
     expect(after.live).toEqual([]);
     expect(after.done.map((task) => [task.job.id, task.job.status])).toEqual([
@@ -433,14 +474,14 @@ describe('生成视频任务', () => {
       [waiting.id, 'stopped'],
     ]);
     expect(after.timings).toEqual([
-      expect.objectContaining({ finalWidth: 1728, finalHeight: 960, segments: 1, encodeMs: expect.any(Number), pass1StepMs: expect.any(Number), saveMs: expect.any(Number) }),
+      expect.objectContaining({ finalWidth: 1728, finalHeight: 960, segments: 4, encodeMs: expect.any(Number), pass1StepMs: expect.any(Number), saveMs: expect.any(Number) }),
     ]);
     expect(JSON.parse(await fs.readFile(path.join(t.work, 'video-timings.json'), 'utf8'))).toEqual(after.timings);
 
     // 删掉的不列
     await t.call('DELETE', `${videosUrl(slowId)}/${running.id}`);
     expect((await t.ok<VideoBoard>('GET', '/video-jobs')).done.map((task) => task.job.id)).toEqual([waiting.id]);
-  }, 20_000);
+  }, 45_000);
 
   it('重拍一截：出片时存下一采、二采；只切这一截所在的窗，按遮罩重画，再拼回整条；出完是原片的一个版本', async () => {
     await useVideoAutodl();
@@ -599,6 +640,75 @@ describe('生成视频任务', () => {
     const again = await t.ok<VideoJob>('POST', videosUrl(reply), { again: { jobId: job.id, sameSeed: true } });
     expect(again.params.steps).toEqual({ pass1: 20, pass2: 6 });
     await settledJob(again.id, reply);
+  });
+
+  it('一采、二采的步数能自己改：改完照改的走，进度和流程都用它；越界、不是整数都拦；切预设会把改的覆盖掉', async () => {
+    await useVideoAutodl();
+    for (const bad of [{ pass1: 0, pass2: 3 }, { pass1: 51, pass2: 3 }, { pass1: 10, pass2: 21 }, { pass1: 2.5, pass2: 3 }, { pass1: '10', pass2: 3 }]) {
+      expect((await t.call('PATCH', nodeUrl(), { video: { steps: bad } })).status).toBe(400);
+    }
+    expect(await t.call('PATCH', nodeUrl(), { video: { steps: { pass1: 14 } } })).toMatchObject({ status: 400, body: { error: '二采步数要是 1 到 20 的整数' } });
+
+    await t.ok('PATCH', nodeUrl(), { duration: 15, video: { steps: { pass1: 14, pass2: 5 } } });
+    const reply = await send('写一个 15 秒的', replyId);
+    const seen: string[] = [];
+    const stop = t.videoJobs().subscribe((event: VideoJobEvent) => {
+      if (event.type === 'progress' && (event.stage === 'pass1' || event.stage === 'pass2') && event.chunk) seen.push(`${event.stage} ${event.step}/${event.steps}`);
+    });
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(job.params.steps).toEqual({ pass1: 14, pass2: 5 });
+    await settledJob(job.id, reply);
+    stop();
+    expect(ofType(await lastGraph(), 'BasicScheduler').map((node) => node.inputs.steps)).toEqual([14, 5]);
+    expect(seen).toContain('pass1 14/14');
+    expect(seen).toContain('pass2 5/5');
+
+    // 切一次预设：改过的被预设覆盖掉
+    await t.ok('PATCH', nodeUrl(), { video: { speed: 'full', model: 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', steps: { pass1: 20, pass2: 6 } } });
+    const after = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(after.params.steps).toEqual({ pass1: 20, pass2: 6 });
+    await settledJob(after.id, reply);
+  });
+
+  it('走哪套流程能自己选：SelfLift 那套一段一个采样器、没有放大二采；二采重画多少放开能改；这套不能重拍一截', async () => {
+    await useVideoAutodl();
+    // 校验：流程只认那两套；denoise 有范围；低分辨率那几步要比总步数少至少 1
+    expect(await t.call('PATCH', nodeUrl(), { video: { workflow: 'one-pass' } })).toMatchObject({ status: 400, body: { error: '走哪套流程只能是 two-pass、selflift' } });
+    expect(await t.call('PATCH', nodeUrl(), { video: { denoise: 1.5 } })).toMatchObject({ status: 400, body: { error: '二采重画多少要在 0.05 到 1 之间' } });
+    expect(await t.call('PATCH', nodeUrl(), { video: { selflift: { steps: 8, transitionStep: 8, lowresScale: 0.5, upscaler: 'none' } } })).toMatchObject({ status: 400 });
+    expect(await t.call('PATCH', nodeUrl(), { video: { selflift: { steps: 8, transitionStep: 6, lowresScale: 2, upscaler: 'none' } } })).toMatchObject({ status: 400 });
+
+    await t.ok('PATCH', nodeUrl(), { duration: 15, video: { workflow: 'selflift', denoise: 0.4, selflift: { steps: 8, transitionStep: 6, lowresScale: 0.65, upscaler: 'none' } } });
+    const reply = await send('写一个 15 秒的', replyId);
+    const chunks: number[] = [];
+    const stop = t.videoJobs().subscribe((event: VideoJobEvent) => {
+      if (event.type === 'progress' && event.stage === 'pass1' && event.chunk) chunks.push(event.chunk);
+    });
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(job.params).toMatchObject({ workflow: 'selflift', denoise: 0.4, selflift: { steps: 8, transitionStep: 6, lowresScale: 0.65, upscaler: 'none' } });
+    const done = await settledJob(job.id, reply);
+    stop();
+    expect(done).toMatchObject({ status: 'done' });
+    const graph = await lastGraph();
+    expect(ofType(graph, 'SelfLiftH3Sampler')).toHaveLength(1);
+    expect(ofType(graph, 'MMH3LoopingSampler')).toEqual([]);
+    expect(ofType(graph, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ cfg: 1, transition_step: 6, lowres_scale: 0.65, rho: 0.6, w_min: 1, w_max: 1, upscaler_model: 'none' });
+    expect(ofType(graph, 'BasicScheduler').map((node) => node.inputs)).toEqual([expect.objectContaining({ steps: 8, denoise: 1 })]);
+    expect(chunks).toContain(1);
+
+    // 这条没存一采二采，重拍一截要被拦住；同样参数再来照旧
+    expect(await t.call('POST', videosUrl(reply), { reshoot: { jobId: job.id, from: 0, to: 24, prompts: [] } })).toMatchObject({ status: 400, body: { error: '这条出的时候没存一采、二采的结果，只能整条重出' } });
+    const again = await t.ok<VideoJob>('POST', videosUrl(reply), { again: { jobId: job.id, sameSeed: true } });
+    expect(again.params.workflow).toBe('selflift');
+    await settledJob(again.id, reply);
+
+    // 切回两遍生成：二采的 denoise 照填的走，SelfLift 那几项不影响
+    await t.ok('PATCH', nodeUrl(), { video: { workflow: 'two-pass', denoise: 0.4 } });
+    const two = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    await settledJob(two.id, reply);
+    expect(ofType(await lastGraph(), 'MMH3LoopingSampler')).toHaveLength(2);
+    expect(ofType(await lastGraph(), 'BasicScheduler').map((node) => node.inputs.denoise)).toEqual([1, 0.4]);
+    expect(ofType(await lastGraph(), 'SelfLiftH3Sampler')).toEqual([]);
   });
 
   it('设置「AutoDL 上的模型」切到生成视频那台：只能传 LoRA，传完列得出、生成设置里选得到', async () => {

@@ -16,6 +16,9 @@ const jobsUrl = ({ nodeId, messageId, canvasId = useCanvasStore.getState().canva
 // 播放的地址：临时文件清掉了服务端给下载的那份
 export const videoSrc = (place: VideoPlace, job: VideoJob) => `/api${jobsUrl(place)}/${job.id}/file`;
 
+// 二采还在跑时那份一采低清预览的地址，见 docs/dev-plan.md 5.27
+export const previewSrc = (place: VideoPlace, job: VideoJob) => `/api${jobsUrl(place)}/${job.id}/preview`;
+
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
 // 服务端回来的一条放进节点：已有的换掉，没有的接在后面；比节点里的旧就不要

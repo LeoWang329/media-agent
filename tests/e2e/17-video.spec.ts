@@ -59,13 +59,20 @@ async function recordStates(page: Page) {
   return () => page.evaluate(() => (window as unknown as { videoStates: string[] }).videoStates);
 }
 
-// 手动改框，存成新版本
+// 这一条成片出来了：`.vj-info`（出片宽高、多长、种子那行）只有出完或叫停留下低清版才有。
+// 一采出完会先冒出一版低清预览，那也是一个 video，所以不能只看有没有 video，见 docs/dev-plan.md 5.27
+const finished = (page: Page) => videos(page).locator('.vj-info');
+
+// 手动改框，存成新版本。分段的框显示时那个 | 单独一行会并进去，按段查
 async function editBox(page: Page, text: string) {
   await box(page).locator('[data-act="editBox"]').click();
   await panel(page).getByRole('textbox', { name: '手动改提示词' }).fill(text);
   await panel(page).getByRole('button', { name: '存成新版本' }).click();
-  await expect(box(page)).toContainText(text);
+  for (const part of text.split('\n|\n')) await expect(box(page)).toContainText(part);
 }
+
+// 时长 60 秒要 4 段，一段最长 15 秒：手动改的框也得按段写，不然会被拦下来，见 docs/dev-plan.md 5.24
+const fourWay = (first: string) => [first, '第二段', '第三段', '第四段'].join('\n|\n');
 
 test('10.4 第 1 条：设置里选生成视频用的实例，出图那台不能选；选好后顶上多出视频那台的状态，写着已关机', async ({ page }) => {
   expect((await page.request.put('/api/config', { data: { autodlToken: MOCK_AUTODL_TOKEN } })).ok()).toBe(true);
@@ -92,7 +99,8 @@ test('10.4 第 2 条：t2v、60 秒 → 说明里分 4 段 → 框里 4 段 → 
   await box(page).locator('[data-act="genVideo"]').click();
   await expect(toasts(page).filter({ hasText: '生成视频用的 AutoDL 实例关着，先开机' })).toBeVisible();
   const player = videos(page).locator('video');
-  await expect(player).toHaveCount(1, { timeout: 30_000 });
+  // 一采出完会先冒出一版低清预览，所以不能只看有没有 video：.vj-info 是成片才有的，见 docs/dev-plan.md 5.27
+  await expect(videos(page).locator('.vj-info')).toHaveCount(1, { timeout: 60_000 });
   const seen = (await states()).join('\n');
   for (const text of ['生成视频那台正在开机', '编码提示词', '一采 第 1/4 段', '一采 第 4/4 段', '放大', '二采 第 1/4 段', '存文件']) expect(seen).toContain(text);
   await expect.poll(() => player.evaluate((video: HTMLVideoElement) => video.readyState), { timeout: 10_000 }).toBeGreaterThan(0);
@@ -127,7 +135,7 @@ test('10.4 第 3 条：一采 0.3、固定种子 → 出片 1472×832 → 只换
   await expect(panel(page).locator('#btnVideoCfg')).toContainText('出片 1472×832');
 
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).first().locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(videos(page).first().locator('.vj-info')).toHaveCount(1, { timeout: 30_000 });
   let graph = await lastGraph(page);
   expect(graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ width: 736, height: 416 });
   expect(graphNodes(graph, 'RandomNoise')[0].inputs.noise_seed).toBe(4242);
@@ -135,7 +143,7 @@ test('10.4 第 3 条：一采 0.3、固定种子 → 出片 1472×832 → 只换
 
   await videos(page).first().locator('[data-vact="reseed"]').click();
   await expect(videos(page)).toHaveCount(2);
-  await expect(videos(page).nth(1).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(videos(page).nth(1).locator('.vj-info')).toHaveCount(1, { timeout: 30_000 });
   graph = await lastGraph(page);
   expect(graphNodes(graph, 'RandomNoise')[0].inputs.noise_seed).not.toBe(4242);
   await expect(videos(page).nth(1).locator('.ig-kind')).toContainText('只换种子再来');
@@ -148,13 +156,13 @@ test('10.4 第 3 条：一采 0.3、固定种子 → 出片 1472×832 → 只换
   await expect(videos(page)).toHaveCount(1);
   expect((await fs.readdir(folder)).filter((name) => before.includes(name)).length).toBe(before.length - 1);
 
-  await editBox(page, '慢慢地走');
+  await editBox(page, fourWay('慢慢地走'));
   await box(page).locator('[data-act="genVideo"]').click();
   await expect(videos(page).locator('.ig-state')).toContainText('一采', { timeout: 15_000 });
   await videos(page).locator('[data-vact="stop"]').click();
   await expect(videos(page).locator('.ig-state')).toContainText('已叫停', { timeout: 15_000 });
 
-  await editBox(page, '报错');
+  await editBox(page, fourWay('报错'));
   await box(page).locator('[data-act="genVideo"]').click();
   await expect(videos(page).locator('.vj-error')).toContainText('生成视频出错（MMH3LoopingSampler）', { timeout: 15_000 });
 });
@@ -169,7 +177,7 @@ test('10.4 第 4 条：下载一条，文件名是「节点标题-种子.mp4」�
   await panel(page).locator('#cfgSys').selectOption('t2v');
   await send(page, '写一个');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const seed = (await videos(page).locator('.vj-info').textContent())!.match(/种子 (\d+)/)![1];
 
   await videos(page).locator('[data-vact="download"]').click();
@@ -197,7 +205,7 @@ test('10.4 第 5 条：参考模式两张图 → 两张都传上去、接进编�
   await send(page, '照这两张图写');
   await expect(box(page).locator('.ig-empty')).toContainText('带 2 张参考图');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   let graph = await lastGraph(page);
   const uploads = (await (await page.request.get(`${COMFY_URL}/_uploads`)).json()) as { name: string }[];
   const loads = graphNodes(graph, 'LoadImage').map((node) => String(node.inputs.image));
@@ -214,7 +222,7 @@ test('10.4 第 5 条：参考模式两张图 → 两张都传上去、接进编�
   await expect(box(page).locator('.ig-empty')).toContainText('第 1 张图当首帧');
   await expect(box(page).locator('.ig-empty')).toContainText('出片 1472×1152');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   graph = await lastGraph(page);
   expect(graphNodes(graph, 'LoadImage')).toHaveLength(1);
   expect(graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ width: 736, height: 576, ref_images: ['30', 0] });
@@ -278,7 +286,7 @@ test('10.4 第 7 条：两个画布各生成一条，一条含「慢」→ 视�
   await expect(page.locator('#canvasTitle')).toHaveText('任务甲');
   expect(page.url().split('#')[0]).toBe(canvasA);
   await expect(videos(page).first()).toHaveClass(/is-flash/);
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 60_000 });
+  await expect(videos(page).locator('.vj-info')).toHaveCount(1, { timeout: 60_000 });
 
   // 同样大小、同样段数的再来一条：估得出了
   await videos(page).first().locator('[data-vact="again"]').click();
@@ -288,6 +296,15 @@ test('10.4 第 7 条：两个画布各生成一条，一条含「慢」→ 视�
   await expect(pop.locator('[data-od-id="video-tasks-live"] .vt-row .vt-left')).toHaveText(/^预计还要 /);
   await pop.locator('[data-od-id="video-tasks-live"] [data-vact="stop"]').click();
   await expect(pop.locator('[data-od-id="video-tasks-live"] .vt-row')).toHaveCount(0, { timeout: 15_000 });
+
+  // 完了的那条在小窗里就能直接播、直接下，见 docs/dev-plan.md 5.29
+  const finished = pop.locator('[data-od-id="video-tasks-done"] .vt-row').filter({ hasText: '出完了' }).first();
+  await expect(finished.locator('[data-vact="play"]')).toHaveCount(1);
+  await expect(finished.locator('[data-vact="download"]')).toHaveCount(1);
+  await finished.locator('[data-vact="download"]').click();
+  const picker = page.getByRole('dialog', { name: '下载' });
+  await expect(picker).toContainText('测试标题');
+  await picker.getByRole('button', { name: '取消' }).click();
 });
 
 // 在时间条上从第 from 帧拖到第 to 帧
@@ -322,7 +339,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
   await expect(panel(page).locator('#durSegs')).toHaveText('分 2 段');
   await send(page, '写一个');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const saves = graphNodes(await lastGraph(page), 'MiniMaxH3NativeLatentCheckpointSaveT8Advanced');
   expect(saves.map((node) => String(node.inputs.filename_prefix))).toEqual([expect.stringMatching(/_pass1$/), expect.stringMatching(/_pass2$/)]);
   const rootId = (await videos(page).getAttribute('data-video'))!;
@@ -341,7 +358,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
   await expect(toasts(page).filter({ hasText: '开始重拍这一截' })).toBeVisible();
   const tabs = videos(page).locator('.vj-ver');
   await expect(tabs).toHaveText(['原片', '重拍 8.0 到 11.0 秒']);
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
   await expect(videos(page).locator('.vj-info')).toContainText('种子 4242');
 
@@ -376,7 +393,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
   await expect(videos(page).locator('[data-od-id="reshoot-range"]')).toHaveText('重拍 20.0 到 22.0 秒，在第 2 段');
   await videos(page).locator('[data-vact="reshoot"]').click();
   await expect(tabs).toHaveCount(3);
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   graph = await lastGraph(page);
   const loaded = graphNodes(graph, 'MiniMaxH3NativeLatentCheckpointLoadT8Advanced').map((node) => String(node.inputs.checkpoint_path));
   expect(loaded).toEqual((await mockLatents(page, versionId)).sort());
@@ -392,7 +409,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
 
   // 存档没了再重拍：这一版没生成出来，说只能整条重出
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const lostId = (await videos(page).getAttribute('data-video'))!;
   await page.request.post(`${COMFY_URL}/_ssh`, { data: { removeLatents: await mockLatents(page, lostId) } });
   await dragRange(page, 24, 48, 702);
@@ -441,7 +458,7 @@ test('10.4 第 6 条：设置「AutoDL 上的模型」切到生成视频那台�
 
   await send(page, '写一个');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   expect(graphNodes(graph, 'UNETLoader')[0].inputs.unet_name).toBe('minimax/minimax_h3_ref2va_int8_convrot.safetensors');
   expect(graphNodes(graph, 'LoraLoaderModelOnly').map((node) => node.inputs)).toEqual([{ model: ['1', 0], lora_name: 'H3/my-h3-lora.safetensors', strength_model: 0.8 }]);
@@ -461,7 +478,7 @@ test('10.4 第 9 条：生成设置里点「不加速」→ 主模型换成 DaSi
 
   await send(page, '写一个');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   expect(graphNodes(graph, 'UNETLoader')[0].inputs.unet_name).toBe('minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors');
   expect(graphNodes(graph, 'BasicScheduler').map((node) => node.inputs.steps)).toEqual([20, 6]);
@@ -469,6 +486,87 @@ test('10.4 第 9 条：生成设置里点「不加速」→ 主模型换成 DaSi
   await panel(page).locator('#btnVideoCfg').click();
   await speed.getByRole('button', { name: '加速', exact: true }).click();
   await expect(settings.getByRole('button', { name: '主模型', exact: true })).toHaveText('minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors');
+});
+
+test('生成设置里能自己填一采、二采的步数：改完流程照它走；越界的填不进、退回原来那个；切预设会覆盖', async ({ page }) => {
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, '步数');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#btnVideoCfg').click();
+  const settings = page.locator('[data-od-id="popover-video-settings"]');
+
+  // 没改过：照「加速」那个预设
+  await expect(settings.locator('#vcSteps1')).toHaveValue('10');
+  await expect(settings.locator('#vcSteps2')).toHaveValue('3');
+  await expect(settings.locator('.vc-steps-now')).toHaveText('现在是照「加速」');
+
+  await settings.locator('#vcSteps1').fill('14');
+  await settings.locator('#vcSteps1').press('Enter');
+  await settings.locator('#vcSteps2').fill('5');
+  await settings.locator('#vcSteps2').press('Enter');
+  await expect(settings.locator('.vc-steps-now')).toHaveText('现在是自己改的');
+  // 越界的填不进，退回 14
+  await settings.locator('#vcSteps1').fill('99');
+  await settings.locator('#vcSteps1').press('Enter');
+  await expect(settings.locator('#vcSteps1')).toHaveValue('14');
+  await page.keyboard.press('Escape');
+
+  await send(page, '写一个');
+  await box(page).locator('[data-act="genVideo"]').click();
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
+  expect(graphNodes(await lastGraph(page), 'BasicScheduler').map((node) => node.inputs.steps)).toEqual([14, 5]);
+
+  // 切一次不加速：预设把改过的步数覆盖掉
+  await panel(page).locator('#btnVideoCfg').click();
+  await settings.locator('#vcSpeed').getByRole('button', { name: '不加速' }).click();
+  await expect(settings.locator('#vcSteps1')).toHaveValue('20');
+  await expect(settings.locator('#vcSteps2')).toHaveValue('6');
+  await expect(settings.locator('.vc-steps-now')).toHaveText('现在是自己改的');
+});
+
+test('生成设置里能选 SelfLift 那套：二采重画多少、总步数、低分辨率几步、放大器都能改；出来的流程一段一个 SelfLift 采样器', async ({ page }) => {
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, 'SelfLift');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#btnVideoCfg').click();
+  const settings = page.locator('[data-od-id="popover-video-settings"]');
+
+  // 默认两遍生成：一采、二采的步数在，SelfLift 那几项不在；二采重画多少默认 0.2
+  await expect(settings.locator('#vcSteps1')).toHaveValue('10');
+  await expect(settings.locator('#vcSelfSteps')).toHaveCount(0);
+  await expect(settings.locator('#vcDenoise')).toHaveValue('0.2');
+  await settings.locator('#vcDenoise').fill('0.5');
+  await settings.locator('#vcDenoise').press('Enter');
+  await expect(settings.locator('#vcDenoise')).toHaveValue('0.5');
+  // 越界的填不进，退回 0.5
+  await settings.locator('#vcDenoise').fill('2');
+  await settings.locator('#vcDenoise').press('Enter');
+  await expect(settings.locator('#vcDenoise')).toHaveValue('0.5');
+
+  // 切到 SelfLift：一采、二采那套换成 SelfLift 的
+  await settings.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 一遍' }).click();
+  await expect(settings.locator('#vcSteps1')).toHaveCount(0);
+  await expect(settings.locator('#vcSelfSteps')).toHaveValue('8');
+  await expect(settings.locator('#vcSelfTransition')).toHaveValue('6');
+  await expect(settings.locator('#vcSelfLowres')).toHaveValue('0.5');
+  await settings.locator('#vcSelfTransition').fill('4');
+  await settings.locator('#vcSelfTransition').press('Enter');
+  await settings.locator('#vcSelfUpscaler').selectOption('none');
+  await page.screenshot({ path: 'test-results/video-settings-selflift.png' });
+  await page.keyboard.press('Escape');
+
+  await send(page, '写一个');
+  await box(page).locator('[data-act="genVideo"]').click();
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
+  const graph = await lastGraph(page);
+  const samplers = graphNodes(graph, 'SelfLiftH3Sampler');
+  expect(samplers).toHaveLength(1);
+  expect(samplers[0].inputs).toMatchObject({ cfg: 1, transition_step: 4, lowres_scale: 0.5, upscaler_model: 'none', rho: 0.6, w_min: 1, w_max: 1 });
+  expect(graphNodes(graph, 'MMH3LoopingSampler')).toEqual([]);
+  expect(graphNodes(graph, 'MinimaxH3LatentUpscaler3D')).toEqual([]);
+  expect(graphNodes(graph, 'BasicScheduler').map((node) => node.inputs)).toEqual([expect.objectContaining({ steps: 8, denoise: 1 })]);
+  // 这套没有一采二采的存档，所以没有「重拍一截」
+  await expect(videos(page).locator('[data-vact="reshoot"]')).toHaveCount(0);
 });
 
 // 视频和音频参考用的文件夹：测试用的小视频、小音频和一张图，导入资产库
@@ -564,7 +662,7 @@ test('10.4 第 11 条：参考模式带画面和声音的视频、声音参考�
   await send(page, '写一个');
   await expect(box(page).locator('[data-od-id="video-empty"]')).toContainText('带 1 段参考视频、2 段参考音频、配音');
   await box(page).locator('[data-act="genVideo"]').click();
-  await expect(videos(page).locator('video')).toHaveCount(1, { timeout: 30_000 });
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   const prompts = graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs;
   expect(prompts).toMatchObject({ 'ref_videos.ref_video_0': ['200', 0], 'ref_video_audios.ref_video_audio_0': ['200', 2], 'ref_audios.ref_audio_0': ['202', 0], audio: ['206', 0], use_input_audio: true });
@@ -585,4 +683,63 @@ test('10.4 第 11 条：参考模式带画面和声音的视频、声音参考�
   await send(page, '加一段声音');
   await box(page).locator('[data-act="genVideo"]').click();
   await expect(toasts(page).filter({ hasText: '参考音频有 4 段' })).toHaveCount(1);
+});
+
+test('长视频：一采出完先给一份低清预览（二采还在跑），这时叫停，这一版留下能播能下载', async ({ page }) => {
+  test.setTimeout(180_000);
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, '一采预览');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#durVal').click();
+  await page.locator('#durInput').fill('30');
+  await page.locator('#durInput').press('Enter');
+  await expect(panel(page).locator('#durSegs')).toHaveText('分 2 段');
+  await send(page, '写一个');
+  // 含「慢」：一采每步 1.2 秒，二采那会儿来得及看预览、也来得及叫停
+  await editBox(page, ['慢慢地走', '第二段'].join('\n|\n'));
+  await box(page).locator('[data-act="genVideo"]').click();
+
+  // 一采跑完、二采还在跑：低清预览已经能看了，见 docs/dev-plan.md 5.27
+  const job = videos(page).first();
+  const preview = job.locator('[data-od-id="video-preview"]');
+  await expect(preview).toHaveCount(1, { timeout: 90_000 });
+  await expect(preview).toContainText('这是一采（低清）出的整条，二采还在跑');
+  await expect(preview.locator('video')).toHaveCount(1);
+  await expect(job.locator('.ig-state')).toContainText('二采');
+
+  // 二采途中叫停：这一版转正成结果，能播能下载
+  await job.locator('[data-vact="stop"]').click();
+  await expect(job.locator('.ig-state')).toContainText('已叫停', { timeout: 30_000 });
+  await expect(preview).toHaveCount(0);
+  await expect(job.locator('.vj-partial')).toContainText('这是叫停时留下的一采低清版，二采没跑完');
+  await expect(job.locator('video')).toHaveCount(1);
+  await expect(job.locator('[data-vact="download"]')).toHaveCount(1);
+});
+
+test('时长和框里段数对不上时拦住不让生成：框里 1 段、时长拨到 60 秒，说明白要几段、会出多长；改回 15 秒就放行', async ({ page }) => {
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, '长度对不上');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  // 默认时长下发一句：模型写 1 段，这时候对得上
+  await send(page, '写一个');
+  const gen = box(page).locator('[data-act="genVideo"]');
+  const warn = box(page).locator('[data-od-id="video-length-mismatch"]');
+  await expect(gen).toBeEnabled();
+  await expect(warn).toHaveCount(0);
+
+  // 时长拨到 60 秒：框里还是 1 段，先拦下来，别白跑一趟，见 docs/dev-plan.md 5.24
+  await panel(page).locator('#durVal').click();
+  await page.locator('#durInput').fill('60');
+  await page.locator('#durInput').press('Enter');
+  await expect(panel(page).locator('#durSegs')).toHaveText('分 4 段');
+  await expect(warn).toContainText('时长 60 秒至少要分 4 段（一段最长 15 秒），这个框里只写了 1 段，这样出来只有 15.1 秒');
+  await expect(gen).toBeDisabled();
+  await expect(gen).toHaveAttribute('title', /至少要分 4 段/);
+
+  // 改回 15 秒：1 段正好，放行
+  await panel(page).locator('#durVal').click();
+  await page.locator('#durInput').fill('15');
+  await page.locator('#durInput').press('Enter');
+  await expect(warn).toHaveCount(0);
+  await expect(gen).toBeEnabled();
 });
