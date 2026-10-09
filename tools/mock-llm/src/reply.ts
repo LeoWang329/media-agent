@@ -30,8 +30,10 @@ export function planReply(messages: ChatMessage[]): MockPlan {
 
   // 中文转标签（标签编辑窗里「让 AI 转成标签」）：只回一串标签
   if (system.includes('转成 Danbooru 标签')) return { reply: 'sitting, window, book, reading', userText, fail: false, slow: false };
-  // 生图节点：系统消息带着生图的固定格式要求，框里是一串标签。blond hair 是官方别名，goldish hair 词库里没有
-  const krea = system.includes('Krea2 Turbo');
+  // 生图节点：系统消息带着生图的固定格式要求，框里是一串标签。blond hair 是官方别名，goldish hair 词库里没有。
+  // 按格式要求里的话认哪一套：系统提示词是能被整套换掉的（docs/prompts/ 复制进工作文件夹后随便改），
+  // 拿提示词的措辞来认会一改就崩——Krea2 认「框里只放一段英文自然语言描述」，IL/Pony 认「框里只放英文标签」
+  const krea = system.includes('框里只放一段英文自然语言描述');
   const image = krea || system.includes('框里只放英文标签');
 
   const pictureLabels: string[] = [];
