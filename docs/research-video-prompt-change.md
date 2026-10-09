@@ -171,7 +171,9 @@
 
 ## 七、落到本项目的五套提示词
 
-**已经按这份调研新做了一套独立的写手：`docs/prompts/h3-change.md`（「变化优先」版，五种模式合一），现有五套一个字没改。** 它同时复制到了工作文件夹 `C:\Users\leo.wang\Downloads\tmp_h3\prompts\h3-change.md`，在画布的系统提示词列表里能直接选到，可以和现有那套开两个节点对照。用顺了再决定是并进五套、还是加进 `BUILTIN_PROMPTS` 变成自带的一套。
+**已经按这份调研新做了一套独立的写手：`docs/prompts/h3-change.md`（「变化优先」版，**只写参考模式 Ref2VA**），现有五套一个字没改。** 它同时复制到了工作文件夹 `C:\Users\leo.wang\Downloads\tmp_h3\prompts\h3-change.md`，在画布的系统提示词列表里能直接选到，可以和现有那套开两个节点对照。用顺了再决定是并进五套、还是加进 `BUILTIN_PROMPTS` 变成自带的一套。
+
+`retention_analysis` 的判定单独加固过：原来的写法按"这段内容能不能独立出现在画面里"分档，实测（grok-4.6，见 `outputs/h3-change-test/`）会退化成一片 `fully_preserved`。现在改成按"这段参考内容最后在成片里剩下多少"分档，给了三步判定顺序（没独立出现→weak_reference；特征用在别人身上→attribute_transfer；本体出现但变了→partially_preserved；一点没改→fully_preserved），并写明"只用来定风格的图只能写 weak_reference""全部写成 fully_preserved 是错的"。
 
 下面记的是**并进现有五套**时的落点，等决定合并再按这里改。
 
