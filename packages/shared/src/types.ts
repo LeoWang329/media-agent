@@ -311,10 +311,26 @@ export type AutodlState = {
 export type VideoLora = { name: string; strength: number };
 export type VideoSpeed = 'fast' | 'full';
 export type VideoSteps = { pass1: number; pass2: number };
-// 两遍生成（一采 → 潜空间放大 → 二采）还是 SelfLift（一套调度里前几步低分辨率、抬上去再跑完）
+// 两遍生成（一采 → 潜空间放大 → 二采）还是 SelfLift 接续（照 U37 那份，一段接一段出，见 docs/dev-plan.md 5.32）
 export type VideoWorkflow = 'two-pass' | 'selflift';
-// SelfLift：总共几步、前几步在低分辨率跑、低分辨率缩到多少、提升用哪个放大器（'none' 是不用放大器，走模型自己的像素锚点）
-export type VideoSelfLift = { steps: number; transitionStep: number; lowresScale: number; upscaler: string };
+// SelfLift 接续那套的参数，照实例上「U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573」：
+// steps 总共几步、transitionStep 前几步在低分辨率跑、lowresScale 低分辨率缩到多少、
+// upscaler 提升用哪个放大器（'none' 是不用放大器，走模型自己的像素锚点）、
+// contextFrames 接上一段带几帧（22、39、90 这几档，17 的倍数加 5）、noise 接缝加多少噪、colorMatch 偏色对齐强度（0 是不对齐）、
+// lowresLora、hiresLora 是双 LoRA 双采：低分辨率那遍和高分辨率那遍各挂一套 LoRA，接在主模型和注意力补丁之上，null 是不另挂；
+// audioFeather 是接缝声音羽化几个刻度（走 MiniMaxH3AudioGuideFeather），0 是不羽化、就不接那个节点
+export type VideoSelfLift = {
+  steps: number;
+  transitionStep: number;
+  lowresScale: number;
+  upscaler: string;
+  contextFrames: number;
+  noise: number;
+  colorMatch: number;
+  lowresLora: VideoLora | null;
+  hiresLora: VideoLora | null;
+  audioFeather: number;
+};
 export type VideoSettings = {
   megapixels: number;
   upscale: number;
@@ -390,6 +406,12 @@ export type VideoMedia = { kind: MediaKind; mediaId: string; use: VideoUse | Aud
 // 一条视频在生成视频那台上存的一采、二采结果（output/MiniMaxH3/latent_checkpoints/ 下的文件名），重拍一截时读回来；instance 是存在哪台实例上，见 docs/dev-plan.md 5.30
 export type VideoLatents = { pass1: string; pass2: string; instance: string };
 
+// SelfLift 接续那套是分段接力的：一条视频分好几段，一段一个任务发给 ComfyUI，上一段出完接下一段，最后把几段拼成一条，见 docs/dev-plan.md 5.32。
+// clips 是已经出完的各段：filename、subfolder 是它在生成视频那台 output 下的位置，frames 是这一段多少帧，
+// name 是拷进那台 input 目录以后的名字（下一段用 LoadVideo 读它、最后拼起来也读它）
+export type VideoChainClip = { filename: string; subfolder: string; frames: number; name: string };
+export type VideoChain = { total: number; clips: VideoChainClip[]; merging?: boolean };
+
 // 点一次「生成视频」出的一条，挂在 assistant 消息的 videos 里，见 docs/dev-plan.md 5.27。
 // source 是照着哪条再来的；file 是临时文件夹里的视频，相对工作文件夹、用 / 隔开；bytes 是文件多大，ms 是从开始跑到出完用了多久，savedPath 是下载到哪。
 // 重拍一截出的是原来那条的一个版本：parent 是原片的 id，reshoot 是在哪一版上重拍、重拍第几帧到第几帧（不含），见 5.30。
@@ -403,6 +425,8 @@ export type VideoJob = {
   parent?: string;
   reshoot?: { base: string; from: number; to: number };
   latents?: VideoLatents;
+  // SelfLift 接续那套接力的进度：分几段、已经出完哪几段（存盘，程序重启了接着跑），见 docs/dev-plan.md 5.32
+  chain?: VideoChain;
   params: VideoJobParams;
   seed: number;
   promptId?: string;

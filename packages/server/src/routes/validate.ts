@@ -1,5 +1,6 @@
 import {
   CONTROL_TYPES,
+  DEFAULT_SELFLIFT,
   GUIDE_SIZES,
   SIZE_LIMITS,
   TRANSLATE_LANGUAGES,
@@ -266,7 +267,8 @@ export function videoSettings(value: unknown, base: VideoSettings): VideoSetting
   return next;
 }
 
-// SelfLift 那套的参数：总共几步、前几步低分辨率、低分辨率缩到多少、提升用哪个放大器，见 docs/dev-plan.md 5.32
+// SelfLift 接续那套的参数：总共几步、前几步低分辨率、低分辨率缩到多少、提升用哪个放大器、
+// 接上一段带几帧、接缝加多少噪、偏色对齐强度、双 LoRA 双采两遍各挂哪套 LoRA、接缝声音羽化几个刻度，见 docs/dev-plan.md 5.32
 function selfliftSettings(value: unknown): VideoSelfLift {
   if (typeof value !== 'object' || value === null) throw new HttpError(400, 'SelfLift 的设置格式不对');
   const fields = value as Record<string, unknown>;
@@ -278,7 +280,21 @@ function selfliftSettings(value: unknown): VideoSelfLift {
     transitionStep,
     lowresScale: between(fields.lowresScale, '低分辨率倍数', VIDEO_SELFLIFT.lowresScale.min, VIDEO_SELFLIFT.lowresScale.max),
     upscaler: nonEmptyText(fields.upscaler, '放大器'),
+    contextFrames: oneOf(fields.contextFrames, '接上一段带几帧', [...VIDEO_SELFLIFT.contextFrames]),
+    noise: between(fields.noise, '接缝加多少噪', VIDEO_SELFLIFT.noise.min, VIDEO_SELFLIFT.noise.max),
+    colorMatch: between(fields.colorMatch, '偏色对齐强度', VIDEO_SELFLIFT.colorMatch.min, VIDEO_SELFLIFT.colorMatch.max),
+    lowresLora: phaseLora(fields.lowresLora, '低分辨率那遍的 LoRA'),
+    hiresLora: phaseLora(fields.hiresLora, '高分辨率那遍的 LoRA'),
+    // 羽化刻度没写就是照默认（老界面发的记录里没有这一项）；写了就照写的，0 是不接羽化那个节点
+    audioFeather: fields.audioFeather === undefined ? DEFAULT_SELFLIFT.audioFeather : integer(fields.audioFeather, '接缝声音羽化', VIDEO_SELFLIFT.audioFeather.min, VIDEO_SELFLIFT.audioFeather.max),
   };
+}
+
+// 双 LoRA 双采里的一遍挂的 LoRA：null（或者没写，老记录就是没写）是不挂
+function phaseLora(value: unknown, what: string): { name: string; strength: number } | null {
+  if (value === null || value === undefined) return null;
+  const { name, strength } = (value ?? {}) as Record<string, unknown>;
+  return { name: nonEmptyText(name, `${what} 名字`), strength: finiteNumber(strength, `${what} 强度`) };
 }
 
 // 自己改的一采、二采每段几步，见 docs/dev-plan.md 5.27

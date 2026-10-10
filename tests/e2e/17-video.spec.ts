@@ -524,7 +524,7 @@ test('生成设置里能自己填一采、二采的步数：改完流程照它�
   await expect(settings.locator('.vc-steps-now')).toHaveText('现在是自己改的');
 });
 
-test('生成设置里能选 SelfLift 那套：二采重画多少、总步数、低分辨率几步、放大器都能改；出来的流程一段一个 SelfLift 采样器', async ({ page }) => {
+test('生成设置里能选 SelfLift 接续那套：二采重画多少、总步数、低分辨率几步、放大器、接几帧、加噪、偏色对齐都能改；出片是一段一条片子接力拼起来的', async ({ page }) => {
   await useVideoAutodl(page);
   await newCanvasWithNode(page, 'SelfLift');
   await panel(page).locator('#cfgSys').selectOption('t2v');
@@ -543,28 +543,82 @@ test('生成设置里能选 SelfLift 那套：二采重画多少、总步数、�
   await settings.locator('#vcDenoise').press('Enter');
   await expect(settings.locator('#vcDenoise')).toHaveValue('0.5');
 
-  // 切到 SelfLift：一采、二采那套换成 SelfLift 的
-  await settings.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 一遍' }).click();
+  // 切到 SelfLift 接续：一采、二采那套换成接续那套的，默认照 U37 开着上下文那档（4 步低分辨率、0.65）
+  await settings.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 接续' }).click();
   await expect(settings.locator('#vcSteps1')).toHaveCount(0);
+  await expect(settings.locator('#vcDenoise')).toHaveCount(0);
   await expect(settings.locator('#vcSelfSteps')).toHaveValue('8');
-  await expect(settings.locator('#vcSelfTransition')).toHaveValue('6');
-  await expect(settings.locator('#vcSelfLowres')).toHaveValue('0.5');
-  await settings.locator('#vcSelfTransition').fill('4');
+  await expect(settings.locator('#vcSelfTransition')).toHaveValue('4');
+  await expect(settings.locator('#vcSelfLowres')).toHaveValue('0.65');
+  await expect(settings.locator('#vcSelfContext')).toHaveValue('22');
+  await expect(settings.locator('#vcSelfNoise')).toHaveValue('0.1');
+  await expect(settings.locator('#vcSelfColor')).toHaveValue('0.75');
+  // 双 LoRA 双采默认两边都不挂，接缝声音羽化默认照 U37 的 12
+  await expect(settings.locator('#vcSelfLoras .vc-phase-add')).toHaveCount(2);
+  await expect(settings.locator('#vcSelfFeather')).toHaveValue('12');
+  // 改一改：低分辨率几步、放大器、接几帧、偏色对齐、声音羽化，再把两遍的 LoRA 都挂上（默认填 U37 那两个、各带强度）
+  await settings.locator('#vcSelfTransition').fill('3');
   await settings.locator('#vcSelfTransition').press('Enter');
   await settings.locator('#vcSelfUpscaler').selectOption('none');
+  await settings.locator('#vcSelfContext').selectOption('39');
+  await settings.locator('#vcSelfColor').fill('0.4');
+  await settings.locator('#vcSelfColor').press('Enter');
+  await expect(settings.locator('#vcSelfColor')).toHaveValue('0.4');
+  await settings.locator('#vcSelfFeather').fill('8');
+  await settings.locator('#vcSelfFeather').press('Enter');
+  await expect(settings.locator('#vcSelfFeather')).toHaveValue('8');
+  await settings.locator('#vcSelfLoras .gc-lora').nth(0).locator('.vc-phase-add').click();
+  await expect(settings.getByLabel('低分辨率那遍的 LoRA 强度')).toHaveValue('0.75');
+  await settings.locator('#vcSelfLoras .gc-lora').nth(1).locator('.vc-phase-add').click();
+  await expect(settings.getByLabel('高分辨率那遍的 LoRA 强度')).toHaveValue('0.7');
   await page.screenshot({ path: 'test-results/video-settings-selflift.png' });
   await page.keyboard.press('Escape');
+
+  // 30 秒 2 段：一段要出 360 帧新画面，一条最多出 362 − 39（接上一段）= 323 帧，所以自己分成几条接力
+  await panel(page).locator('#durVal').click();
+  await page.locator('#durInput').fill('30');
+  await page.locator('#durInput').press('Enter');
+  await expect(panel(page).locator('#durSegs')).toHaveText('分 2 段');
 
   await send(page, '写一个');
   await box(page).locator('[data-act="genVideo"]').click();
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
-  const graph = await lastGraph(page);
-  const samplers = graphNodes(graph, 'SelfLiftH3Sampler');
+  const prompts = (await comfyPrompts(page)).map((one) => one.prompt);
+  // 最后发出去的是「把几段接起来」，再往前找带上下文那条（这套才用 MiniMaxH3AddGuide）
+  const merge = [...prompts].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
+  const clip = [...prompts].reverse().find((graph) => graphNodes(graph, 'MiniMaxH3AddGuide').length > 0)!;
+  const loads = graphNodes(merge, 'LoadVideo');
+  expect(loads.length).toBeGreaterThanOrEqual(2);
+  expect(loads.map((node) => node.inputs.file)).toEqual(loads.map((_, i) => expect.stringContaining(`_s${i}.mp4`)));
+  expect(graphNodes(merge, 'ConcatenateVideo')[0].inputs['videos.video0']).toEqual(['400', 0]);
+  expect(graphNodes(merge, 'SaveVideo')).toHaveLength(1);
+  const samplers = graphNodes(clip, 'SelfLiftH3Sampler');
   expect(samplers).toHaveLength(1);
-  expect(samplers[0].inputs).toMatchObject({ cfg: 1, transition_step: 4, lowres_scale: 0.5, upscaler_model: 'none', rho: 0.6, w_min: 1, w_max: 1 });
-  expect(graphNodes(graph, 'MMH3LoopingSampler')).toEqual([]);
-  expect(graphNodes(graph, 'MinimaxH3LatentUpscaler3D')).toEqual([]);
-  expect(graphNodes(graph, 'BasicScheduler').map((node) => node.inputs)).toEqual([expect.objectContaining({ steps: 8, denoise: 1 })]);
+  expect(samplers[0].inputs).toMatchObject({ cfg: 1, transition_step: 3, lowres_scale: 0.65, upscaler_model: 'none', rho: 0.6, w_min: 1, w_max: 1 });
+  expect(samplers[0].inputs.model).toEqual(['75', 0]);
+  expect(samplers[0].inputs.model_hires).toEqual(['76', 0]);
+  expect(graphNodes(clip, 'MMH3LoopingSampler')).toEqual([]);
+  expect(graphNodes(clip, 'MinimaxH3LatentUpscaler3D')).toEqual([]);
+  expect(graphNodes(clip, 'BasicScheduler').map((node) => node.inputs)).toEqual([expect.objectContaining({ steps: 8, denoise: 1 })]);
+  // 双 LoRA 双采：两遍各挂一套，都接在主模型和注意力补丁（4 号）之后
+  expect(graphNodes(clip, 'LoraLoaderModelOnly').map((node) => node.inputs)).toEqual([
+    { model: ['4', 0], lora_name: 'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors', strength_model: 0.75 },
+    { model: ['4', 0], lora_name: 'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors', strength_model: 0.7 },
+  ]);
+  // 接缝声音羽化：带上下文的那几条在 AddGuide 后面过一道，刻度照填的 8；第 1 条没有上下文不接
+  expect(graphNodes(clip, 'MiniMaxH3AudioGuideFeather').map((node) => node.inputs)).toEqual([{ positive: ['308', 0], audio_feather_ticks: 8 }]);
+  expect(samplers[0].inputs.positive).toEqual(['315', 0]);
+  const clips = prompts.filter((graph) => graphNodes(graph, 'MiniMaxH3ReferenceToVideo').length > 0);
+  expect(clips.length).toBeGreaterThanOrEqual(2);
+  // 假的 ComfyUI 一份进程里跨用例留着发过的图，所以按结构认：带上下文的（有 AddGuide）那条才有羽化，第 1 条没有
+  expect(clips.some((graph) => graphNodes(graph, 'MiniMaxH3AddGuide').length === 0)).toBe(true);
+  for (const graph of clips) expect(graphNodes(graph, 'MiniMaxH3AudioGuideFeather')).toHaveLength(graphNodes(graph, 'MiniMaxH3AddGuide').length ? 1 : 0);
+  // 第 2 段起：读上一段、取最后 39 帧、剪掉 39 帧、颜色对齐，编码用的是 H3 官方的 ReferenceToVideo
+  expect(graphNodes(clip, 'MiniMaxH3ReferenceToVideo')).toHaveLength(1);
+  expect(graphNodes(clip, 'MiniMaxH3AddGuide')[0].inputs).toMatchObject({ frame_idx: 0 });
+  expect(graphNodes(clip, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 39, strategy: 'tail' });
+  expect(graphNodes(clip, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 39 });
+  expect(graphNodes(clip, 'ColorTransfer')[0].inputs).toMatchObject({ strength: 0.4 });
   // 这套没有一采二采的存档，所以没有「重拍一截」
   await expect(videos(page).locator('[data-vact="reshoot"]')).toHaveCount(0);
 });

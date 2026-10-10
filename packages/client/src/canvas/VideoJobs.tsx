@@ -249,7 +249,7 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
           <p className="hint">
             <Icon name="info" className="icon-sm" />
             {params.workflow === 'selflift'
-              ? '这是第 1 段出的（后面的段还在跑、整条还没接起来）。看着不行就现在叫停，这一版归你，能播能下载'
+              ? '这是第 1 段出的（后面的段还在跑、整条还没接起来）。看着不行就现在叫停：已经出的几段会接起来留一份，能播能下载'
               : '这是一采（低清）出的整条，二采还在跑。看着不行就现在叫停，这一版归你，能播能下载'}
           </p>
         </div>
@@ -275,7 +275,7 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
       {partial && problem !== 'gone' && (
         <p className="vj-partial hint">
           <Icon name="info" className="icon-sm" />
-          {params.workflow === 'selflift' ? '这是叫停时留下的第 1 段，后面的段没跑完。想要整条，同样参数再来一遍' : '这是叫停时留下的一采低清版，二采没跑完。想要高清的，同样参数再来一遍'}
+          {params.workflow === 'selflift' ? '这是叫停时把已经出的几段接起来留下的，后面的段没跑。想要整条，同样参数再来一遍' : '这是叫停时留下的一采低清版，二采没跑完。想要高清的，同样参数再来一遍'}
         </p>
       )}
       {!ro && job.status === 'done' && job.latents && problem !== 'gone' && <VideoReshoot key={`reshoot-${job.id}`} place={place} job={job} seek={seek} onStart={() => setPicked(null)} />}

@@ -883,27 +883,96 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 重拍有配音的：声音那一半整条钉住不重画，画面照 5.30。
 - 视频、音频不能当首帧，不能在输入框里 @。
 
-### 5.32 第二套内置流程：SelfLift（第四批）
+### 5.32 第二套内置流程：SelfLift 接续（第四批，照 U37 那份重做）
 
-生成设置里多一个「流程」，两选一：两遍生成（默认，5.26）和 SelfLift 一遍。为此放开的两个口子：二采重画多少（`denoise`），和 SelfLift 那套自己的参数。
+生成设置里多一个「流程」，两选一：两遍生成（默认，5.26）和 SelfLift 接续。这套不是自己设计的接续方式，是照实例上那份
+`U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573`（作者：惊尘573）**原样搬进来**：他把长视频拆成一条条 5 秒上下的小片子，
+一条出完把结尾几帧当上下文喂给下一条，人工一条条接着出；程序把这套手动接力自动化。
 
-- `VideoSettings` 多三项：`workflow`（`two-pass` | `selflift`，没记的按 `two-pass`）、`denoise`（0.05 到 1，没记的按 `VIDEO_DENOISE.default` 0.2）、`selflift`（`steps`、`transitionStep`、`lowresScale`、`upscaler`）。这些都写进 `VideoJobParams`，同样参数再来照发。
+一份工作流原本是「一个人工迭代循环」，变成内置流程就是：程序一段一段发任务，每段出完把这一段拷进那台的 input 目录，
+下一段用 `LoadVideo` 读回来当上下文，最后把几段用 `ConcatenateVideo` 拼成一条。**一个任务变成了好几个任务**，
+所以 `VideoJob` 多一个 `chain`（一共几段、已经出完哪几段、正在拼没有），见 5.27 的任务状态机。
+
+- `VideoSettings` 多三项：`workflow`（`two-pass` | `selflift`，没记的按 `two-pass`）、`denoise`（0.05 到 1，没记的按 `VIDEO_DENOISE.default` 0.2）、
+  `selflift`（`steps`、`transitionStep`、`lowresScale`、`upscaler`、`contextFrames`、`noise`、`colorMatch`、`lowresLora`、`hiresLora`、`audioFeather`）。
+  这些都写进 `VideoJobParams`，同样参数再来照发。
 - 二采重画多少：两遍生成里二采那个 `BasicScheduler` 的 `denoise`，原来是写死的 0.2，现在照 `params.denoise`。0.2 是留着放大后的构图细修，1 是照放大后的重出一遍。
-- SelfLift 那套（`SelfLiftH3Sampler`，comfyui-SelfLift 插件）：一套调度里前 `transitionStep` 步在低分辨率跑，抬到全分辨率再跑完剩下的步。默认照实例上那份 `U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573`：8 步里前 6 步低分辨率、`lowresScale` 0.5、放大器 `h3_upscaler_lms_v0.1_fp32.safetensors`、`rho` 0。
-  - 放大器选「不用放大器」（`upscaler_model` 是 `none`）就是插件的 SelfLift-zero：靠模型自己的像素锚点修，`rho` 0.6、修正强度 `w_min`/`w_max` 都是 1（插件 README 给的 H3 起点）。
-  - 两样都不给（`rho` 0 加 `none`）插件自己会报错，界面上不出现这个组合。
-  - 调度用 `BasicScheduler`（beta，`steps` 步，denoise 1）、采样器用 `KSamplerSelect`（euler，插件只收标准 euler）；`positive` 是这段自己的 `MMH3CondSelect`，`negative` 是它的 `ConditioningZeroOut`，`cfg` 1（等于不走 CFG）。
-  - 一套流程一个种子，第 n 段是 `seed + n - 1`。
-- 分段接续：SelfLift 一段一个采样器（不是 `MMH3LoopingSampler`，那个自己管循环、塞不进 SelfLift），所以接续不靠把上一段的尾巴钉在潜变量里：
-  - SelfLift 只吃整块的 `noise_mask`，能吃的那种单通道遮罩拿不到（所有往 AV 潜变量挂遮罩的节点都会挂成一对，插件的 `_validate_latent_input` 拿它 `.clamp` 会炸），所以改成钉帧：第 2 段起用 `MMH3LatentKeyframe`（`position` first、`source_frame` last）把上一段的最后一帧钉在自己第 0 帧上，模型从这一帧往下长。接缝上是同 1 帧（0.04 秒）。
-  - 图当首帧用 `MMH3ImageKeyframe`（`frame_index` 0、`resize` auto），SelfLift 自己没有一采那个 `keyframes` 入口。
-  - 整条按 `selfliftWindows` 分给几段：每段的潜空间帧数取最接近均分的 5j+2（这样每段自己也能解码），最后一段拿剩下的；加起来正好是整条的（`latentCount(frames.total)`）。每段的大小用 `MMH3TrimAV` 从编码提示词那个节点的空白潜变量上切出来，各段用 `MMH3ConcatAV`（`trim_b_latents` 0）接起来。真机上验过：60 秒 4 段那套分出来是 102、102、102、101，成片 464 帧，正好是 `frames.total`。
-  - 编码提示词的节点按出片大小（`finalWidth`/`finalHeight`）和整条长度编码：SelfLift 的 `latent_image` 定的是「抬到多高」，低分辨率那段由它自己缩。
-  - 存片、预览照 5.27：`MMH3StreamingSave` 存成 mp4，另外第 1 段出完先存一份 crf 28 的低清预览（叫停时留下的就是它，转正成结果并标「不是完整出完的」）。只有一段时不存预览（那一份就是成片）。
-  - 没有一采二采的存档，所以这套**不能重拍一截**：界面上那条不出现「重拍一截」，接口也拦（说「这条出的时候没存一采、二采的结果，只能整条重出」）。
-- 进度和用时：每段的采样器都算「一采」，第几段就是第几段（小窗里写「生成 第 2/4 段 3/8 步」），没有「放大」「二采」这两步。`VideoTiming` 记下 `workflow`，估还要多久只跟同一套流程、同样大小段数的记录比；SelfLift 那种记录里放大、二采每步用时是 0。
-- 界面（生成设置小窗）：最上面「流程」，选 SelfLift 时把一采、二采那套（步数、二采重画多少）换成 SelfLift 的（总步数、低分辨率跑几步、低分辨率倍数、放大器）；一采大小和放大倍数的说明跟着换过来（SelfLift 那套的 latent 按出片大小定）。放大器那个下拉从生成视频那台的 `SelfLiftH3Sampler` 读（没装那套节点就只有默认那个和「不用放大器」）。
-- 生成设置里能改的都放开：一采、二采每段几步（5.27）、二采重画多少、SelfLift 的步数和低分辨率倍数；采样器、调度器、分段重叠还是照内置流程，不用调。
+- 一段的流程图（照 U37 的单段结构，用 H3 官方节点 `MiniMaxH3ReferenceToVideo` 编码、不是多段提示词那个 `MMH3ReferenceMultiPrompt`）：
+  - `MiniMaxH3ReferenceToVideo`（`prompt` 是这一段那段的提示词、`width`/`height` 按出片大小、`length` 是这一段的帧数）→ `positive` + 空白 `LATENT`；
+    参考图、参考视频、参考音频照 5.31 那套接（`ref_images`、`ref_videos`、`ref_video_audios`、`ref_audios`）。配音在这套里当参考音频接进去（官方节点没有 `use_input_audio` 那个口子）。
+  - 第 2 段起：`LoadVideo` 读上一段（程序拷进 input 目录的名字）→ `VideoFrameSample`（`strategy` tail，取 `contextFrames` 帧）→ `GetVideoComponents`
+    → 前 `contextFrames - 1` 帧 `ImageAddNoise`（`noise`，U37 是 0.1，减轻接缝闪烁）、最后一帧加 0 噪 → `ImageBatchMulti` 合成一沓；
+    连着这几帧的**声音**一起，用 `MiniMaxH3AddGuide`（`frame_idx` 0）钉在这一段的第 0 帧上，接出来的 `positive` 给采样器。
+    钉完接缝那几帧的声音有硬边，再过一道 `MiniMaxH3AudioGuideFeather`（`audio_feather_ticks` 照 `audioFeather`，U37 填 12）羽化一下；
+    刻度填 0 就是不羽化、**不接这个节点**（没装那个插件也能跑）。第 1 段没有上下文，这一道也就不接（没声音可羽化）。
+  - 采样：`SelfLiftH3Sampler`（comfyui-SelfLift 插件）——一套调度里前 `transitionStep` 步在低分辨率跑，抬到全分辨率再跑完剩下的步；
+    `BasicScheduler`（beta、`steps` 步、denoise 1）、`KSamplerSelect`（euler，插件只收标准 euler）、`negative` 是 `ConditioningZeroOut(编码出来的正面)`、`cfg` 1（等于不走 CFG）、
+    第 n 条种子是 `seed + n - 1`。`latent_image` 就是编码那个空白潜变量（它定的是「抬到多高」，低分辨率那段插件自己缩）。
+  - **双 LoRA 双采**（U37 的「双采」那一段）：主模型和注意力补丁之上，低分辨率那遍挂一套 LoRA（节点 75，给 `SelfLiftH3Sampler.model`，
+    `BasicScheduler` 的 `model` 也用它）、高分辨率那遍挂另一套（节点 76，给 `model_hires`），各带自己的强度。
+    照 U37 就是低分辨率那遍 8 步加速 LoRA 0.75、高分辨率那遍 4 步加速 LoRA 0.7（`SELFLIFT_U37_LORAS`，界面上一键「照 U37 那套填上」）。
+    两套都接在同一个 `feedForward`（挂了注意力补丁的主模型）之后，**互不叠加**——这正是双采的意思：不同步数调出来的加速 LoRA 各管自己那一段，
+    不用互相将就（U37 的注释：「加速 lora 降低权重，少些油腻」）。两遍都带的是设置里「LoRA」那一栏的栈（人物、风格那类），它接在主模型和注意力节点之间（照 U37 的位置）。
+    两个槽都不填就是不接额外节点，照插件默认（`model_hires` 不给时插件用 `model`），行为跟以前一样。
+  - 出片：`VAEDecode` + `VAEDecodeAudio` → `CreateVideo`（24fps）→ 第 2 段起 `VideoTemporalCrop` 把开头 `contextFrames` 个上下文帧剪掉
+    → `ColorTransfer`（`mkl_lab`、`source_stats` target_frame、强度 `colorMatch`）把整段颜色对齐到上一段的**最后一帧**（U37 的「无色差」就是这一步）
+    → `CreateVideo`（带上剪完那段的原声音）→ `SaveVideo` 存这一段。
+  - 放大器：默认 `h3_upscaler_lms_v0.1_fp32.safetensors`（U37 选的），`rho` 0、`w_min` 0.5、`w_max` 1；选「不用放大器」（`upscaler_model` `none`）就是插件的 SelfLift-zero，
+    `rho` 0.6、修正强度都是 1（插件 README 给的 H3 起点）。
+- 分几段、每段多长（`selfliftPlan`）：一段最长也是 362 帧（15 秒）、最短 22 帧，第 2 段起开头那 `contextFrames` 帧是重复上一段的（出片时剪掉），
+  所以一段真正新出的是「每段帧数 − contextFrames」。先看要几条才够（框里那段提示词要出太多就把它拆成几条、用同一段提示词），
+  再按 U37 的算法（17 的倍数加 5、不够就往上多给几帧）取每段帧数。60 秒 4 段 22 帧上下文 → 5 条、每条 311 帧、合起来 1467 帧。
+- 拼起来：各段都出完后，程序把最后一段也拷进 input 目录，再发一个「读各段 → `ConcatenateVideo` → `SaveVideo`」的任务。
+  `ConcatenateVideo` 对已经是编码好的 mp4 是直接接流、不重新解码（原生节点就是这么写的），所以拼这一步很便宜，声音也一起接上。
+  只有一段的短视频（15 秒以内、一段提示词）也走这一条：真机上验过 `ConcatenateVideo` 收一个输入照样出片，所以短片子不用另开一条路。
+- 为什么不用一个任务跑完整条：一个任务里要串好几条片子，每条都得先把画面解出来给下一条当上下文，ComfyUI 会把中间结果都缓在显存里，
+  十几条就是十几份整段画面，必爆；U37 那份工作流本身也是「出一条、存下来、下一条读回来」，一个任务一段是对着它来的。
+- 那台的文件怎么来回：这段的 mp4 在 `output/media-agent/` 下，程序按 `/history` 里的 `subfolder`/`filename` 经 SSH `cp` 进 `input/`，
+  名字是 `media_agent_<jobId>_s<第几段>.mp4`，下一段的 `LoadVideo` 填这个名字。**不能**用「文件名`[output]`」那种写法：这版 ComfyUI 的
+  `annotated_filepath` 少截一个字符（`name[:-9]` 对 8 个字符的 `[output]`），写了会报「Invalid video file」。
+- 预览、叫停、删掉：第 1 段出完就取回来当低清预览（小窗里能先看个大概）。叫停时把**已经出完的几段先拼起来**当这条的结果（`partial`，能播能下载），
+  正在跑的那段让 ComfyUI 停掉、不算；一段都没出完就是普通的叫停。删这条时那台上拷进 input 的几份和一段一段出的那几个片子一起删（那台关着就留在那台上）。
+- 程序重启：`chain` 存在这条里，`resume` 按 `promptId` 查 `/history`，出完了就接着发下一段（那一段已经记过的不会记两遍）；正在拼的那条也认。
+- 没有一采二采的存档，所以这套**不能重拍一截**：界面上那条不出现「重拍一截」，接口也拦（说「这条出的时候没存一采、二采的结果，只能整条重出」）。
+- 进度和用时：每段的采样器都算「一采」，小窗里写「生成 第 2/5 段 3/8 步」（第几段是服务端记的，不靠步数往回跳），没有「放大」「二采」这两步。
+  `VideoTiming` 记下 `workflow` 和段数（这里是分几条接力），估还要多久只跟同一套流程、同样大小段数的记录比；SelfLift 那种记录里放大、二采每步用时是 0。
+- 界面（生成设置小窗）：最上面「流程」，选 SelfLift 接续时把一采、二采那套（步数、二采重画多少）换成接续那套的
+  （总步数、低分辨率跑几步、低分辨率倍数、放大器、接上一段带几帧 22/39/90、接缝加噪、偏色对齐、声音羽化、双 LoRA 双采两遍各挂哪套），一采大小和放大倍数的说明跟着换过来，
+  底下那行会写「按 60 秒、4 段提示词算，会分 5 条接力、每条 311 帧（约 13.0 秒），出来约 61.1 秒」。
+  放大器那个下拉从生成视频那台的 `SelfLiftH3Sampler` 读（没装那套节点就只有默认那个和「不用放大器」）。
+  声音羽化是 0 到 256 的整数（0 是不接那个节点）；双 LoRA 那两个槽没填时是一个「挂一套（U37 用 …）」按钮，点了默认填 U37 那两个 LoRA，旁边还有一键「照 U37 那套填上」。
+- 真机验过（20 秒 2 段 22 帧上下文、0.2 百万像素）：第 1 段 141 帧 → 第 2 段带着上一段尾巴出 141 帧 → 拼起来 260 帧 / 10.83 秒 / 608×352 / h264 + aac，
+  帧数和 `plan.total`（2×141 − 22）一模一样；两段之间只隔一次「拷进 input」。另外走程序自己的服务端整条验过一次（20 秒 2 段、出片 1120×640、1.30 MB）：
+  进度是「encode 第 1/2 段 → pass1 1…6/6 → save → encode 第 2/2 段 → … → 拼接 → done」，全程 4 分 17 秒（双 LoRA + 羽化那版见 5.33）。
+- 这套要装的插件：`comfyui-SelfLift`（采样器）、H3 官方节点包（`MiniMaxH3ReferenceToVideo`、`MiniMaxH3AddGuide`）、
+  接缝声音羽化那个 `ComfyUI-MiniMax-H3-Audio-Guide-Feather`（作者 wjc573，缺了界面把刻度填 0 就能跑，`PLUGIN_OF` 里写着要装哪个）。
+  **那个插件的 `compat.py` 在 ComfyUI 0.38.0 上是静默失效的**（它按 8 空格缩进去 `replace` 方法体，0.38.0 `dedent` 之后是 4 空格，一个串都不命中，
+  于是 `MiniMaxH3Model._forward` 被打成一份逐字相同的副本，`audio_feather_ticks` 对结果毫无影响、跑起来还是绿的）；实例上那份已经按 4 空格修好，
+  **重装插件要再修一次**。修完仍然只是「刻度进了模型」，羽化好不好听要自己听。
+
+### 5.33 SelfLift 接续补齐 U37 的双 LoRA 双采和接缝声音羽化（第四批）
+
+5.32 搬这套时留了两处没抄：U37 的**双 LoRA 双采**和**接缝声音羽化**。这一节把这两处补上。
+
+- 双 LoRA 双采：`selflift.lowresLora`、`selflift.hiresLora`，各是 `{ name, strength } | null`（没记的是 `null`，就是不挂）。
+  - 低分辨率那遍：`feedForward`（主模型 + 注意力补丁）→ `LoraLoaderModelOnly`（节点 75）→ `SelfLiftH3Sampler.model`，`BasicScheduler.model` 也是它（照 U37，那边的调度器接的就是挂了低分辨率 LoRA 的那个模型）。
+  - 高分辨率那遍：同一个 `feedForward` → `LoraLoaderModelOnly`（节点 76）→ `SelfLiftH3Sampler.model_hires`。不填就不给 `model_hires`，插件自己用 `model`（跟加这一项之前一模一样）。
+  - 两条分支都从同一个 `feedForward` 出来、**互不叠加**：U37 里两个 `LoraLoaderModelOnly` 也是并联在 `ModelAttentionBackend` 之后的。设置里「LoRA」那一栏的栈是两遍都带的，位置照旧（`UNETLoader` 和注意力节点之间）。
+  - 默认两个都是 `null`：这套的主模型（`DasiwaMinimaxH3_dasiwaHybridTurboV2_int8`）自己就是加速模型，不挂 LoRA 才是原来那份默认。界面上没填时是两个「挂一套（U37 用 …）」按钮（点了填 U37 的值：8 步那个 0.75 / 4 步那个 0.7），另有一键「照 U37 那套填上」（`SELFLIFT_U37_LORAS`）。
+  - 校验：`lowresLora`、`hiresLora` 没写或 `null` 就是不挂，写了要有非空名字和数字强度（`phaseLora`）。
+- 接缝声音羽化：`selflift.audioFeather`，0 到 256 的整数（那个节点的 spec 是 INT 0–256、默认 8；运行期还会夹到这一段音频的 token 数）。
+  `AddGuide` 钉完接缝那几帧的声音之后接一道 `MiniMaxH3AudioGuideFeather`（节点 315，`audio_feather_ticks` 照填），出来的 `Conditioning` 给采样器。
+  - 默认 12：照 U37 那份工作流的节点 254（不是节点默认的 8）。
+  - 填 0 就**不接这个节点**（那台没装那个插件也能跑）；第 1 段没有上下文、没东西可羽化，也不接。
+  - 没写这一项时服务端按默认 12 补（老界面发上来的记录里没这一项）。
+- 插件：`ComfyUI-MiniMax-H3-Audio-Guide-Feather`（作者 wjc573，实例上装在 `/root/ComfyUI/custom_nodes/` 下，commit `043c631`），
+  `PLUGIN_OF` 里写了它，缺插件时报错会说装哪个。**作者那版 `compat.py` 在 ComfyUI 0.38.0 上静默失效**（8 空格 vs `dedent` 后的 4 空格，两个 `replace` 都不命中，
+  于是 `_forward` 被换成逐字相同的副本，节点跑绿但刻度不起作用）；实例上那份已按 4 空格修好，重装插件要再修。修完只是「刻度进了模型」，好不好听要自己听。
+- 真机验过（实例 A，ComfyUI 0.38.0，双 LoRA 8 步 0.75 / 4 步 0.7 + 羽化 12）：**走程序自己的服务端**跑 20 秒 2 段（0.3 百万像素 × 1.5，出片 1120×640，8 步里前 4 步低分辨率），
+  全程 4 分 54 秒、`status: done`、成片 1,905,591 字节，第 1 段的低清预览也留下了。那台 `/history` 里这条 job 的三张图逐条对过：两条片段里都是
+  `LoraLoaderModelOnly` 两套（都接 `['4', 0]`，8 步 @0.75 / 4 步 @0.7）、`SelfLiftH3Sampler.model` = `['75', 0]`、`model_hires` = `['76', 0]`、`BasicScheduler.model` = `['75', 0]`；
+  第 2 段有 `MiniMaxH3AudioGuideFeather`（刻度 12、`positive` 接 `AddGuide`），第 1 段没有；拼接那条读 `media_agent_<jobId>_s0/s1.mp4`。
+  羽化「真的起作用」也单独验过：同种子只差刻度，音频指纹 0 = `8f0534a9…`、12 = `d434b2f0…`，同参数复跑逐比特相同；而作者原版 `compat.py` 下 12 和 0 一模一样（假绿）。
 
 ## 6. 界面
 

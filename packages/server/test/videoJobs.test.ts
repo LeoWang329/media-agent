@@ -75,6 +75,8 @@ async function send(text: string, parentId: string): Promise<string> {
 
 // 手动改的框也得分段写：beforeEach 把时长设成 60，一段最长 15 秒，写少了会被拦下来，见 docs/dev-plan.md 5.24
 const fourWay = (first: string) => [first, '第二段', '第三段', '第四段'].join('\n|\n');
+// 30 秒该分 2 段
+const twoWay = (first: string) => [first, '第二段'].join('\n|\n');
 
 // 画布里存的那份图在哪、内容的 sha256
 async function canvasImageFile(imageId: string): Promise<string> {
@@ -595,7 +597,17 @@ describe('生成视频任务', () => {
     await until(() => t.ok<AutodlState>('GET', '/comfy/video/status'), (state) => state.state === 'running', 3000);
     const options = await t.ok<VideoOptions>('GET', '/comfy/video/options');
     expect(options.models).toEqual([VIDEO_MODEL, 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors']);
-    expect(options.loras).toEqual(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors']);
+    expect(options.loras).toEqual([
+      'detail-test.safetensors',
+      'IL/anime-style-test.safetensors',
+      'IL/detail-tweaker-test.safetensors',
+      'krea2/krea2_4panel.safetensors',
+      'krea2/krea2_darkbrush.safetensors',
+      'krea2/DynamicCharacterSheet_krea2_v1.safetensors',
+      // 生成视频那台的加速 LoRA（双 LoRA 双采用的那两个，照 U37）
+      'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors',
+      'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors',
+    ]);
 
     expect(await t.call('PATCH', nodeUrl(), { video: { loras: [{ name: 'detail-test.safetensors' }] } })).toMatchObject({ status: 400, body: { error: 'LoRA 强度格式不对' } });
     const loras = [
@@ -670,46 +682,130 @@ describe('生成视频任务', () => {
     await settledJob(after.id, reply);
   });
 
-  it('走哪套流程能自己选：SelfLift 那套一段一个采样器、没有放大二采；二采重画多少放开能改；这套不能重拍一截', async () => {
+  it('走哪套流程能自己选：SelfLift 接续那套一段一条片子接力、出完自己拼起来；二采重画多少放开能改；这套不能重拍一截', async () => {
     await useVideoAutodl();
-    // 校验：流程只认那两套；denoise 有范围；低分辨率那几步要比总步数少至少 1
+    // 校验：流程只认那两套；denoise 有范围；接续那几项也都有范围
     expect(await t.call('PATCH', nodeUrl(), { video: { workflow: 'one-pass' } })).toMatchObject({ status: 400, body: { error: '走哪套流程只能是 two-pass、selflift' } });
     expect(await t.call('PATCH', nodeUrl(), { video: { denoise: 1.5 } })).toMatchObject({ status: 400, body: { error: '二采重画多少要在 0.05 到 1 之间' } });
-    expect(await t.call('PATCH', nodeUrl(), { video: { selflift: { steps: 8, transitionStep: 8, lowresScale: 0.5, upscaler: 'none' } } })).toMatchObject({ status: 400 });
-    expect(await t.call('PATCH', nodeUrl(), { video: { selflift: { steps: 8, transitionStep: 6, lowresScale: 2, upscaler: 'none' } } })).toMatchObject({ status: 400 });
+    const mine = {
+      steps: 8,
+      transitionStep: 4,
+      lowresScale: 0.65,
+      upscaler: 'none',
+      contextFrames: 22,
+      noise: 0.1,
+      colorMatch: 0.75,
+      // 双 LoRA 双采：低分辨率那遍挂 8 步那个、高分辨那遍挂 4 步那个（照 U37）
+      lowresLora: { name: 'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors', strength: 0.75 },
+      hiresLora: { name: 'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors', strength: 0.7 },
+      audioFeather: 8,
+    };
+    const bad = (patch: object) => t.call('PATCH', nodeUrl(), { video: { selflift: { ...mine, ...patch } } });
+    expect(await bad({ transitionStep: 8 })).toMatchObject({ status: 400 });
+    expect(await bad({ lowresScale: 2 })).toMatchObject({ status: 400 });
+    expect(await bad({ contextFrames: 33 })).toMatchObject({ status: 400, body: { error: '接上一段带几帧只能是 22、39、90' } });
+    expect(await bad({ noise: 2 })).toMatchObject({ status: 400, body: { error: '接缝加多少噪要在 0 到 0.5 之间' } });
+    expect(await bad({ colorMatch: 2 })).toMatchObject({ status: 400, body: { error: '偏色对齐强度要在 0 到 1 之间' } });
+    expect(await bad({ audioFeather: 999 })).toMatchObject({ status: 400, body: { error: '接缝声音羽化要是 0 到 256 的整数' } });
+    expect(await bad({ lowresLora: { name: '', strength: 0.75 } })).toMatchObject({ status: 400, body: { error: '低分辨率那遍的 LoRA 名字不能为空' } });
+    expect(await bad({ hiresLora: { name: 'a.safetensors' } })).toMatchObject({ status: 400 });
 
-    await t.ok('PATCH', nodeUrl(), { duration: 15, video: { workflow: 'selflift', denoise: 0.4, selflift: { steps: 8, transitionStep: 6, lowresScale: 0.65, upscaler: 'none' } } });
-    const reply = await send('写一个 15 秒的', replyId);
+    // 30 秒 2 段：一条最长 15 秒、还要让出 22 帧接上一段，一段要出 360 帧新画面，所以自己分成 3 条接力
+    await t.ok('PATCH', nodeUrl(), { duration: 30, video: { workflow: 'selflift', denoise: 0.4, selflift: mine } });
+    const reply = await edited(twoWay('第一段：女孩站在窗边，慢慢转过头来'));
     const chunks: number[] = [];
     const stop = t.videoJobs().subscribe((event: VideoJobEvent) => {
-      if (event.type === 'progress' && event.stage === 'pass1' && event.chunk) chunks.push(event.chunk);
+      if (event.type === 'progress' && event.stage === 'pass1') chunks.push(event.chunk);
     });
     const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
-    expect(job.params).toMatchObject({ workflow: 'selflift', denoise: 0.4, selflift: { steps: 8, transitionStep: 6, lowresScale: 0.65, upscaler: 'none' } });
-    const done = await settledJob(job.id, reply);
+    expect(job.params).toMatchObject({ workflow: 'selflift', denoise: 0.4, selflift: mine });
+    expect(job.chain).toEqual({ total: 3, clips: [] });
+    const done = await settledJob(job.id, reply, 20000);
     stop();
     expect(done).toMatchObject({ status: 'done' });
-    const graph = await lastGraph();
-    expect(ofType(graph, 'SelfLiftH3Sampler')).toHaveLength(1);
-    expect(ofType(graph, 'MMH3LoopingSampler')).toEqual([]);
-    expect(ofType(graph, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ cfg: 1, transition_step: 6, lowres_scale: 0.65, rho: 0.6, w_min: 1, w_max: 1, upscaler_model: 'none' });
-    expect(ofType(graph, 'BasicScheduler').map((node) => node.inputs)).toEqual([expect.objectContaining({ steps: 8, denoise: 1 })]);
-    expect(chunks).toContain(1);
+    expect(done.chain).toMatchObject({ total: 3 });
+    expect(done.chain!.clips).toHaveLength(3);
+    expect(done.file).toBeTruthy();
+    // 每段都记着在那台上的文件名，和拷进 input 目录以后的名字；最后那一条是拼起来的
+    expect(done.chain!.clips.map((clip) => clip.name)).toEqual([0, 1, 2].map((i) => `media_agent_${job.id}_s${i}.mp4`));
+    expect(done.chain!.clips.map((clip) => clip.frames)).toEqual([260, 260, 260]);
+    expect(chunks.filter((chunk, i) => chunk !== chunks[i - 1])).toEqual([1, 2, 3]);
 
-    // 这条没存一采二采，重拍一截要被拦住；同样参数再来照旧
+    // 发出去的是 3 条片子 + 1 条拼接：第 1 条没有上下文，第 2 条起读上一段、取 22 帧尾巴、剪掉 22 帧、颜色对齐
+    const prompts = ((await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: ComfyGraph }[]).map((one) => one.prompt);
+    const clips = prompts.slice(-4);
+    expect(ofType(clips[3], 'ConcatenateVideo')).toHaveLength(1);
+    expect(clips.map((graph) => ofType(graph, 'LoadVideo').length)).toEqual([0, 1, 1, 3]);
+    expect(ofType(clips[0], 'MiniMaxH3AddGuide')).toEqual([]);
+    for (const graph of clips.slice(1, 3)) {
+      expect(ofType(graph, 'MiniMaxH3AddGuide')[0].inputs).toMatchObject({ frame_idx: 0 });
+      expect(ofType(graph, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 22, strategy: 'tail' });
+      expect(ofType(graph, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 22 });
+      expect(ofType(graph, 'ColorTransfer')[0].inputs).toMatchObject({ method: 'mkl_lab', strength: 0.75 });
+    }
+    // 双 LoRA 双采：每条片子里两遍各挂一套，都接在主模型和注意力补丁之后；model_hires 接的是高分辨率那套
+    for (const graph of clips.slice(0, 3)) {
+      expect(ofType(graph, 'LoraLoaderModelOnly').map((node) => node.inputs)).toEqual([
+        { model: ['4', 0], lora_name: mine.lowresLora.name, strength_model: 0.75 },
+        { model: ['4', 0], lora_name: mine.hiresLora.name, strength_model: 0.7 },
+      ]);
+      expect(ofType(graph, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ model: ['75', 0], model_hires: ['76', 0] });
+    }
+    // 接缝声音羽化：第 1 条没有上下文不接，第 2 条起在 AddGuide 后面过一道，刻度照填的 8
+    expect(ofType(clips[0], 'MiniMaxH3AudioGuideFeather')).toEqual([]);
+    for (const graph of clips.slice(1, 3)) {
+      const sampler = ofType(graph, 'SelfLiftH3Sampler')[0];
+      const [id] = sampler.inputs.positive as [string, number];
+      expect(graph[String(id)].class_type).toBe('MiniMaxH3AudioGuideFeather');
+      expect(graph[String(id)].inputs.audio_feather_ticks).toBe(8);
+      expect(graph[String((graph[String(id)].inputs.positive as [string, number])[0])].class_type).toBe('MiniMaxH3AddGuide');
+    }
+    expect(ofType(clips[1], 'LoadVideo')[0].inputs.file).toBe(`media_agent_${job.id}_s0.mp4`);
+    expect(ofType(clips[2], 'LoadVideo')[0].inputs.file).toBe(`media_agent_${job.id}_s1.mp4`);
+    // 每段的采样参数照 U37；这一段一条片子用的是 H3 官方的编码节点，不是多段提示词那个
+    const [first] = ofType(clips[0], 'SelfLiftH3Sampler');
+    expect(first.inputs).toMatchObject({ cfg: 1, transition_step: 4, lowres_scale: 0.65, rho: 0.6, w_min: 1, w_max: 1, upscaler_model: 'none' });
+    expect(ofType(clips[0], 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ prompt: '第一段：女孩站在窗边，慢慢转过头来', length: 260 });
+    // 各段是拷进那台 input 目录的（这版 ComfyUI 的「文件名[output]」写法是坏的）
+    expect(mock.ssh.commands.filter((command) => command.startsWith('cp ') && command.includes(`media_agent_${job.id}`))).toHaveLength(3);
+
+    // 这条没存一采二采，重拍一截要被拦住；同样参数再来会重新接力
     expect(await t.call('POST', videosUrl(reply), { reshoot: { jobId: job.id, from: 0, to: 24, prompts: [] } })).toMatchObject({ status: 400, body: { error: '这条出的时候没存一采、二采的结果，只能整条重出' } });
     const again = await t.ok<VideoJob>('POST', videosUrl(reply), { again: { jobId: job.id, sameSeed: true } });
     expect(again.params.workflow).toBe('selflift');
-    await settledJob(again.id, reply);
+    expect(again.chain).toMatchObject({ total: 3, clips: [] });
+    await settledJob(again.id, reply, 20000);
 
     // 切回两遍生成：二采的 denoise 照填的走，SelfLift 那几项不影响
-    await t.ok('PATCH', nodeUrl(), { video: { workflow: 'two-pass', denoise: 0.4 } });
-    const two = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
-    await settledJob(two.id, reply);
+    await t.ok('PATCH', nodeUrl(), { duration: 60, video: { workflow: 'two-pass', denoise: 0.4 } });
+    const four = await edited(fourWay('第一段：女孩站在窗边'));
+    const two = await t.ok<VideoJob>('POST', videosUrl(four), { promptIndex: 0 });
+    await settledJob(two.id, four);
+    expect(two.chain).toBeUndefined();
     expect(ofType(await lastGraph(), 'MMH3LoopingSampler')).toHaveLength(2);
     expect(ofType(await lastGraph(), 'BasicScheduler').map((node) => node.inputs.denoise)).toEqual([1, 0.4]);
     expect(ofType(await lastGraph(), 'SelfLiftH3Sampler')).toEqual([]);
-  });
+  }, 30_000);
+
+  it('接力那套叫停：正在跑的那段停掉，已经出的几段接起来留一份（partial）', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 30, video: { workflow: 'selflift' } });
+    // 提示词里有「慢」，假的 ComfyUI 每步 150 毫秒：够点叫停
+    const reply = await edited(twoWay('第一段：慢，女孩站在窗边'));
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const one = await until(() => readJob(job.id, reply), (current) => (current?.chain?.clips.length ?? 0) >= 1, 20000);
+    expect(one!.chain!.total).toBe(3);
+    await t.ok('POST', `${videosUrl(reply)}/${job.id}/stop`);
+    const stopped = await settledJob(job.id, reply, 20000);
+    expect(stopped).toMatchObject({ status: 'stopped', partial: true });
+    // 留下的是已经出的那几段拼起来的，不是第 1 段单蹦
+    expect(stopped.file).toBeTruthy();
+    expect(stopped.preview).toBeTruthy();
+    const graph = await lastGraph();
+    expect(ofType(graph, 'ConcatenateVideo')).toHaveLength(1);
+    expect(ofType(graph, 'LoadVideo').length).toBe(stopped.chain!.clips.length);
+    expect(ofType(graph, 'ConcatenateVideo')[0].inputs['videos.video0']).toEqual(['400', 0]);
+  }, 20_000);
 
   it('设置「AutoDL 上的模型」切到生成视频那台：只能传 LoRA，传完列得出、生成设置里选得到', async () => {
     await useVideoAutodl();

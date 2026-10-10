@@ -13,8 +13,12 @@ import {
   reshootText,
   reshootWhere,
   segmentCount,
+  selfliftClipGraph,
+  selfliftMergeGraph,
   selfliftOfSettings,
-  selfliftWindows,
+  selfliftPlan,
+  SELFLIFT_NODE,
+  SELFLIFT_U37_LORAS,
   slotDiff,
   splitSegments,
   stepsOf,
@@ -415,149 +419,264 @@ describe('二采重画多少（denoise）', () => {
   });
 });
 
-describe('SelfLift 那套', () => {
-  const sel: VideoSelfLift = { steps: 8, transitionStep: 5, lowresScale: 0.5, upscaler: VIDEO_SELFLIFT.upscaler };
+describe('SelfLift 接续那套（照 U37 那份）', () => {
+  // 双 LoRA 双采和接缝声音羽化单独试，这一组先把它们关掉，节点号才跟下面写的一样
+  const sel: VideoSelfLift = {
+    steps: 8,
+    transitionStep: 4,
+    lowresScale: 0.65,
+    upscaler: VIDEO_SELFLIFT.upscaler,
+    contextFrames: 22,
+    noise: 0.1,
+    colorMatch: 0.75,
+    lowresLora: null,
+    hiresLora: null,
+    audioFeather: 0,
+  };
   const selflift = { ...DEFAULT_VIDEO_SETTINGS, workflow: 'selflift' as const, selflift: sel };
   const params = videoParams(['第一段', '第二段', '第三段', '第四段'], 60, '16:9', selflift);
-  const graph = videoGraph(params, 123, { refs: [] }, 'job');
-  const nodes = (type: string) => Object.values(graph).filter((node) => node.class_type === type);
-  const windows = nodes('SelfLiftH3Sampler');
-  const windowIds = Object.keys(graph).filter((id) => graph[id].class_type === 'SelfLiftH3Sampler');
+  const first = videoGraph(params, 123, { refs: [] }, 'job');
+  const second = selfliftClipGraph(params, 123, { refs: [] }, 'job', 1, 'prev.mp4');
+  const of = (graph: typeof first, type: string) => Object.values(graph).filter((node) => node.class_type === type);
+  const nodes = (type: string) => of(first, type);
 
-  it('整条按 5j+2 分给几段：前几段取最接近均分的，最后一段拿剩下的，加起来正是整条的潜空间帧数', () => {
-    const total = latentCount(params.frames.total);
-    expect(params.frames).toEqual({ total: 1382, chunk: 362, overlap: 22 });
-    expect(total).toBe(407);
-    expect(selfliftWindows(total, 4)).toEqual([102, 102, 102, 101]);
-    expect(selfliftWindows(total, 4).reduce((a, b) => a + b, 0)).toBe(total);
-    // 前几段自己就是能解码的 5j+2
-    expect(selfliftWindows(total, 4).slice(0, 3).every((n) => n % 5 === 2)).toBe(true);
-    expect(selfliftWindows(117, 2)).toEqual([57, 60]);
-    // 一段时不切
-    expect(selfliftWindows(32, 1)).toEqual([32]);
+  it('一段一条片子：一段最长 15 秒、最短 22 帧，段数不够就把提示词那段拆成几条', () => {
+    // 60 秒 4 段：一段能新出 362 − 22 = 340 帧，光靠 4 段不够（要 5 条），每段 311 帧
+    expect(selfliftPlan(1440 / 24, 4, 22)).toMatchObject({ context: 22, lengths: [311, 311, 311, 311, 311], total: 1467 });
+    expect(selfliftPlan(1440 / 24, 4, 22).from).toEqual([0, 0, 1, 2, 3]);
+    expect(params.frames).toEqual({ total: 1467, chunk: 311, overlap: 22 });
+    // 每段都是 17 的倍数加 5，加起来正是整条
+    const plan = selfliftPlan(60, 4, 22);
+    expect(plan.lengths.every((n) => n % 17 === 5)).toBe(true);
+    expect(plan.total).toBe(plan.lengths.reduce((sum, n) => sum + n, 0) - (plan.lengths.length - 1) * 22);
+    // 一段 15 秒要 379 帧、超过一段最长的 362，就自己拆成 3 条
+    expect(selfliftPlan(30, 2, 22)).toMatchObject({ lengths: [260, 260, 260], from: [0, 0, 1], total: 736 });
+    // 只有一段的短视频
+    expect(selfliftPlan(5, 1, 22)).toMatchObject({ lengths: [124], from: [0], total: 124 });
+    // 上下文越长，一段能新出的越少，但每段会被夹到最长 362 帧，条数不一定更多
+    expect(selfliftPlan(60, 4, 90).lengths).toEqual([362, 362, 362, 362, 362]);
+    expect(selfliftPlan(60, 4, 39).lengths.length).toBe(5);
   });
 
-  it('参数：出片大小那一套（latent 按出片大小定，低分辨率由 SelfLift 自己缩），提示词还是整条', () => {
-    expect(params.finalWidth).toBe(1728);
-    expect(params.finalHeight).toBe(960);
-    expect(nodes('MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ width: 1728, height: 960, length: 1382 });
+  it('第 1 段：编码提示词直接当正面（有首帧图就钉在第 0 帧），没有上下文、不剪、不对齐颜色', () => {
+    expect(nodes('MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ width: 1728, height: 960, length: 311, ref_image_size: 'match', prompt: '第一段' });
+    expect(of(first, 'LoadVideo')).toHaveLength(0);
+    expect(of(first, 'MiniMaxH3AddGuide')).toHaveLength(0);
+    expect(of(first, 'VideoTemporalCrop')).toHaveLength(0);
+    expect(of(first, 'ColorTransfer')).toHaveLength(0);
+    const sampler = nodes('SelfLiftH3Sampler')[0];
+    expect(sampler.inputs.positive).toEqual(['8', 0]);
+    expect(sampler.inputs.latent_image).toEqual(['8', 1]);
+    // 负面是把编码出来的正面全零掉（照 U37）
+    const [negative] = sampler.inputs.negative as [string, number];
+    expect(first[negative].class_type).toBe('ConditioningZeroOut');
+    expect(first[negative].inputs.conditioning).toEqual(['8', 0]);
   });
 
-  it('一段一个采样器：种子每段加一、cfg 1、低分辨率跑几步和倍数照生成设置；放大器是 U37 那份选的', () => {
-    expect(windows).toHaveLength(4);
-    expect(windows.map((node) => node.inputs.seed)).toEqual([123, 124, 125, 126]);
-    for (const node of windows) {
-      expect(node.inputs).toMatchObject({ cfg: 1, transition_step: 5, lowres_scale: 0.5, rho: 0, w_min: 0.5, w_max: 1, upscaler_model: VIDEO_SELFLIFT.upscaler, highres_tiling: false });
+  it('第 2 段起：读上一段 → 取最后 22 帧 → 前 21 帧加 0.1 的噪、最后一帧不加 → 钉在这一段第 0 帧上，声音也接着上一段', () => {
+    const load = of(second, 'LoadVideo')[0];
+    expect(load.inputs.file).toBe('prev.mp4');
+    const tails = of(second, 'VideoFrameSample');
+    expect(tails.map((node) => node.inputs)).toEqual([
+      expect.objectContaining({ num_frames: 22, strategy: 'tail' }),
+      expect.objectContaining({ num_frames: 1, strategy: 'tail' }),
+    ]);
+    const ranges = of(second, 'GetImageRangeFromBatch');
+    expect(ranges.map((node) => [node.inputs.start_index, node.inputs.num_frames])).toEqual([
+      [0, 21],
+      [21, 1],
+    ]);
+    const noises = of(second, 'ImageAddNoise');
+    expect(noises.map((node) => node.inputs.strength)).toEqual([0.1, 0]);
+    const batch = of(second, 'ImageBatchMulti')[0];
+    expect(batch.inputs).toMatchObject({ inputcount: 2 });
+    const guide = of(second, 'MiniMaxH3AddGuide')[0];
+    expect(guide.inputs).toMatchObject({ frame_idx: 0 });
+    expect(guide.inputs.positive).toEqual(['8', 0]);
+    expect(guide.inputs.latent).toEqual(['8', 1]);
+    expect(guide.inputs.image).toEqual(['307', 0]);
+    // 声音：接上一段那几帧的声音
+    expect(guide.inputs.audio).toEqual(['302', 1]);
+    const sampler = of(second, 'SelfLiftH3Sampler')[0];
+    expect(sampler.inputs.positive).toEqual(['308', 0]);
+  });
+
+  it('出片：剪掉开头的 22 个上下文帧，再把颜色对齐到上一段的最后一帧（U37 的 mkl_lab 0.75）', () => {
+    const crop = of(second, 'VideoTemporalCrop')[0];
+    expect(crop.inputs).toMatchObject({ start_frame: 22, length: 99999 });
+    const color = of(second, 'ColorTransfer')[0];
+    expect(color.inputs).toMatchObject({ method: 'mkl_lab', source_stats: 'target_frame', 'source_stats.target_index': 0, strength: 0.75 });
+    expect(color.inputs.image_ref).toEqual(['311', 0]);
+    expect(color.inputs.image_target).toEqual(['312', 0]);
+    // 对齐完用原来的声音重新拼一条，最后存的是它
+    const saves = of(second, 'SaveVideo');
+    expect(saves).toHaveLength(1);
+    expect(saves[0].inputs.video).toEqual(['314', 0]);
+    expect(of(second, 'CreateVideo')[1].inputs.audio).toEqual(['312', 1]);
+  });
+
+  it('不要偏色对齐（0）就不接 ColorTransfer，存剪完的那条', () => {
+    const off = selfliftClipGraph({ ...params, selflift: { ...sel, colorMatch: 0 } }, 1, { refs: [] }, 'job', 1, 'prev.mp4');
+    expect(of(off, 'ColorTransfer')).toHaveLength(0);
+    expect(of(off, 'SaveVideo')[0].inputs.video).toEqual(['163', 0]);
+    expect(of(second, 'ColorTransfer')).toHaveLength(1);
+  });
+
+  it('每段用自己那段提示词（一条提示词拆成几段的就重复用），种子每段加一', () => {
+    const prompts = [0, 1, 2, 3, 4].map((clip) => (selfliftClipGraph(params, 100, { refs: [] }, 'job', clip, clip ? 'prev.mp4' : undefined)['8'].inputs.prompt));
+    expect(prompts).toEqual(['第一段', '第一段', '第二段', '第三段', '第四段']);
+    const seeds = [0, 1, 2, 3, 4].map((clip) => of(selfliftClipGraph(params, 100, { refs: [] }, 'job', clip, clip ? 'prev.mp4' : undefined), 'SelfLiftH3Sampler')[0].inputs.seed);
+    expect(seeds).toEqual([100, 101, 102, 103, 104]);
+  });
+
+  it('采样参数照 U37：cfg 1、低分辨率跑几步和倍数、放大器、每步都是那一套调度', () => {
+    for (const graph of [first, second]) {
+      const sampler = of(graph, 'SelfLiftH3Sampler')[0];
+      expect(sampler.inputs).toMatchObject({ cfg: 1, transition_step: 4, lowres_scale: 0.65, rho: 0, w_min: 0.5, w_max: 1, upscaler_model: VIDEO_SELFLIFT.upscaler, highres_tiling: false });
+      const sigmas = graph[(sampler.inputs.sigmas as [string, number])[0]];
+      expect(sigmas.inputs).toMatchObject({ scheduler: 'beta', steps: 8, denoise: 1 });
     }
-    const sigmas = graph[(windows[0].inputs.sigmas as [string, number])[0]];
-    expect(sigmas.inputs).toMatchObject({ scheduler: 'beta', steps: 8, denoise: 1 });
-    expect(nodes('KSamplerSelect')[0].inputs.sampler_name).toBe('euler');
+    expect(of(first, 'KSamplerSelect')[0].inputs.sampler_name).toBe('euler');
   });
 
   it('不用放大器就走 SelfLift-zero：rho 0.6、修正强度 1', () => {
-    const zero = videoGraph(videoParams(['一段'], 15, '16:9', { ...selflift, selflift: { ...selflift.selflift!, upscaler: VIDEO_SELFLIFT.none } }), 1);
-    const node = Object.values(zero).find((one) => one.class_type === 'SelfLiftH3Sampler')!;
-    expect(node.inputs).toMatchObject({ upscaler_model: 'none', rho: 0.6, w_min: 1, w_max: 1 });
+    const zero = videoGraph(videoParams(['一段'], 15, '16:9', { ...selflift, selflift: { ...sel, upscaler: VIDEO_SELFLIFT.none } }), 1);
+    expect(of(zero, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ upscaler_model: 'none', rho: 0.6, w_min: 1, w_max: 1 });
   });
 
-  it('每段的大小从整条的空白潜变量上切出来，切出来的加起来正好是整条', () => {
-    const trims = nodes('MMH3TrimAV');
-    expect(trims).toHaveLength(4);
-    expect(trims.map((node) => [node.inputs.trim_head_latents, node.inputs.trim_tail_latents])).toEqual([
-      [0, 305],
-      [102, 203],
-      [204, 101],
-      [306, 0],
-    ]);
-    expect(trims.every((node) => node.inputs.carry_masks === false)).toBe(true);
-    for (const node of trims) expect(node.inputs.latent).toEqual(['8', 1]);
-  });
-
-  it('第 1 段用自己的编码；第 2 段起把上一段的最后一帧钉在自己第 0 帧上，编码按段号取', () => {
-    const keyframes = nodes('MMH3LatentKeyframe');
-    expect(keyframes).toHaveLength(3);
-    const selects = nodes('MMH3CondSelect');
-    expect(selects.map((node) => node.inputs.index)).toEqual([0, 1, 2, 3]);
-    keyframes.forEach((node, i) => {
-      expect(node.inputs.latent).toEqual([windowIds[i], 0]);
-      expect(node.inputs).toMatchObject({ position: 'first', source_frame: 'last', target_width: 1728, target_height: 960 });
-      expect(node.inputs.conditioning).toEqual([String(161 + i), 0]);
-    });
-    // 每一段的负面是把正面零掉，cfg 1 等于不走 CFG
-    expect(nodes('ConditioningZeroOut')).toHaveLength(4);
-    windows.forEach((node, i) => {
-      expect(graph[(node.inputs.positive as [string, number])[0]].class_type).toBe(i === 0 ? 'MMH3CondSelect' : 'MMH3LatentKeyframe');
-      const [zero] = node.inputs.negative as [string, number];
-      expect(graph[zero].class_type).toBe('ConditioningZeroOut');
-      expect(graph[zero].inputs.conditioning).toEqual(node.inputs.positive);
-    });
-  });
-
-  it('一段段接起来，接缝不切；存成 mp4；第一段出完先存一份低清预览；没有一采二采的存档（不能重拍一截）', () => {
-    const concats = nodes('MMH3ConcatAV');
-    expect(concats).toHaveLength(3);
-    for (const node of concats) expect(node.inputs).toMatchObject({ trim_b_latents: 0, carry_masks: false });
-    expect(nodes('MMH3StreamingSave')).toHaveLength(2);
-    const [preview] = nodes('MMH3StreamingSave').filter((node) => String(node.inputs.filename_prefix).includes('preview'));
-    expect(preview.inputs).toMatchObject({ crf: 28 });
-    expect(nodes('MiniMaxH3NativeLatentCheckpointSaveT8Advanced')).toHaveLength(0);
-    expect(Object.keys(graph)).toContain('22');
-  });
-
-  it('一段的：不接、不预览（那一份就是成片）', () => {
-    const one = videoGraph(videoParams(['一段'], 15, '16:9', selflift), 1, { refs: [] }, 'job');
-    expect(Object.values(one).filter((node) => node.class_type === 'SelfLiftH3Sampler')).toHaveLength(1);
-    expect(Object.values(one).filter((node) => node.class_type === 'MMH3ConcatAV')).toHaveLength(0);
-    expect(Object.values(one).filter((node) => node.class_type === 'MMH3StreamingSave')).toHaveLength(1);
-  });
-
-  it('图当首帧：用 MMH3ImageKeyframe 钉在第 0 帧（SelfLift 没有一采那个 keyframes 入口）', () => {
+  it('图当首帧：第 1 段用 AddGuide 把这张钉在第 0 帧', () => {
     const i2v = videoParams(['第一段', '第二段'], 30, 'auto', selflift, { refs: ['a'], firstFrame: { id: 'a', width: 600, height: 900 } });
     const made = videoGraph(i2v, 7, { refs: ['a.png'], firstFrame: 'a.png' }, 'job');
-    const [key] = Object.values(made).filter((node) => node.class_type === 'MMH3ImageKeyframe');
-    expect(key.inputs).toMatchObject({ frame_index: 0, resize: 'auto', width: i2v.finalWidth, height: i2v.finalHeight });
-    expect(Object.values(made).filter((node) => node.class_type === 'MMH3LatentKeyframe')).toHaveLength(1);
+    const [guide] = of(made, 'MiniMaxH3AddGuide');
+    expect(guide.inputs).toMatchObject({ frame_idx: 0 });
+    expect(guide.inputs.image).toEqual(['30', 0]);
+    expect(of(made, 'SelfLiftH3Sampler')[0].inputs.positive).toEqual(['309', 0]);
   });
 
-  it('做到哪一步：每段的采样器都算一采，存文件还是存文件', () => {
-    const stages = Object.entries(graph).flatMap(([id, node]) => (videoStage(id) ? [[node.class_type, videoStage(id)]] : []));
-    expect(stages.filter(([, stage]) => stage === 'encode')).toHaveLength(1);
-    expect(stages.filter(([, stage]) => stage === 'pass1')).toHaveLength(4);
-    // 这套没有放大、二采这两步，进度里也不会出现
-    expect(stages.filter(([, stage]) => stage === 'upscale' || stage === 'pass2')).toHaveLength(0);
-    expect(stages.filter(([, stage]) => stage === 'save')).toEqual([['MMH3StreamingSave', 'save']]);
-    expect(windowIds.map((id) => videoStage(id))).toEqual(['pass1', 'pass1', 'pass1', 'pass1']);
+  it('配音在这套里当参考音频接（H3 官方的 ReferenceToVideo 没有 use_input_audio 那个口子）', () => {
+    const dubbed = videoParams(['一段'], 15, '16:9', selflift, { refs: [] }, [{ kind: 'audio', mediaId: 'm1', use: 'dub', start: 0, take: 15 }]);
+    const graph = videoGraph(dubbed, 1, { refs: [], media: ['dub.mp3'] });
+    const prompt = graph['8'].inputs;
+    expect(prompt['ref_audios.ref_audio_0']).toEqual(['201', 0]);
+    expect(prompt.use_input_audio).toBeUndefined();
+    expect(prompt.audio).toBeUndefined();
+  });
+
+  it('各段接起来那一条：读各段（都拷进那台 input 了）→ ConcatenateVideo → 存成整条', () => {
+    const clips = [{ name: 'a.mp4' }, { name: 'b.mp4' }, { name: 'c.mp4' }];
+    const merge = selfliftMergeGraph(clips, 'job');
+    expect(merge['400'].inputs).toEqual({ file: 'a.mp4' });
+    expect(merge['402'].inputs).toEqual({ file: 'c.mp4' });
+    expect(merge['90'].inputs).toEqual({ 'videos.video0': ['400', 0], 'videos.video1': ['401', 0], 'videos.video2': ['402', 0], codec: 'auto' });
+    expect(merge['21'].inputs).toMatchObject({ video: ['90', 0], format: 'auto' });
+  });
+
+  it('做到哪一步：编码、采样、存片；这套没有放大、二采', () => {
+    expect(videoStage('8')).toBe('encode');
+    expect(videoStage('14')).toBe('pass1');
+    expect(videoStage('21')).toBe('save');
+    expect(videoStage(SELFLIFT_NODE.load)).toBeNull();
+    expect(videoStage(SELFLIFT_NODE.color)).toBeNull();
+    const stages = Object.entries(second).flatMap(([id, node]) => (videoStage(id) ? [[node.class_type, videoStage(id)]] : []));
+    expect(stages).toEqual([
+      ['MiniMaxH3ReferenceToVideo', 'encode'],
+      ['SelfLiftH3Sampler', 'pass1'],
+      ['SaveVideo', 'save'],
+    ]);
+    // 拼起来那一条只算存文件这一步
+    expect(Object.entries(selfliftMergeGraph([{ name: 'a.mp4' }])).flatMap(([id, node]) => (videoStage(id) ? [[node.class_type, videoStage(id)]] : []))).toEqual([['SaveVideo', 'save']]);
   });
 
   it('设置里的默认：没选过是两遍生成；步数报给「还要多久」时算在一采上、二采没有', () => {
     expect(workflowOfSettings(DEFAULT_VIDEO_SETTINGS)).toBe('two-pass');
     expect(workflowOfSettings(selflift)).toBe('selflift');
-    expect(selfliftOfSettings(DEFAULT_VIDEO_SETTINGS)).toEqual({ steps: 8, transitionStep: 6, lowresScale: 0.5, upscaler: VIDEO_SELFLIFT.upscaler });
+    expect(selfliftOfSettings(DEFAULT_VIDEO_SETTINGS)).toEqual({
+      steps: 8,
+      transitionStep: 4,
+      lowresScale: 0.65,
+      upscaler: VIDEO_SELFLIFT.upscaler,
+      contextFrames: 22,
+      noise: 0.1,
+      colorMatch: 0.75,
+      lowresLora: null,
+      hiresLora: null,
+      audioFeather: 12,
+    });
     expect(stepsOf(params)).toEqual({ pass1: 8, pass2: 0 });
     expect(stepsOf(videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS))).toEqual({ pass1: 10, pass2: 3 });
   });
 
-  it('几种时长、比例、参数下都分得对：窗口加起来正好是整条，每段不小于 7 个潜空间帧', () => {
+  it('双 LoRA 双采：低分辨率那遍挂一套、高分辨率那遍挂另一套，都接在主模型和注意力补丁之上', () => {
+    const both = videoParams(['第一段', '第二段'], 30, '16:9', {
+      ...selflift,
+      // 自己那栏的 LoRA 栈是两遍都带的，另外两套只给自己那一遍
+      loras: [{ name: 'style.safetensors', strength: 0.6 }],
+      selflift: { ...sel, lowresLora: SELFLIFT_U37_LORAS.lowres, hiresLora: SELFLIFT_U37_LORAS.hires },
+    });
+    const graph = videoGraph(both, 1, { refs: [] }, 'job');
+    const loaders = of(graph, 'LoraLoaderModelOnly');
+    // 三套：自己的栈（70）+ 低分辨率那遍（75）+ 高分辨率那遍（76）
+    expect(loaders.map((node) => node.inputs)).toEqual([
+      { model: ['1', 0], lora_name: 'style.safetensors', strength_model: 0.6 },
+      { model: ['4', 0], lora_name: SELFLIFT_U37_LORAS.lowres.name, strength_model: 0.75 },
+      { model: ['4', 0], lora_name: SELFLIFT_U37_LORAS.hires.name, strength_model: 0.7 },
+    ]);
+    const sampler = of(graph, 'SelfLiftH3Sampler')[0];
+    expect(sampler.inputs.model).toEqual(['75', 0]);
+    expect(sampler.inputs.model_hires).toEqual(['76', 0]);
+    // 算 sigmas 也用低分辨率那遍的模型（照 U37：BasicScheduler 接的是挂了 8 步 LoRA 的那个）
+    expect(graph[(sampler.inputs.sigmas as [string, number])[0]].inputs.model).toEqual(['75', 0]);
+    // 只有一套：另一遍照插件自己的默认（跟 model 一样）
+    const one = videoGraph(videoParams(['一段'], 15, '16:9', { ...selflift, selflift: { ...sel, lowresLora: SELFLIFT_U37_LORAS.lowres } }), 1);
+    const samplerOne = of(one, 'SelfLiftH3Sampler')[0];
+    expect(samplerOne.inputs.model).toEqual(['75', 0]);
+    expect(samplerOne.inputs.model_hires).toBeUndefined();
+  });
+
+  it('双 LoRA 都不挂就不接额外节点：model 还是主模型那条，也没有 model_hires', () => {
+    const sampler = of(first, 'SelfLiftH3Sampler')[0];
+    expect(of(first, 'LoraLoaderModelOnly')).toHaveLength(0);
+    expect(sampler.inputs.model).toEqual(['4', 0]);
+    expect(sampler.inputs.model_hires).toBeUndefined();
+  });
+
+  it('接缝声音羽化：第 2 段起在 AddGuide 后面过一道 AudioGuideFeather，刻度照填的；第 1 段没有上下文不接', () => {
+    const on = { ...sel, audioFeather: 12 };
+    const heard = selfliftClipGraph({ ...params, selflift: on }, 1, { refs: [] }, 'job', 1, 'prev.mp4');
+    const feather = of(heard, 'MiniMaxH3AudioGuideFeather')[0];
+    expect(feather.inputs).toEqual({ positive: ['308', 0], audio_feather_ticks: 12 });
+    expect(of(heard, 'SelfLiftH3Sampler')[0].inputs.positive).toEqual(['315', 0]);
+    // 刻度填 0 就是不羽化，节点都不接
+    if (sel.audioFeather !== 0) throw new Error('这一组的前提是 0');
+    expect(of(second, 'MiniMaxH3AudioGuideFeather')).toHaveLength(0);
+    expect(of(second, 'SelfLiftH3Sampler')[0].inputs.positive).toEqual(['308', 0]);
+    // 第 1 段没有上下文：就算开着羽化也不接（没东西可羽化）
+    const head = selfliftClipGraph({ ...params, selflift: on }, 1, { refs: [] }, 'job', 0);
+    expect(of(head, 'MiniMaxH3AudioGuideFeather')).toHaveLength(0);
+  });
+
+  it('几种时长、比例、参数下都分得对：整条和要的差不到一秒，每段都在 22 到 362 帧之间、都是 17 的倍数加 5', () => {
     const cases: [number, string, VideoSettings][] = [
       [4, '16:9', selflift],
       [15, '16:9', selflift],
       [30, 'auto', { ...selflift, selflift: { ...sel, upscaler: VIDEO_SELFLIFT.none } }],
-      [46, '9:16', { ...selflift, megapixels: 0.3, upscale: 1.5, selflift: { ...sel, steps: 12, transitionStep: 9 } }],
-      [60, '21:9', { ...selflift, megapixels: 1, upscale: 2 }],
+      [46, '9:16', { ...selflift, megapixels: 0.3, upscale: 1.5, selflift: { ...sel, steps: 12, transitionStep: 9, contextFrames: 39 } }],
+      [60, '21:9', { ...selflift, megapixels: 1, upscale: 2, selflift: { ...sel, contextFrames: 90 } }],
     ];
     for (const [seconds, ratio, one] of cases) {
       const made = videoParams(['一', '二', '三', '四'].slice(0, segmentCount(seconds)), seconds, ratio as VideoParamsRatio, one);
-      const total = latentCount(made.frames.total);
-      const split = selfliftWindows(total, made.segments.length);
-      expect(split.reduce((a, b) => a + b, 0)).toBe(total);
-      expect(split.every((n) => n >= 7)).toBe(true);
-      expect(split.slice(0, -1).every((n) => n % 5 === 2)).toBe(true);
-      // 每段一个采样器，切出来的加起来还是整条
-      const graph = videoGraph(made, 1);
-      expect(Object.values(graph).filter((node) => node.class_type === 'SelfLiftH3Sampler')).toHaveLength(made.segments.length);
-      const trims = Object.values(graph).filter((node) => node.class_type === 'MMH3TrimAV');
-      const kept = trims.map((node) => total - Number(node.inputs.trim_head_latents) - Number(node.inputs.trim_tail_latents));
-      expect(kept).toEqual(split);
+      const plan = selfliftPlan(seconds, made.segments.length, made.selflift!.contextFrames);
+      expect(made.frames.total).toBe(plan.total);
+      expect(plan.lengths.every((n) => n >= 22 && n <= 362)).toBe(true);
+      expect(plan.lengths.every((n) => (n - 5) % 17 === 0)).toBe(true);
+      expect(Math.abs(plan.total - seconds * 24)).toBeLessThanOrEqual(24);
+      // 每条都是一条片子：一条一个采样器、一条一个存片
+      for (const [clip, length] of plan.lengths.entries()) {
+        const graph = selfliftClipGraph(made, 1, { refs: [] }, 'job', clip, clip ? 'prev.mp4' : undefined);
+        expect(of(graph, 'SelfLiftH3Sampler')).toHaveLength(1);
+        expect(of(graph, 'SaveVideo')).toHaveLength(1);
+        expect(graph['8'].inputs.length).toBe(length);
+      }
     }
   });
 

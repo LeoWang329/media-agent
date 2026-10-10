@@ -1,5 +1,8 @@
 import {
+  segmentCount,
+  SELFLIFT_U37_LORAS,
   selfliftOfSettings,
+  selfliftPlan,
   stepsOfSettings,
   VIDEO_DENOISE,
   VIDEO_DURATION,
@@ -12,11 +15,13 @@ import {
   videoAspect,
   videoImageUse,
   videoRatioOf,
+  videoSecondsText,
   videoSettingsOf,
   videoSizes,
   workflowOfSettings,
   type AspectRatio,
   type ChatNode,
+  type VideoLora,
   type VideoSettings,
   type VideoSpeed,
   type VideoWorkflow,
@@ -81,7 +86,8 @@ export function useVideoRatio(promptName: string | undefined, ratio: AspectRatio
 }
 
 const SPEED_LABELS: Record<VideoSpeed, string> = { fast: '加速', full: '不加速' };
-const WORKFLOW_LABELS: Record<VideoWorkflow, string> = { 'two-pass': '两遍生成', selflift: 'SelfLift 一遍' };
+const WORKFLOW_LABELS: Record<VideoWorkflow, string> = { 'two-pass': '两遍生成', selflift: 'SelfLift 接续' };
+const CONTEXT_LABELS: Record<number, string> = { 22: '22 帧（1 组）', 39: '39 帧（2 组）', 90: '90 帧（5 组）' };
 
 // 槽位区右边的「生成设置」：按钮上写着出片多大，点开改加速还是不加速、一采大小、放大倍数、种子、主模型、LoRA
 export function VideoGenButton({ node }: { node: ChatNode }) {
@@ -114,6 +120,9 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
   const workflow = workflowOfSettings(settings);
   const selflift = selfliftOfSettings(settings);
   const steps = stepsOfSettings(settings);
+  // SelfLift 接续那套分几条接力：按节点现在的时长和「这长度该写几段」估，实际看框里写了几段
+  const wantedSegments = segmentCount(node.duration);
+  const plan = selfliftPlan(node.duration, wantedSegments, selflift.contextFrames);
   const sized = useVideoRatio(node.systemPromptName, node.aspectRatio, node.slots[0]);
   const ratioText = typeof sized !== 'string' ? '，比例自动的按当首帧的那张图' : node.aspectRatio === 'auto' ? '，比例自动的按 16:9' : `，现在是 ${videoAspect(node.aspectRatio)}`;
   const final = videoSizes(settings.megapixels, settings.upscale, sized);
@@ -130,6 +139,9 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
   const upscalers = options?.selfliftUpscalers?.length ? options.selfliftUpscalers : [VIDEO_SELFLIFT.none, VIDEO_SELFLIFT.upscaler];
   // 节点选的那台上没有：也列出来
   const pick = (list: string[], value: string) => (value && !list.includes(value) ? [value, ...list] : list);
+  // 双 LoRA 双采：两遍各挂一套，改哪一边都是整份 selflift 存一遍
+  const setPhaseLora = (key: 'lowresLora' | 'hiresLora', lora: VideoLora | null) =>
+    save({ selflift: key === 'lowresLora' ? { ...selflift, lowresLora: lora } : { ...selflift, hiresLora: lora } });
   return (
     <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg, .gc-lora-pop'))}>
       <div className="vc-sec">
@@ -145,8 +157,8 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
         </div>
         <p className="hint">
           {workflow === 'two-pass'
-            ? `两遍生成：先按一采大小出一遍，不解码放大到出片大小，再按「二采重画多少」细修一遍。分段接续、重拍一截都在这套上。`
-            : `SelfLift：一套调度跑完——前 ${selflift.transitionStep} 步低分辨率，抬到出片大小再跑完剩下的 ${selflift.steps - selflift.transitionStep} 步，没有放大这一步。一段一个采样器；这套不能重拍一截。`}
+            ? `两遍生成：先按一采大小出一遍，不解码放大到出片大小，再按「二采重画多少」细修一遍。分段接续在一个任务里跑完，能重拍一截。`
+            : `SelfLift 接续：照实例上那份「U37 真-上下文无缝无色差」——一段一条片子接力出，第 1 段正常出，第 2 段起把上一段结尾的几帧当上下文钉进去、接着往下长，出完再把颜色对齐到上一段。一套调度里前 ${selflift.transitionStep} 步低分辨率、抬到出片大小跑完剩下的 ${selflift.steps - selflift.transitionStep} 步，没有放大这一步。这套不能重拍一截。`}
         </p>
       </div>
       <div className="vc-sec">
@@ -315,41 +327,188 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
         </p>
       </div>
       {workflow === 'selflift' && (
-        <div className="vc-sec">
-          <h4>
-            低分辨率倍数、放大器<span className="meta">SelfLift 那套怎么抬上去</span>
-          </h4>
-          <div className="row vc-steps">
-            <label className="field">
-              <span className="meta">低分辨率倍数</span>
-              <CommitInput
-                className="input mono"
-                type="number"
-                id="vcSelfLowres"
-                aria-label="低分辨率倍数"
-                step={VIDEO_SELFLIFT.lowresScale.step}
-                min={VIDEO_SELFLIFT.lowresScale.min}
-                max={VIDEO_SELFLIFT.lowresScale.max}
-                value={String(selflift.lowresScale)}
-                parse={anyNumber}
-                onCommit={(v) => save({ selflift: { ...selflift, lowresScale: Number(v) } })}
-              />
-            </label>
-            <span className="meta vc-lowres-now">
-              低分辨率那段 {Math.round(final.finalWidth * selflift.lowresScale / 32) * 32}×{Math.round(final.finalHeight * selflift.lowresScale / 32) * 32}
-            </span>
+        <>
+          <div className="vc-sec">
+            <h4>
+              低分辨率倍数、放大器<span className="meta">SelfLift 那套怎么抬上去</span>
+            </h4>
+            <div className="row vc-steps">
+              <label className="field">
+                <span className="meta">低分辨率倍数</span>
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  id="vcSelfLowres"
+                  aria-label="低分辨率倍数"
+                  step={VIDEO_SELFLIFT.lowresScale.step}
+                  min={VIDEO_SELFLIFT.lowresScale.min}
+                  max={VIDEO_SELFLIFT.lowresScale.max}
+                  value={String(selflift.lowresScale)}
+                  parse={anyNumber}
+                  onCommit={(v) => save({ selflift: { ...selflift, lowresScale: Number(v) } })}
+                />
+              </label>
+              <span className="meta vc-lowres-now">
+                低分辨率那段 {Math.round(final.finalWidth * selflift.lowresScale / 32) * 32}×{Math.round(final.finalHeight * selflift.lowresScale / 32) * 32}
+              </span>
+            </div>
+            <select className="select select-sm mono" id="vcSelfUpscaler" aria-label="提升用哪个放大器" value={selflift.upscaler} onChange={(e) => save({ selflift: { ...selflift, upscaler: e.target.value } })}>
+              {pick(upscalers, selflift.upscaler).map((name) => (
+                <option key={name} value={name}>
+                  {name === VIDEO_SELFLIFT.none ? '不用放大器（靠模型自己的像素锚点修）' : name}
+                </option>
+              ))}
+            </select>
+            <p className="hint">
+              低分辨率缩到多少：{VIDEO_SELFLIFT.lowresScale.min} 到 {VIDEO_SELFLIFT.lowresScale.max}。抬上去用的是 H3 的潜空间放大器（照那份「U37 无色差」默认选 {VIDEO_SELFLIFT.upscaler}）；选「不用放大器」就走 SelfLift-zero，靠模型自己的 VAE 锚点修，接缝更稳但多一趟解码。
+            </p>
           </div>
-          <select className="select select-sm mono" id="vcSelfUpscaler" aria-label="提升用哪个放大器" value={selflift.upscaler} onChange={(e) => save({ selflift: { ...selflift, upscaler: e.target.value } })}>
-            {pick(upscalers, selflift.upscaler).map((name) => (
-              <option key={name} value={name}>
-                {name === VIDEO_SELFLIFT.none ? '不用放大器（靠模型自己的像素锚点修）' : name}
-              </option>
-            ))}
-          </select>
-          <p className="hint">
-            低分辨率缩到多少：{VIDEO_SELFLIFT.lowresScale.min} 到 {VIDEO_SELFLIFT.lowresScale.max}。抬上去用的是 H3 的潜空间放大器（照那份「U37 无色差」默认选 {VIDEO_SELFLIFT.upscaler}）；选「不用放大器」就走 SelfLift-zero，靠模型自己的 VAE 锚点修，接缝更稳但多一趟解码。
-          </p>
-        </div>
+          <div className="vc-sec">
+            <h4>
+              接上一段<span className="meta">第 2 段起拿上一段的尾巴当上下文</span>
+            </h4>
+            <div className="row vc-steps">
+              <label className="field">
+                <span className="meta">带几帧</span>
+                <select
+                  className="select select-sm mono"
+                  id="vcSelfContext"
+                  aria-label="接上一段带几帧"
+                  value={selflift.contextFrames}
+                  onChange={(e) => save({ selflift: { ...selflift, contextFrames: Number(e.target.value) } })}
+                >
+                  {VIDEO_SELFLIFT.contextFrames.map((frames) => (
+                    <option key={frames} value={frames}>
+                      {CONTEXT_LABELS[frames] ?? `${frames} 帧`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="meta">接缝加噪</span>
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  id="vcSelfNoise"
+                  aria-label="接缝加多少噪"
+                  step={VIDEO_SELFLIFT.noise.step}
+                  min={VIDEO_SELFLIFT.noise.min}
+                  max={VIDEO_SELFLIFT.noise.max}
+                  value={String(selflift.noise)}
+                  parse={anyNumber}
+                  onCommit={(v) => save({ selflift: { ...selflift, noise: Number(v) } })}
+                />
+              </label>
+              <label className="field">
+                <span className="meta">偏色对齐</span>
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  id="vcSelfColor"
+                  aria-label="偏色对齐强度"
+                  step={VIDEO_SELFLIFT.colorMatch.step}
+                  min={VIDEO_SELFLIFT.colorMatch.min}
+                  max={VIDEO_SELFLIFT.colorMatch.max}
+                  value={String(selflift.colorMatch)}
+                  parse={anyNumber}
+                  onCommit={(v) => save({ selflift: { ...selflift, colorMatch: Number(v) } })}
+                />
+              </label>
+              <label className="field">
+                <span className="meta">声音羽化</span>
+                <CommitInput
+                  className="input mono"
+                  type="number"
+                  id="vcSelfFeather"
+                  aria-label="接缝声音羽化几个刻度"
+                  step={VIDEO_SELFLIFT.audioFeather.step}
+                  min={VIDEO_SELFLIFT.audioFeather.min}
+                  max={VIDEO_SELFLIFT.audioFeather.max}
+                  value={String(selflift.audioFeather)}
+                  parse={integerBetween(VIDEO_SELFLIFT.audioFeather.min, VIDEO_SELFLIFT.audioFeather.max)}
+                  onCommit={(v) => save({ selflift: { ...selflift, audioFeather: Number(v) } })}
+                />
+              </label>
+            </div>
+            <p className="hint" id="vcSelfPlan">
+              按 {node.duration} 秒、{wantedSegments} 段提示词算，会分 {plan.lengths.length} 条接力、每条 {plan.lengths[0]} 帧（约{' '}
+              {(plan.lengths[0] / 24).toFixed(1)} 秒），出来约 {videoSecondsText(plan.total)}（框里多写几段就更短更稳）。带几帧就是每条开头重复上一段的尾巴、出片时剪掉（照 U37 那三个档）；接缝加噪默认{' '}
+              {0.1}，只给前几帧加、最后一帧不加；偏色对齐 0 到 1，把每条的颜色对到上一段的最后一帧上，0 是不对齐。
+            </p>
+            <p className="hint">
+              声音羽化是接缝那几帧的声音两头抹平几档（U37 填 {12}，走 MiniMaxH3AudioGuideFeather 这个插件节点）：0 是不羽化、就不接那个节点，没装{' '}
+              <span className="mono">ComfyUI-MiniMax-H3-Audio-Guide-Feather</span> 填 0 也能出。画面靠上下文帧接，声音是每段自己生成的，只有这几帧的声音是钉进去的。
+              那个插件自带的补丁在 ComfyUI 0.38 上默认不生效、得先修一次，不然这个刻度等于白填（我们这台已经修过）；没把握就填 0。
+            </p>
+          </div>
+          <div className="vc-sec">
+            <h4>
+              双 LoRA 双采<span className="meta">低分辨率那遍、高分辨率那遍各挂一套</span>
+            </h4>
+            <div className="gc-loras" id="vcSelfLoras">
+              {(
+                [
+                  { key: 'lowresLora', label: '低分辨率', short: '8 步 0.75', lora: selflift.lowresLora, u37: SELFLIFT_U37_LORAS.lowres },
+                  { key: 'hiresLora', label: '高分辨率', short: '4 步 0.7', lora: selflift.hiresLora, u37: SELFLIFT_U37_LORAS.hires },
+                ] as const
+              ).map((row) => (
+                // 一行四个：名字、这一遍、LoRA、强度、去掉（照出图设置那行的排法，只是多一列标签）
+                <div className="gc-lora vc-phase" key={row.key}>
+                  <span className="meta">{row.label}</span>
+                  {row.lora ? (
+                    <>
+                      <NameSelect
+                        className="gc-lora-name"
+                        value={row.lora.name}
+                        names={pick(loras, row.lora.name)}
+                        what={`${row.label}那遍的 LoRA`}
+                        onPick={(name) => setPhaseLora(row.key, { ...row.lora!, name })}
+                      />
+                      <CommitInput
+                        className="input mono"
+                        type="number"
+                        step={VIDEO_SELFLIFT.loraStrength.step}
+                        min={VIDEO_SELFLIFT.loraStrength.min}
+                        max={VIDEO_SELFLIFT.loraStrength.max}
+                        aria-label={`${row.label}那遍的 LoRA 强度`}
+                        value={String(row.lora.strength)}
+                        parse={anyNumber}
+                        onCommit={(v) => setPhaseLora(row.key, { ...row.lora!, strength: Number(v) })}
+                      />
+                      <button type="button" className="btn btn-ghost btn-icon btn-sm" aria-label={`${row.label}那遍不挂 LoRA`} onClick={() => setPhaseLora(row.key, null)}>
+                        <Icon name="x" />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm vc-phase-add"
+                      title={`填 U37 用的那个（${row.u37.name}，强度 ${row.u37.strength}）；那台开着时点名字能换成别的 LoRA`}
+                      onClick={() => setPhaseLora(row.key, { ...row.u37 })}
+                    >
+                      <Icon name="plus" />
+                      挂一套<span className="meta">（U37：{row.short}）</span>
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                id="vcSelfU37Lora"
+                title="把两遍都填成那份工作流里的：8 步 0.75 / 4 步 0.7；那台开着时点名字能换成别的 LoRA"
+                onClick={() => save({ selflift: { ...selflift, lowresLora: { ...SELFLIFT_U37_LORAS.lowres }, hiresLora: { ...SELFLIFT_U37_LORAS.hires } } })}
+              >
+                <Icon name="retry" />
+                照 U37 那套填上
+              </button>
+            </div>
+            <p className="hint">
+              这就是 U37 的「双采」：一套调度里低分辨率跑的那几步用一套 LoRA、抬到高分辨率跑剩下的步数时换成另一套（那边是 8 步加速 LoRA 0.75 和 4 步加速 LoRA 0.7），两套不用同一步数调出来的加速 LoRA
+              互相将就。这两套接在主模型和注意力补丁之上，只有自己那一遍带；上面「LoRA」那栏挂的是两遍都带的（人物、风格那类）。不挂也不影响出片，就是踏踏实实按步数跑。
+            </p>
+          </div>
+        </>
       )}
       <div className="vc-sec">
         <h4>种子</h4>

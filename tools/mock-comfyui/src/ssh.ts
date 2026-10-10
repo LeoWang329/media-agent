@@ -174,6 +174,17 @@ export function createMockSsh(): MockSsh {
       case 'mv':
         fs.renameSync(file(1), file(2));
         return 0;
+      case 'cp': {
+        // 接力那套把上一段出的片子拷进 ComfyUI 的 input 目录，见 docs/dev-plan.md 5.32
+        const [from, to] = args.filter((arg) => !arg.startsWith('-'));
+        if (!fs.existsSync(local(from))) {
+          err(`cp: cannot stat '${from}': No such file or directory\n`);
+          return 1;
+        }
+        fs.mkdirSync(path.dirname(local(to)), { recursive: true });
+        fs.copyFileSync(local(from), local(to));
+        return 0;
+      }
       case 'rm':
         for (const target of args.filter((arg) => !arg.startsWith('-'))) fs.rmSync(local(target), { force: true });
         return 0;

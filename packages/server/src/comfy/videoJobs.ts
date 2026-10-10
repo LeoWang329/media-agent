@@ -7,6 +7,9 @@ import {
   videoMediaOf,
   LATENT_DIR,
   LATENT_SAVE,
+  selfliftClipGraph,
+  selfliftClips,
+  selfliftMergeGraph,
   stepsOf,
   reshootGraph,
   reshootPlan,
@@ -22,6 +25,8 @@ import {
   workflowOf,
   type ComfyGraph,
   type MediaSlot,
+  type VideoChain,
+  type VideoChainClip,
   type VideoFiles,
   type VideoImages,
   type VideoImageUse,
@@ -74,6 +79,12 @@ type Tracked = VideoPlace & {
   passSteps: Partial<Record<'pass1' | 'pass2', number>>;
   // 存档存在哪台实例上
   instance: string;
+  // 传上去的图和视频在那台上的名字；接力那套每段都要用，接着发下一段时不用再传一遍
+  files?: VideoFiles;
+  // SelfLift 接续那套接力：一共几段、现在跑的是第几段（从 0 数；等于 total 时是在拼最后那一条）
+  chain?: { total: number; clip: number };
+  // 拼起来那一条跑完以后这条要写成什么：叫停留下的就是 { status: 'stopped', partial: true }
+  ending?: Partial<VideoJob>;
 };
 
 type Ids = { canvasId: string; nodeId: string; messageId: string };
@@ -94,6 +105,19 @@ type LatentTrash = { instance: string; files: string[] }[];
 
 const randomSeed = () => randomInt(0, 2 ** 32);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 生成视频那台的 ComfyUI 装在哪：SelfLift 接续那套要把上一段出的片子拷进 input 目录，下一段才读得到，见 docs/dev-plan.md 5.32。
+// 这版 ComfyUI 的「文件名[output]」写法是坏的（annotated_filepath 少截一个字符），所以只能拷进 input
+const COMFY_DIR = '/root/ComfyUI';
+const COMFY_OUTPUT = `${COMFY_DIR}/output`;
+const COMFY_INPUT = `${COMFY_DIR}/input`;
+
+// 接力那套一段存一个名字：拷进那台 input 目录以后叫什么（下一段的 LoadVideo 和最后拼接都读它）
+const chainName = (jobId: string, clip: number) => `media_agent_${jobId}_s${clip}.mp4`;
+
+// 这条要分几段接力：两遍生成那套没有接力，返回 undefined
+const chainOf = (params: VideoJobParams): VideoChain | undefined =>
+  workflowOf(params) === 'selflift' ? { total: selfliftClips(params).lengths.length, clips: [] } : undefined;
 
 // change 原样返回时不存盘
 const UNCHANGED = new Error('没有要改的');
@@ -253,6 +277,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       job = { ...fresh, promptIndex, params: videoParams(segments, node.duration, message.aspectRatio, video, images, media), seed: video.seed ?? randomSeed() };
     }
 
+    // SelfLift 接续那套是分段接力的：先记上要分几段，一段一个任务发给 ComfyUI，见 docs/dev-plan.md 5.32
+    const chain = chainOf(job.params);
+    if (chain) job.chain = chain;
     await updateNode(place.work, place.canvasId, place.nodeId, (current) => {
       const target = current.messages[place.messageId];
       if (!target) throw new HttpError(404, '找不到这条回复');
@@ -332,8 +359,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       }
       const graphOf = (job: VideoJob, files: VideoFiles) =>
         job.reshoot && base?.latents ? reshootGraph(job.params, job.seed, files, job.id, reshootPlan(job.params, job.reshoot.from, job.reshoot.to), base.latents) : videoGraph(job.params, job.seed, files, job.id);
-      // 查缺不缺节点时 LoadImage 填什么都行，先拿图的 id 顶上
+      // 查缺不缺节点时 LoadImage 填什么都行，先拿图的 id 顶上。接力那套还要查最后把几段拼起来那条图里的节点
       await requireNodes(address, graphOf(first, { refs: first.params.refs ?? [], firstFrame: first.params.firstFrame }));
+      if (first.chain) await requireNodes(address, selfliftMergeGraph([{ name: chainName(first.id, 0) }], first.id));
       const files = { ...(await uploadImages(place, first.params, address)), media: await uploadMedia(place, first.params, address) };
       const id = await (clientId ??= comfyClientId(configDir));
       await withLock(`video-job:${jobId}`, async () => {
@@ -341,7 +369,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
         if (job.status !== 'queued' || job.promptId) return;
         const promptId = await comfy.queuePrompt(address, graphOf(job, files), id);
         await changeJob(place, jobId, (current) => ({ ...current, promptId }));
-        track({ ...place, jobId, promptId, seed: job.seed, params: job.params, chunks: reshootChunks(job), url: address, stageAt: {}, passSteps: {}, instance });
+        // 接力那套：这个任务跑的是第几段（已经出完几段就是第几段，从 0 数）
+        const chain = job.chain && { total: job.chain.total, clip: job.chain.clips.length };
+        track({ ...place, jobId, promptId, seed: job.seed, params: job.params, chunks: chain ? chain.total : reshootChunks(job), url: address, stageAt: {}, passSteps: {}, instance, files, ...(chain && { chain }) });
       });
       void refreshQueue(address);
     } catch (err) {
@@ -527,8 +557,8 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       if (!t.startedAt) {
         t.startedAt = Date.now();
         void changeTracked(t, { status: 'running' }, (job) => job.status === 'queued');
-        // 编码完提示词之前是在加载文字编码器这些，算在编码提示词里
-        setStage(t, 'encode');
+        // 编码完提示词之前是在加载文字编码器这些，算在编码提示词里；接力那套最后拼起来那一条没有编码，一上来就是存文件
+        setStage(t, t.chain && t.chain.clip >= t.chain.total ? 'save' : 'encode');
       }
       const stage = type === 'executing' ? videoStage(String(data.node)) : null;
       if (stage) setStage(t, stage);
@@ -545,28 +575,34 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     }
   }
 
-  // 正在跑的被叫停：已经拿到一采那份低清版就把它转正成这条的结果，见 docs/dev-plan.md 5.27
+  // 正在跑的被叫停：已经拿到一采那份低清版就把它转正成这条的结果，见 docs/dev-plan.md 5.27。
+  // 接力那套已经有出完的几段，就把这几段先拼起来留下
   async function endStopped(t: Tracked): Promise<void> {
-    await end(t, stoppedChange(await readJob(t, t.jobId).catch(() => null)));
+    const job = await readJob(t, t.jobId).catch(() => null);
+    const ending = stoppedChange(job);
+    if (t.chain && job?.chain?.clips.length) return void (await salvage(t, ending));
+    await end(t, ending);
   }
 
-  // 到了哪一步；一采、二采从第 0 段算起，收到第一步时是第 1 段
+  // 到了哪一步；一采、二采从第 0 段算起，收到第一步时是第 1 段。
+  // 接力那套一段一个任务，第几段是按已经发出去的任务数来的，不走步数往回跳那套
   function setStage(t: Tracked, stage: VideoStage): void {
     if (t.progress?.stage === stage) return;
     const since = Date.now();
     t.stageAt[stage] = since;
-    t.progress = { stage, chunk: 0, chunks: t.chunks, step: 0, steps: 0, since };
+    t.progress = { stage, chunk: t.chain ? Math.min(t.chain.clip + 1, t.chain.total) : 0, chunks: t.chain?.total ?? t.chunks, step: 0, steps: 0, since };
     emit({ type: 'progress', jobId: t.jobId, ...t.progress });
   }
 
-  // 一采、二采每段从第 1 步数到最后一步，步数变小了就是到了下一段。别的节点的进度不管
+  // 一采、二采每段从第 1 步数到最后一步，步数变小了就是到了下一段。别的节点的进度不管。
+  // 接力那套第几段是服务端自己记的（一段一个任务），这里只报步数
   function onProgress(t: Tracked, data: Record<string, unknown>): void {
     const stage = data.node === undefined || data.node === null ? t.progress?.stage : videoStage(String(data.node));
     if (stage !== 'pass1' && stage !== 'pass2') return;
     setStage(t, stage);
     const progress = t.progress!;
     const step = Number(data.value);
-    if (progress.chunk === 0 || step < progress.step) progress.chunk = Math.min(progress.chunk + 1, progress.chunks);
+    if (!t.chain && (progress.chunk === 0 || step < progress.step)) progress.chunk = Math.min(progress.chunk + 1, progress.chunks);
     progress.step = step;
     progress.steps = Number(data.max);
     t.passSteps[stage] = progress.steps;
@@ -589,32 +625,197 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     }
   }
 
-  // 出完了：从 /history 找到 mp4，取回来存进临时文件夹
+  // 出完了：接力那套接着发下一段（或者把几段拼起来），别的从 /history 找到 mp4 取回来
   async function finish(t: Tracked): Promise<void> {
     if (t.finishing) return;
     t.finishing = true;
     try {
+      if (t.chain) return await advance(t);
       await end(t, await collect(t));
     } catch (err) {
       await end(t, { status: 'failed', error: (err as Error).message });
     }
   }
 
-  async function collect(t: Tracked): Promise<Partial<VideoJob>> {
-    // ComfyUI 先推「出完了」再写 /history，取不到就稍等再取
+  // ComfyUI 先推「出完了」再写 /history，取不到就稍等再取
+  async function waitHistory(t: Tracked): Promise<comfy.HistoryEntry | null> {
     let entry: comfy.HistoryEntry | null = null;
     for (let i = 0; i < HISTORY_TRIES && !entry; i += 1) {
       if (i) await sleep(HISTORY_WAIT_MS);
       entry = await comfy.history(t.url, t.promptId);
     }
-    const messages = entry?.status?.messages ?? [];
-    const failed = messages.find(([type]) => type === 'execution_error');
-    if (failed) return { status: 'failed', error: comfy.describeExecutionError(failed[1], '生成视频') };
-    if (messages.some(([type]) => type === 'execution_interrupted')) return stoppedChange(await readJob(t, t.jobId).catch(() => null));
-    // MMH3StreamingSave 把 mp4 记在 images 里
-    const ref = Object.values(entry?.outputs ?? {})
+    return entry;
+  }
+
+  // 这一条出的 mp4 在哪（两个存片的节点都记在 images 里）
+  const mp4Of = (entry: comfy.HistoryEntry | null) =>
+    Object.values(entry?.outputs ?? {})
       .flatMap((output) => output.images ?? [])
       .find((item) => /\.mp4$/i.test(item.filename));
+
+  // 这一条失败了没有（/history 里记的出错）
+  const errorOf = (entry: comfy.HistoryEntry | null) => {
+    const failed = (entry?.status?.messages ?? []).find(([type]) => type === 'execution_error');
+    return failed ? comfy.describeExecutionError(failed[1], '生成视频') : null;
+  };
+
+  // 一段（或者最后拼起来那一条）出完了。SelfLift 接续那套是分段接力的：
+  // 这一段记下来、拷进那台的 input 目录，还有下一段就接着发；这一段是最后一段就把几段拼成一条，见 docs/dev-plan.md 5.32
+  async function advance(t: Tracked): Promise<void> {
+    const job = await readJob(t, t.jobId).catch(() => null);
+    const at = t.chain!.clip;
+    if (!job?.chain) return await end(t, { status: 'failed', error: '这条的分段接力记录丢了，只能整条重出' });
+    const entry = await waitHistory(t);
+    // 这一段是被叫停打断的（还没出完就不算了）：已经出完的几段拼起来留下，见 docs/dev-plan.md 5.32
+    if ((entry?.status?.messages ?? []).some(([type]) => type === 'execution_interrupted')) return await endStopped(t);
+    const error = errorOf(entry);
+    if (error) return await end(t, { status: 'failed', error });
+    const ref = mp4Of(entry);
+    if (!ref) return await end(t, { status: 'failed', error: 'ComfyUI 说出完了，但没找到出的视频' });
+    // 最后那一条是「把几段拼起来」，出完就是成片
+    if (at >= job.chain.total) return await gotMerged(t, ref);
+    // 程序重启前这一段可能已经记过了，别记两遍
+    const known = job.chain.clips.length > at;
+    const clip: VideoChainClip = known
+      ? job.chain.clips[at]
+      : {
+          filename: ref.filename,
+          subfolder: ref.subfolder ?? '',
+          frames: selfliftClips(job.params).lengths[at] ?? 0,
+          name: chainName(job.id, at),
+        };
+    if (!known) {
+      await copyToInput(clip, clip.name);
+      const chain: VideoChain = { ...job.chain, clips: [...job.chain.clips, clip] };
+      await changeTracked(t, { chain });
+    }
+    // 第 1 段出完先取回来当预览：后面几段还在跑的时候就能看个大概，见 docs/dev-plan.md 5.27
+    if (at === 0) void takeClipPreview(t, ref);
+    const clips = known ? job.chain.clips : [...job.chain.clips, clip];
+    if (clips.length < job.chain.total) return await send(t, selfliftClipGraph(job.params, job.seed, await filesOf(t, job), job.id, clips.length, clip.name), clips.length);
+    // 最后一段也出完了：把各段拼成一条
+    await send(t, selfliftMergeGraph(clips, job.id), job.chain.total);
+  }
+
+  // 拼起来那一条出完了：取回成片，这条就算完了。叫停时留下的（ending）也走这里：
+  // 成片就是拼起来的这几段，状态照 ending 写，标记成 partial，见 docs/dev-plan.md 5.27、5.32
+  async function gotMerged(t: Tracked, ref: comfy.ImageRef): Promise<void> {
+    const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target));
+    const { size } = await fs.stat(path.join(t.work, file));
+    await saveTiming(t, Date.now()).catch((err) => console.error('记生成视频的用时失败', err));
+    const change: Partial<VideoJob> = { status: 'done', file, bytes: size, ...(t.startedAt && { ms: Date.now() - t.startedAt }) };
+    if (t.ending) Object.assign(change, t.ending, { file, bytes: size, partial: true });
+    await end(t, change);
+    void dropChainInputs(t);
+  }
+
+  // 传上去的图和视频：接着发下一段时不用再传一遍；程序重启后接着跑的没记着，补传一次
+  async function filesOf(t: Tracked, job: VideoJob): Promise<VideoFiles> {
+    if (t.files) return t.files;
+    t.files = { ...(await uploadImages(t, job.params, t.url)), media: await uploadMedia(t, job.params, t.url) };
+    return t.files;
+  }
+
+  // 接着发下一个任务（下一段，或者最后拼起来那一条）：换 prompt_id、重新记进度、存进这条里
+  async function send(t: Tracked, graph: ComfyGraph, clip: number): Promise<void> {
+    const current = await readJob(t, t.jobId).catch(() => null);
+    if (!current || !isLive(current)) return; // 期间被叫停了，别再发
+    const id = await (clientId ??= comfyClientId(configDir));
+    submitting.set(t.url, (submitting.get(t.url) ?? 0) + 1);
+    try {
+      const promptId = await comfy.queuePrompt(t.url, graph, id);
+      await changeJob(t, t.jobId, (job) => ({ ...job, promptId, ...(job.chain && { chain: { ...job.chain, merging: clip >= job.chain.total } }) }));
+      tracked.delete(t.promptId);
+      t.promptId = promptId;
+      t.finishing = false;
+      t.startedAt = undefined;
+      t.progress = undefined;
+      t.position = undefined;
+      t.stageAt = {};
+      t.passSteps = {};
+      if (t.chain) t.chain.clip = clip;
+      track(t);
+      void refreshQueue(t.url);
+    } finally {
+      submitting.set(t.url, submitting.get(t.url)! - 1);
+      closeIfIdle(t.url);
+    }
+  }
+
+  // 第 1 段出完先取回来当预览，见 docs/dev-plan.md 5.27
+  async function takeClipPreview(t: Tracked, ref: comfy.ImageRef): Promise<void> {
+    if (t.previewing || t.chain?.clip !== 0) return;
+    t.previewing = true;
+    try {
+      const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target), new Date(), '-preview');
+      await changeTracked(t, { preview: file });
+    } catch (err) {
+      // 取不到预览不算这条失败
+      console.error('取第 1 段的预览失败', err);
+    }
+  }
+
+  // 把一段出的片子拷进那台的 input 目录：下一段的 LoadVideo 和最后拼接都读它，见 docs/dev-plan.md 5.32
+  async function copyToInput(clip: Pick<VideoChainClip, 'filename' | 'subfolder'>, name: string): Promise<void> {
+    const from = `${COMFY_OUTPUT}/${clip.subfolder ? `${clip.subfolder}/` : ''}${clip.filename}`;
+    const conn = await sshConnect(await autodl.ssh());
+    try {
+      const ran = await sshRun(conn, `cp ${quote(from)} ${quote(`${COMFY_INPUT}/${name}`)}`);
+      if (ran.code !== 0) throw new comfy.ComfyError(`把上一段拷进 ComfyUI 的 input 目录没成功${ran.err ? `：${ran.err.trim()}` : ''}`);
+    } finally {
+      conn.end();
+    }
+  }
+
+  // 成片出来了，拷进 input 的那几份就没用了，顺手删掉（删不掉就算了）
+  async function dropChainInputs(t: Tracked): Promise<void> {
+    const names = (await readJob(t, t.jobId).catch(() => null))?.chain?.clips.map((clip) => clip.name) ?? [];
+    if (!names.length) return;
+    await removeFiles(names.map((name) => `${COMFY_INPUT}/${name}`));
+  }
+
+  // 那台上的文件删掉：开关着才删得掉，删不掉就下次删（跟存档一样）
+  async function removeFiles(paths: string[]): Promise<boolean> {
+    if (!paths.length) return true;
+    try {
+      const conn = await sshConnect(await autodl.ssh());
+      try {
+        return (await sshRun(conn, `rm -f ${paths.map((one) => quote(one)).join(' ')}`)).code === 0;
+      } finally {
+        conn.end();
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  // 已经出完几段了，叫停时别白等：把这几段拼起来当这条的结果（partial），见 docs/dev-plan.md 5.27、5.32。
+  // 拼起来要发一个新任务，可能从两条路进来（正在跑的被中断、界面点了叫停），这里一进来就把 ending 记上，只拼一次
+  async function salvage(t: Tracked, ending: Partial<VideoJob>): Promise<void> {
+    if (t.ending) return;
+    t.ending = ending;
+    const job = await readJob(t, t.jobId).catch(() => null);
+    const clips = job?.chain?.clips ?? [];
+    if (!job?.chain || !clips.length) {
+      t.ending = undefined;
+      return await end(t, ending);
+    }
+    t.finishing = true;
+    try {
+      await send(t, selfliftMergeGraph(clips, job.id), job.chain.total);
+    } catch (err) {
+      console.error('把已经出的几段拼起来失败', err);
+      await end(t, ending);
+    }
+  }
+
+  async function collect(t: Tracked): Promise<Partial<VideoJob>> {
+    const entry = await waitHistory(t);
+    const error = errorOf(entry);
+    if (error) return { status: 'failed', error };
+    if ((entry?.status?.messages ?? []).some(([type]) => type === 'execution_interrupted')) return stoppedChange(await readJob(t, t.jobId).catch(() => null));
+    // MMH3StreamingSave 把 mp4 记在 images 里
+    const ref = mp4Of(entry);
     if (!ref) return { status: 'failed', error: 'ComfyUI 说出完了，但没找到出的视频' };
     const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target));
     const { size } = await fs.stat(path.join(t.work, file));
@@ -626,24 +827,27 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
   }
 
   // 出完记下各步用了多久，见 docs/dev-plan.md 5.29；有哪一步没看到（比如中间重启过）就不记。
-  // SelfLift 那套没有放大这一步：一段一个采样器都算在一采上，放大、二采记 0，见 docs/dev-plan.md 5.32
+  // SelfLift 接续那套没有放大这一步，而且一段一个任务：编码、采样、存片每个阶段都要走几遍，按段数乘上去；
+  // 记的段数是分几段接力（估「还要多久」时只跟同样段数的比）
   async function saveTiming(t: Tracked, doneAt: number): Promise<void> {
     const { encode, pass1, upscale, pass2, save } = t.stageAt;
     if (!(encode && pass1 && save)) return;
     const selflift = workflowOf(t.params) === 'selflift';
-    const steps = (pass: 'pass1' | 'pass2') => Math.max(1, (t.passSteps[pass] ?? stepsOf(t.params)[pass]) * t.chunks);
+    // 接力那套一段一个任务：编码、采样、存片每个阶段都要走「几段」遍，按这个乘；两遍生成是一条任务里跑完的，只乘一遍
+    const repeat = t.chain?.total ?? 1;
+    const steps = (pass: 'pass1' | 'pass2') => Math.max(1, (t.passSteps[pass] ?? stepsOf(t.params)[pass]) * (t.chain?.total ?? t.chunks));
     const shared = {
       at: new Date(doneAt).toISOString(),
       finalWidth: t.params.finalWidth,
       finalHeight: t.params.finalHeight,
-      segments: t.chunks,
-      encodeMs: pass1 - encode,
-      saveMs: doneAt - save,
+      segments: t.chain?.total ?? t.chunks,
+      encodeMs: (pass1 - encode) * repeat,
+      saveMs: Math.max(0, doneAt - save) * repeat,
       workflow: workflowOf(t.params),
     };
     const timing: VideoTiming =
       selflift || !upscale || !pass2
-        ? { ...shared, pass1StepMs: Math.round((save - pass1) / steps('pass1')), upscaleMs: 0, pass2StepMs: 0 }
+        ? { ...shared, pass1StepMs: Math.round(((save - pass1) * repeat) / steps('pass1')), upscaleMs: 0, pass2StepMs: 0 }
         : { ...shared, pass1StepMs: Math.round((upscale - pass1) / steps('pass1')), upscaleMs: pass2 - upscale, pass2StepMs: Math.round((save - pass2) / steps('pass2')) };
     await withLock('video-timings', async () => writeJsonAtomic(timingsFile(t.work), addTiming((await readJson<VideoTiming[]>(timingsFile(t.work))) ?? [], timing)));
   }
@@ -687,13 +891,23 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     }
   }
 
-  // 叫停：还没发出去的和还在排队的直接算叫停；正在跑的让 ComfyUI 停，等它说停了；刚跑完的等它取回来
+  // 叫停：还没发出去的和还在排队的直接算叫停；正在跑的让 ComfyUI 停，等它说停了；刚跑完的等它取回来。
+  // 接力那套已经有出完的几段，就把那几段先拼起来留下（拼的那条出完才算叫停完），见 docs/dev-plan.md 5.32
   function stop(place: VideoPlace, jobId: string): Promise<VideoJob> {
     return withLock(`video-job:${jobId}`, async () => {
       const job = await readJob(place, jobId);
       if (!isLive(job)) return job;
       const t = job.promptId ? tracked.get(job.promptId) : undefined;
+      const ending = stoppedChange(job);
       if (t) {
+        if (t.chain && job.chain?.clips.length) {
+          // 先把正在跑的那一段停掉（还在排队就撤下来），再把已经出的几段拼起来：拼的那条排在后头
+          const state = await comfy.queueState(t.url).catch(() => null);
+          if (state?.running.includes(t.promptId)) await comfy.interrupt(t.url, t.promptId).catch(() => {});
+          else if (state?.pending.includes(t.promptId)) await comfy.deleteQueued(t.url, [t.promptId]).catch(() => {});
+          await salvage(t, ending);
+          return job;
+        }
         // ComfyUI 连不上时直接算叫停
         const state = await comfy.queueState(t.url).catch(() => null);
         if (state && !state.pending.includes(t.promptId)) {
@@ -704,11 +918,12 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
         untrack(t);
       }
       // 叫停时已经拿到一采那份低清版就留下它：整条的、能播能下载，不叫人白等一场，见 docs/dev-plan.md 5.27
-      return changeJob(place, jobId, (current) => (isLive(current) ? { ...current, ...stoppedChange(current) } : current));
+      return changeJob(place, jobId, (current) => (isLive(current) ? { ...current, ...ending } : current));
     });
   }
 
-  // 删一条：临时文件直接删，不进 .trash；下载过的那份不动。删原片时它重拍出的各个版本一起删；那台上的存档也删，见 docs/dev-plan.md 5.30
+  // 删一条：临时文件直接删，不进 .trash；下载过的那份不动。删原片时它重拍出的各个版本一起删；那台上的存档也删，见 docs/dev-plan.md 5.30。
+  // 接力那套留在那台上的几段片子、拷进 input 的那几份也一起删，见 5.32
   function remove(place: VideoPlace, jobId: string): Promise<void> {
     return withLock(`video-job:${jobId}`, async () => {
       const job = await readJob(place, jobId);
@@ -727,7 +942,19 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       });
       for (const one of doomed) emit({ type: 'removed', ...ids(place), jobId: one.id });
       void dropLatents(place.work, doomed.flatMap((one) => (one.latents ? [one.latents] : []))).catch((err) => console.error('删生成视频的存档失败', err));
+      void dropChainFiles(doomed).catch((err) => console.error('删接力留下的那几段失败', err));
     });
+  }
+
+  // 删一条时把接力留在那台上的东西也删掉：拷进 input 的那几份、一段一段出的那几个片子。那台关着就删不掉了，留在那台上
+  async function dropChainFiles(jobs: VideoJob[]): Promise<void> {
+    const paths: string[] = [];
+    for (const job of jobs) {
+      for (const clip of job.chain?.clips ?? []) {
+        paths.push(`${COMFY_INPUT}/${clip.name}`, `${COMFY_OUTPUT}/${clip.subfolder ? `${clip.subfolder}/` : ''}${clip.filename}`);
+      }
+    }
+    if (paths.length) await removeFiles(paths);
   }
 
   // 记下下载到哪
@@ -761,7 +988,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       return;
     }
     const instance = (await readSettings(place.work)).comfy.videoAutodl.instanceUuid ?? '';
-    const t: Tracked = { ...place, jobId: job.id, promptId: job.promptId, seed: job.seed, params: job.params, chunks: reshootChunks(job), url, stageAt: {}, passSteps: {}, instance };
+    // 接力那套：现在跑的是第几段（正在拼最后那一条时算最后那一段）
+    const chain = job.chain && { total: job.chain.total, clip: job.chain.merging ? job.chain.total : job.chain.clips.length };
+    const t: Tracked = { ...place, jobId: job.id, promptId: job.promptId, seed: job.seed, params: job.params, chunks: chain ? chain.total : reshootChunks(job), url, stageAt: {}, passSteps: {}, instance, ...(chain && { chain }) };
     try {
       await connect(url);
       track(t);

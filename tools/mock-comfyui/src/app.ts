@@ -45,6 +45,12 @@ const MODELS = {
   textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors', 'qwen3vl_4b_uncensored_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
   latentUpscale: ['minimax_h3_latent_upscaler_3d_bf16.safetensors'],
   loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors'],
+  // 生成视频那台的加速 LoRA（照 U37 那份工作流的双 LoRA），只挂在 LoraLoaderModelOnly 的下拉上，出图那边还是上面那一串。
+  // 别的 LoRA 由测试自己通过接口传上去，扫描 /root/autodl-tmp/models/loras 加进来
+  videoLoras: [
+    'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors',
+    'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors',
+  ],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
   schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
   upscale: ['4x-test.pth'],
@@ -85,7 +91,7 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   CheckpointLoaderSimple: node({ ckpt_name: combo(MODELS.checkpoints) }, ['MODEL', 'CLIP', 'VAE']),
   VAELoader: node({ vae_name: combo(MODELS.vae) }, ['VAE']),
   LoraLoader: node({ model: ['MODEL'], clip: ['CLIP'], lora_name: combo(MODELS.loras), strength_model: ['FLOAT', {}], strength_clip: ['FLOAT', {}] }, ['MODEL', 'CLIP']),
-  LoraLoaderModelOnly: node({ model: ['MODEL'], lora_name: combo(MODELS.loras), strength_model: ['FLOAT', {}] }, ['MODEL']),
+  LoraLoaderModelOnly: node({ model: ['MODEL'], lora_name: combo([...MODELS.loras, ...MODELS.videoLoras]), strength_model: ['FLOAT', {}] }, ['MODEL']),
   CLIPSetLastLayer: node({ clip: ['CLIP'], stop_at_clip_layer: ['INT', { min: -24, max: -1 }] }, ['CLIP']),
   CLIPTextEncode: node({ text: ['STRING', { multiline: true }], clip: ['CLIP'] }, ['CONDITIONING']),
   BNK_CLIPTextEncodeAdvanced: node(
@@ -100,7 +106,44 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   EmptyLatentImage: node({ width: ['INT', {}], height: ['INT', {}], batch_size: ['INT', {}] }, ['LATENT']),
   EmptySD3LatentImage: node({ width: ['INT', {}], height: ['INT', {}], batch_size: ['INT', {}] }, ['LATENT']),
   ConditioningZeroOut: node({ conditioning: ['CONDITIONING'] }, ['CONDITIONING']),
-  // SelfLift 那套（comfyui-SelfLift），见 docs/dev-plan.md 5.32
+  // SelfLift 接续那套（comfyui-SelfLift + H3 官方的 AddGuide 和视频节点），见 docs/dev-plan.md 5.32
+  MiniMaxH3ReferenceToVideo: node(
+    { clip: ['CLIP'], prompt: ['STRING', {}], width: ['INT', {}], height: ['INT', {}], length: ['INT', {}], ref_image_size: comboV3(['match', 'max']) },
+    ['CONDITIONING', 'LATENT'],
+    false,
+    { vae: ['VAE'], audio_vae: ['VAE'], ref_images: ['IMAGE'], ref_videos: ['IMAGE'], ref_video_audios: ['AUDIO'], ref_audios: ['AUDIO'] },
+  ),
+  MiniMaxH3AddGuide: node({ positive: ['CONDITIONING'], latent: ['LATENT'], frame_idx: ['INT', {}] }, ['CONDITIONING'], false, {
+    vae: ['VAE'],
+    audio_vae: ['VAE'],
+    image: ['IMAGE'],
+    audio: ['AUDIO'],
+  }),
+  // 接缝声音羽化：作者那个插件（wjc573/ComfyUI-MiniMax-H3-Audio-Guide-Feather），刻度填 0 时程序不接它。
+  // 型号照实例上的 spec：INT 0 到 256，默认 8
+  MiniMaxH3AudioGuideFeather: node({ positive: ['CONDITIONING'], audio_feather_ticks: ['INT', { default: 8, min: 0, max: 256 }] }, ['CONDITIONING']),
+  // 真节点这个下拉列的是 input 目录里的文件；接力那套的文件是程序拷进去的，假的这边就不查了（按名字给）
+  LoadVideo: node({ file: ['STRING', {}] }, ['VIDEO']),
+  ConcatenateVideo: node({}, ['VIDEO'], false, { codec: comboV3(['auto', 'h264', 'av1']) }),
+  SaveVideo: node({ video: ['VIDEO'], filename_prefix: ['STRING', {}], format: comboV3(['auto', 'mp4', 'mkv', 'webm']) }, ['VIDEO'], true, { codec: comboV3(['auto', 'h264', 'av1']) }),
+  CreateVideo: node({ images: ['IMAGE'], fps: ['FLOAT', {}] }, ['VIDEO'], false, {
+    audio: ['AUDIO'],
+    bit_depth: ['INT', {}],
+    color_space: combo(['sRGB', 'HDR', 'HDR PQ']),
+    codec: combo(['none', 'auto', 'h264', 'av1']),
+  }),
+  GetVideoComponents: node({ video: ['VIDEO'] }, ['IMAGE', 'AUDIO', 'FLOAT', 'STRING', 'STRING']),
+  VideoFrameSample: node({ video: ['VIDEO'], num_frames: ['INT', {}], strategy: comboV3(['uniform', 'head', 'tail', 'random']), seed: ['INT', {}] }, ['VIDEO']),
+  VideoTemporalCrop: node({ video: ['VIDEO'], start_frame: ['INT', {}], length: ['INT', {}] }, ['VIDEO']),
+  GetImageRangeFromBatch: node({ start_index: ['INT', {}], num_frames: ['INT', {}] }, ['IMAGE', 'MASK'], false, { images: ['IMAGE'], masks: ['MASK'] }),
+  ImageAddNoise: node({ image: ['IMAGE'], seed: ['INT', {}], strength: ['FLOAT', {}] }, ['IMAGE']),
+  ImageBatchMulti: node({ inputcount: ['INT', {}], image_1: ['IMAGE'] }, ['IMAGE'], false, { image_2: ['IMAGE'] }),
+  ColorTransfer: node(
+    { image_target: ['IMAGE'], image_ref: ['IMAGE'], method: combo(['reinhard_lab', 'mkl_lab', 'histogram']), source_stats: comboV3(['per_frame', 'uniform', 'target_frame']), strength: ['FLOAT', {}] },
+    ['IMAGE'],
+    false,
+    { target_index: ['INT', {}] },
+  ),
   SelfLiftH3Sampler: node(
     {
       model: ['MODEL'],
@@ -398,7 +441,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
     const task = queue.shift()!;
     const { graph } = task;
     if (findNode(graph, 'MMH3LoopingSampler')) return runVideo(task);
-    if (findNode(graph, 'SelfLiftH3Sampler')) return runSelfLift(task);
+    if (findNode(graph, 'SelfLiftH3Sampler') || findNode(graph, 'ConcatenateVideo')) return runSelfLift(task);
     const samplerId = findNode(graph, 'KSampler') ?? findNode(graph, 'FaceDetailer') ?? Object.keys(graph)[0];
     const sampler = graph[samplerId];
     const positive = textAbove(graph, sampler.inputs.positive);
@@ -590,55 +633,59 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
     run.timer = setTimeout(tick, wait);
   }
 
-  // SelfLift 那套，见 docs/dev-plan.md 5.32：先编码提示词，一段一个 SelfLiftH3Sampler（按节点号先后），
-  // 每段跑它接的 BasicScheduler 的步数那么多步；第 1 段完推一次低清预览，最后一段完存成片。
-  // 提示词含「慢」「报错」「显存」的规矩同出图，出错在第 1 段第 2 步
+  // SelfLift 接续那套，见 docs/dev-plan.md 5.32：一段一个任务，先编码提示词，跑 SelfLiftH3Sampler 接的
+  // BasicScheduler 的步数那么多步，再解码、剪、对齐颜色、存成这一段；最后拼起来那一条是
+  // LoadVideo 各段 → ConcatenateVideo → SaveVideo，也走这里。
+  // 提示词含「慢」「报错」「显存」的规矩同出图，出错在第 2 步
   function runSelfLift(task: Task) {
     const { graph } = task;
     const of = (type: string) =>
       Object.keys(graph)
         .filter((id) => graph[id].class_type === type)
         .sort((a, b) => Number(a) - Number(b));
-    const encodeId = of('MMH3ReferenceMultiPrompt')[0];
-    const text = String(graph[encodeId]?.inputs.prompts ?? '');
+    const merge = of('ConcatenateVideo')[0];
+    const encodeId = merge ? undefined : of('MiniMaxH3ReferenceToVideo')[0] ?? of('MMH3ReferenceMultiPrompt')[0];
+    const text = String(graph[encodeId ?? '']?.inputs.prompt ?? graph[encodeId ?? '']?.inputs.prompts ?? '');
     const wait = text.includes('慢') ? slowStepMs : videoStepMs;
     const failure = text.includes('显存')
       ? 'CUDA out of memory. Tried to allocate 20.00 GiB'
       : text.includes('报错')
         ? 'mock-comfyui：提示词含「报错」，按约定出错'
         : null;
-    const windows = of('SelfLiftH3Sampler');
-    const stepsOf = (id: string) => Number(linked(graph, graph[id].inputs.sigmas)?.inputs.steps ?? 8);
-    const saves = of('MMH3StreamingSave');
-    const previewId = saves.find((id) => String(graph[id].inputs.filename_prefix).includes('preview'));
-    const saveId = saves.find((id) => id !== previewId) ?? windows.at(-1) ?? encodeId;
+    const sampler = of('SelfLiftH3Sampler')[0];
+    const steps = Number(linked(graph, graph[sampler]?.inputs.sigmas)?.inputs.steps ?? 8);
+    // 拼起来那一条：把各段的名字写进历史，测试能看出拼的是哪几段
+    const loads = of('LoadVideo');
+    const saveId = of('SaveVideo')[0] ?? sampler ?? encodeId!;
     const refOf = (prefix: string) => {
       const slash = prefix.lastIndexOf('/');
       videoCounter += 1;
       const ref = { filename: `${prefix.slice(slash + 1)}_${String(videoCounter).padStart(5, '0')}.mp4`, subfolder: prefix.slice(0, Math.max(0, slash)), type: 'output' };
       videos.add(ref.filename);
+      // 那台上的 output 目录里也落一份：接力那套要把上一段拷进 input 目录，假的 SSH 也得拷得到
+      const target = ssh.local(`/root/ComfyUI/output/${ref.subfolder ? `${ref.subfolder}/` : ''}${ref.filename}`);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, VIDEO);
       return ref;
     };
     const prefixOf = (id: string) => String(graph[id]?.inputs.filename_prefix ?? 'video');
-    const preview = previewId ? refOf(prefixOf(previewId)) : null;
     const events: [string, Record<string, unknown>][] = [];
     const executing = (id: string | undefined) => {
       if (id) events.push(['executing', { node: id, display_node: id, prompt_id: task.id }]);
     };
     executing(encodeId);
     executing(of('UNETLoader')[0]);
-    for (const [index, id] of windows.entries()) {
-      executing(id);
-      for (let step = 1; step <= stepsOf(id); step += 1) events.push(['progress', { value: step, max: stepsOf(id), prompt_id: task.id, node: id }]);
-      if (index === 0) {
-        executing(of('VAEDecodeAudio')[0]);
-        if (preview && previewId) events.push(['executed', { node: previewId, display_node: previewId, output: { images: [preview], animated: [true] }, prompt_id: task.id }]);
-      }
-    }
+    for (const [index, id] of loads.entries()) if (index < 3) executing(id);
+    executing(merge);
+    if (sampler) executing(sampler);
+    for (let step = 1; step <= steps; step += 1) events.push(['progress', { value: step, max: steps, prompt_id: task.id, node: sampler }]);
+    executing(of('VAEDecode')[0]);
+    executing(of('MiniMaxH3AudioGuideFeather')[0]);
+    executing(of('ColorTransfer')[0]);
     executing(saveId);
 
     const start = { prompt_id: task.id, timestamp: Date.now() };
-    const run: Run = { task, samplerId: windows[0], started: [['execution_start', start]] };
+    const run: Run = { task, samplerId: sampler ?? saveId, started: [['execution_start', start]] };
     current = run;
     sendTo(task.clientId, 'execution_start', start);
     sendTo(task.clientId, 'execution_cached', { nodes: [], prompt_id: task.id, timestamp: Date.now() });
@@ -650,10 +697,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const [type, data] = events[sent];
       sent += 1;
       sendTo(task.clientId, type, data);
-      if (failure && type === 'progress' && data.node === windows[0] && data.value === 2) {
+      if (failure && sampler && type === 'progress' && data.value === 2) {
         const error = {
           prompt_id: task.id,
-          node_id: windows[0],
+          node_id: sampler,
           node_type: 'SelfLiftH3Sampler',
           executed: [],
           exception_message: failure,
@@ -678,7 +725,6 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const ref = refOf(prefixOf(saveId));
       const output = { images: [ref], animated: [true] };
       const outputs: HistoryEntry['outputs'] = { [saveId]: output };
-      if (previewId && preview) outputs[previewId] = { images: [preview], animated: [true] };
       const success = { prompt_id: task.id, timestamp: Date.now() };
       record(task, outputs, true, [...run.started, ['execution_success', success]]);
       current = null;

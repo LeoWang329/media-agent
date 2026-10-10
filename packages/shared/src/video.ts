@@ -1,4 +1,4 @@
-import type { AspectRatio, ComfyGraph, VideoJob, VideoJobParams, VideoLatents, VideoMedia, VideoSelfLift, VideoSettings, VideoSpeed, VideoStage, VideoSteps, VideoTiming, VideoWorkflow } from './types';
+import type { AspectRatio, ComfyGraph, VideoJob, VideoJobParams, VideoLatents, VideoLora, VideoMedia, VideoSelfLift, VideoSettings, VideoSpeed, VideoStage, VideoSteps, VideoTiming, VideoWorkflow } from './types';
 
 // 生成视频：分几段、每段多少帧、一采和出片多大、拼发给 ComfyUI 的流程，见 docs/dev-plan.md 5.24 到 5.26
 
@@ -39,17 +39,30 @@ export const denoiseOfSettings = (settings: VideoSettings) => settings.denoise ?
 
 export const DEFAULT_VIDEO_SETTINGS: VideoSettings = { megapixels: 0.4, upscale: 2, seed: null, model: VIDEO_MODEL, loras: [], speed: 'fast' };
 
-// ─── 内置流程：两遍生成（默认）和 SelfLift，见 docs/dev-plan.md 5.32 ───
+// ─── 内置流程：两遍生成（默认）和 SelfLift 接续，见 docs/dev-plan.md 5.32 ───
 
 export const VIDEO_WORKFLOWS: VideoWorkflow[] = ['two-pass', 'selflift'];
 
-// SelfLift（comfyui-SelfLift 的 SelfLiftH3Sampler）：一套调度里前 transitionStep 步在低分辨率跑，然后抬到全分辨率跑完剩下的步，
-// 抬的时候用 H3 的 latent 放大器（或者不用放大器、靠模型自己的像素锚点修）。默认值照实例上那份
-// 「U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573」：8 步里前 6 步低分辨率、低分辨率缩到 0.5、用 lms 那个放大器
+// SelfLift 接续（comfyui-SelfLift 的 SelfLiftH3Sampler + H3 的 AddGuide）：照实例上那份
+// 「U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573」——
+// 整条分成好几段，一段一个任务：一套调度里前 transitionStep 步在低分辨率跑，抬到全分辨率再跑完剩下的步；
+// 第 2 段起把上一段结尾的几帧（和那几帧的声音）当上下文钉进提示词，模型接着往下长，出片时把这几个上下文帧剪掉；
+// 出完一段把整段的颜色对齐到上一段的最后一帧（无色差），最后几段拼成一条。
+// 默认值照 U37 开着上下文那档：8 步里前 4 步低分辨率、低分辨率缩到 0.65、lms 那个放大器、带 22 帧上下文、接缝加 0.1 的噪、偏色对齐 0.75。
+// 双 LoRA 双采默认不另挂（这套里主模型本身多是加速模型），照 U37 填的两个值见 SELFLIFT_PRESET
 export const VIDEO_SELFLIFT = {
   steps: { min: 2, max: 20 },
   transitionStep: { min: 1, max: 18 },
   lowresScale: { min: 0.25, max: 1, step: 0.05 },
+  // 接上一段带几帧：U37 里那三个「上下文帧数 1/2/5」＝ 22、39、90 帧（17 的倍数加 5）
+  contextFrames: [22, 39, 90],
+  noise: { min: 0, max: 0.5, step: 0.05 },
+  colorMatch: { min: 0, max: 1, step: 0.05 },
+  // 接缝声音羽化几个刻度（MiniMaxH3AudioGuideFeather 的 audio_feather_ticks）：0 是不羽化。
+  // 那个节点的 spec 是 INT 0 到 256（默认 8），运行期还会夹到这一段音频的 token 数
+  audioFeather: { min: 0, max: 256, step: 1 },
+  // 双 LoRA 双采：两遍各挂一套 LoRA 的强度范围
+  loraStrength: { min: -2, max: 2, step: 0.05 },
   // 「不用放大器」：走插件的 SelfLift-zero，rho 0.6、修正强度 1（插件 README 给的 H3 起点）
   none: 'none',
   upscaler: 'h3_upscaler_lms_v0.1_fp32.safetensors',
@@ -58,7 +71,26 @@ export const VIDEO_SELFLIFT = {
   external: { rho: 0, wMin: 0.5, wMax: 1 },
 } as const;
 
-export const DEFAULT_SELFLIFT: VideoSelfLift = { steps: 8, transitionStep: 6, lowresScale: 0.5, upscaler: VIDEO_SELFLIFT.upscaler };
+// U37 那份工作流的双 LoRA：低分辨率那遍挂 8 步加速 LoRA（0.75），高分辨率那遍挂 4 步加速 LoRA（0.7）。
+// 界面上「照 U37 填」用它一键把两边填上；这两个文件在那台 minimax/ 下有
+export const SELFLIFT_U37_LORAS: { lowres: VideoLora; hires: VideoLora } = {
+  lowres: { name: 'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors', strength: 0.75 },
+  hires: { name: 'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors', strength: 0.7 },
+};
+
+export const DEFAULT_SELFLIFT: VideoSelfLift = {
+  steps: 8,
+  transitionStep: 4,
+  lowresScale: 0.65,
+  upscaler: VIDEO_SELFLIFT.upscaler,
+  contextFrames: VIDEO_SELFLIFT.contextFrames[0],
+  noise: 0.1,
+  colorMatch: 0.75,
+  lowresLora: null,
+  hiresLora: null,
+  // 照 U37：接缝那几帧的声音羽化 12 个刻度
+  audioFeather: 12,
+};
 
 export const workflowOfSettings = (settings: VideoSettings): VideoWorkflow => settings.workflow ?? 'two-pass';
 export const selfliftOfSettings = (settings: VideoSettings): VideoSelfLift => ({ ...DEFAULT_SELFLIFT, ...settings.selflift });
@@ -84,11 +116,48 @@ export function splitSegments(text: string): string[] {
 }
 
 const onGrid = (frames: number) => Math.round((frames - 5) / 17) * 17 + 5;
+// 往上取到 17 的倍数加 5（U37 那份工作流就是这么算每段帧数的：不够就多给几帧，不往下砍）
+const gridUp = (frames: number) => Math.max(5, Math.ceil((frames - 5) / 17) * 17 + 5);
+// SelfLift 接续那套一段最少 22 帧（0.9 秒）
+export const MIN_CLIP = 22;
 
 // 每段帧数 =（时长 × 24 + (段数 − 1) × 重叠）÷ 段数，取最近的 17 的倍数加 5，夹在 107 到 362 之间；整条 = 段数 × 每段 − (段数 − 1) × 重叠
 export function videoFrames(seconds: number, segments: number): VideoJobParams['frames'] {
   const chunk = Math.min(MAX_CHUNK, Math.max(MIN_CHUNK, onGrid((seconds * VIDEO_FPS + (segments - 1) * OVERLAP_FRAMES) / segments)));
   return { total: segments * chunk - (segments - 1) * OVERLAP_FRAMES, chunk, overlap: OVERLAP_FRAMES };
+}
+
+// SelfLift 接续那套怎么分段，见 docs/dev-plan.md 5.32：一段一条片子，一段最长也是 362 帧（15 秒）、最短 22 帧。
+// 第 2 段起开头带 context 帧上一段的尾巴、出片时剪掉，所以一段真正新出的画面是「每段帧数 − context 帧」。
+// 先看要几段才够（框里那段提示词要出太多就把它拆成几条，用同一段提示词），再按 17 的倍数加 5 往上取每段帧数
+export type SelfLiftPlan = {
+  context: number; // 每段开头带几帧上一段的尾巴
+  lengths: number[]; // 每段多少帧
+  from: number[]; // 每段用框里第几段提示词（从 0 数）
+  total: number; // 拼起来整条多少帧
+};
+
+export function selfliftPlan(seconds: number, segments: number, context: number): SelfLiftPlan {
+  const target = Math.round(seconds * VIDEO_FPS);
+  const most = MAX_CHUNK - context;
+  const count = Math.max(segments, Math.ceil(Math.max(0, target - context) / most));
+  const each = Math.min(MAX_CHUNK, Math.max(MIN_CLIP, gridUp((target + (count - 1) * context) / count)));
+  return {
+    context,
+    lengths: Array.from({ length: count }, () => each),
+    from: Array.from({ length: count }, (_, i) => Math.min(segments - 1, Math.floor((i * segments) / count))),
+    total: count * each - (count - 1) * context,
+  };
+}
+
+// 这条会分几段接力（界面上写「分 N 段跑」用）
+export const selfliftClips = (params: Pick<VideoJobParams, 'seconds' | 'segments' | 'selflift'>) =>
+  selfliftPlan(params.seconds, params.segments.length, selfliftOf(params).contextFrames);
+
+// SelfLift 那套的整条帧数：chunk 是每段多少帧，overlap 是一段开头带几帧上一段的尾巴
+export function selfliftFrames(seconds: number, segments: number, context: number): VideoJobParams['frames'] {
+  const plan = selfliftPlan(seconds, segments, context);
+  return { total: plan.total, chunk: plan.lengths[0], overlap: context };
 }
 
 // 写进说明的每段大约几秒
@@ -165,10 +234,13 @@ export function videoParams(
 ): VideoJobParams {
   const first = images.firstFrame;
   const sized = videoRatioOf(ratio, first ? 'first' : 'refs', first);
+  const workflow = workflowOfSettings(settings);
+  const selflift = selfliftOfSettings(settings);
   return {
     segments,
     seconds,
-    frames: videoFrames(seconds, segments.length),
+    // SelfLift 接续那套的帧数按它自己那套算：一段一条片子，第 2 段起开头带上一段的尾巴
+    frames: workflow === 'selflift' ? selfliftFrames(seconds, segments.length, selflift.contextFrames) : videoFrames(seconds, segments.length),
     aspectRatio: typeof sized === 'string' ? videoAspect(sized) : 'image',
     ...(images.refs.length && { refs: images.refs }),
     ...(first && { firstFrame: first.id }),
@@ -178,9 +250,9 @@ export function videoParams(
     model: settings.model,
     ...(settings.loras.length && { loras: settings.loras }),
     steps: stepsOfSettings(settings),
-    workflow: workflowOfSettings(settings),
+    workflow,
     denoise: denoiseOfSettings(settings),
-    selflift: selfliftOfSettings(settings),
+    selflift,
     ...(media.length && { media }),
   };
 }
@@ -211,31 +283,46 @@ const NODE = {
   preview: '22',
 };
 
-// SelfLift 那套的节点号：一段一个采样器（100 起），每段用 130 起的节点从整条的空白潜变量上切出自己那一段，
-// 第 2 段起用 110 起的节点把上一段的最后一帧钉在自己第 0 帧上，跑完用 140 起的节点一段段接起来，见 docs/dev-plan.md 5.32
+// SelfLift 接续那套的节点号：一段一个任务，任务里接上一段用的节点从 300 起（读上一段、取尾巴、加噪、钉进提示词、
+// 声音羽化），双 LoRA 双采的两套 LoRA 用 75、76（照 U37 接在注意力节点之后）；
+// 解码、拼片、存片的从 160 起；最后把各段拼起来那一条读各段从 400 起，见 docs/dev-plan.md 5.32
 export const SELFLIFT_NODE = {
-  window: (i: number) => String(100 + i),
-  keyframe: (i: number) => String(110 + i),
-  zero: (i: number) => String(120 + i),
-  trim: (i: number) => String(130 + i),
-  concat: (i: number) => String(140 + i),
-  imageKeyframe: '150',
-  previewAudio: '152',
-  select: (i: number) => String(160 + i),
-  audio: '20',
+  lowresLora: '75',
+  hiresLora: '76',
+  feather: '315',
+  load: '300',
+  tail: '301',
+  components: '302',
+  head: '303',
+  noisy: '304',
+  last: '305',
+  clean: '306',
+  batch: '307',
+  guide: '308',
+  firstGuide: '309',
+  refTail: '310',
+  refComponents: '311',
+  outComponents: '312',
+  color: '313',
+  colorVideo: '314',
+  decode: '160',
+  decodeAudio: '161',
+  video: '162',
+  crop: '163',
   save: '21',
-  preview: '22',
 } as const;
 
-// ComfyUI 先跑编码提示词，再加载主模型、一采；一采完马上解码声音（不到 1 秒），再放大、二采、存文件。
-// 只认这五个节点，别的节点跑的时候还算前一步。SelfLift 那套一段一个采样器，都算在一采上，第几段按进度里的段数走
+// 最后把各段拼起来那一条的节点号
+export const MERGE_NODE = { load: (i: number) => String(400 + i), concat: '90', save: '21' } as const;
+
+// ComfyUI 先跑编码提示词，再加载主模型、采样，采样完解码、剪、对齐颜色、存片。
+// 只认这几个节点，别的节点跑的时候还算前一步；SelfLift 接续那套一段一个任务，第几段按进度里的段数走
 const STAGE_OF: Record<string, VideoStage> = {
   [NODE.prompts]: 'encode',
   [NODE.pass1]: 'pass1',
   [NODE.upscale]: 'upscale',
   [NODE.pass2]: 'pass2',
   [NODE.save]: 'save',
-  ...Object.fromEntries(Array.from({ length: MAX_SEGMENTS }, (_, i) => [SELFLIFT_NODE.window(i), 'pass1' as VideoStage])),
 };
 
 // 开始跑到哪个节点是到了哪一步；不是那五个的返回 null
@@ -260,8 +347,9 @@ const LORA_FIRST = 70;
 const MEDIA_FIRST = 200;
 // 带的视频和音频怎么接，见 docs/dev-plan.md 5.31：用画面的视频用 VHS_LoadVideo 按每秒 24 帧读、跳过开头、读够秒数，
 // 接 ref_videos，画面和声音都用的它的声音接 ref_video_audios；只用声音的视频和声音参考用 LoadAudio 加 TrimAudioDuration 接 ref_audios；
-// 配音接 audio，打开 use_input_audio。返回新加的节点和要填进编码提示词那个节点的输入
-function mediaNodes(params: VideoJobParams, files: VideoFiles): { nodes: ComfyGraph; inputs: Record<string, unknown> } {
+// 配音接 audio，打开 use_input_audio。dubAsRef 是 SelfLift 接续那套用的：那边编码提示词用的是 H3 官方的
+// MiniMaxH3ReferenceToVideo，没有 use_input_audio 这个口子，配音就当参考音频接进去
+function mediaNodes(params: VideoJobParams, files: VideoFiles, options: { dubAsRef?: boolean } = {}): { nodes: ComfyGraph; inputs: Record<string, unknown> } {
   const link = (node: string, slot = 0) => [node, slot];
   const nodes: ComfyGraph = {};
   const inputs: Record<string, unknown> = {};
@@ -301,6 +389,12 @@ function mediaNodes(params: VideoJobParams, files: VideoFiles): { nodes: ComfyGr
     const load = String(next++);
     const trim = String(next++);
     nodes[load] = { class_type: 'LoadAudio', inputs: { audio: name }, _meta: { title: dub ? '配音' : `参考音频 ${audios + 1}` } };
+    if (dub && options.dubAsRef) {
+      nodes[trim] = { class_type: 'TrimAudioDuration', inputs: { audio: link(load), start_index: item.start, duration: item.take } };
+      inputs[`ref_audios.ref_audio_${audios}`] = link(trim);
+      audios += 1;
+      continue;
+    }
     // 配音取到视频结束，多留一秒，节点自己再按视频的长度截
     const seconds = Math.ceil(params.frames.total / VIDEO_FPS) + 1;
     const take = dub ? Math.min(item.take, seconds) : item.take;
@@ -527,169 +621,219 @@ export function twoPassGraph(params: VideoJobParams, seed: number, files: VideoF
   return graph;
 }
 
-// 这节点走哪套内置流程：没选过的是两遍生成，选了 SelfLift 的走 SelfLift，见 docs/dev-plan.md 5.32
+// 这节点走哪套内置流程：没选过的是两遍生成，选了 SelfLift 接续的走出第 1 段（后面几段服务端接着发），见 docs/dev-plan.md 5.32
 export function videoGraph(params: VideoJobParams, seed: number, files: VideoFiles = { refs: [] }, jobId?: string): ComfyGraph {
-  return workflowOf(params) === 'selflift' ? selfliftGraph(params, seed, files, jobId) : twoPassGraph(params, seed, files, jobId);
+  return workflowOf(params) === 'selflift' ? selfliftClipGraph(params, seed, files, jobId, 0) : twoPassGraph(params, seed, files, jobId);
 }
 
-// ─── SelfLift 那套，见 docs/dev-plan.md 5.32 ───
+// ─── SelfLift 接续那套，照 U37「真-上下文无缝无色差长视频-SelfLift双采-惊尘573」，见 docs/dev-plan.md 5.32 ───
 
-// 整条分给几个窗口：SelfLift 一段一个采样器。每段的潜空间帧数最好是自己能解码的 5j+2，但几个 5j+2 加起来一定不是 5j+2
-// （是 5j+2N），所以前几段取最接近均分的 5j+2，最后一段拿剩下的。拼起来的整条还是 5j+2，解码只发生在整条上
-export function selfliftWindows(total: number, count: number): number[] {
-  if (count <= 1) return [total];
-  let each = 5 * Math.max(1, Math.round((total / count - 2) / 5)) + 2;
-  while (each * (count - 1) > total - 2 && each > 7) each -= 5;
-  return [...Array(count - 1).fill(each), total - each * (count - 1)];
-}
-
-// SelfLift（SelfLiftH3Sampler）：一套调度里前 transitionStep 步在低分辨率跑，抬到全分辨率再跑完剩下的步。
-// 接长视频照 MMH3 那套的分段来，但 SelfLift 不吃带遮罩的潜变量（它只认整块的 noise_mask，我们拼出来的遮罩是成对的），
-// 所以接续不靠把上一段的尾巴钉在潜变量里，而是：
-//   1. 每段的第 0 帧用 MMH3LatentKeyframe 钉在上一段的最后一帧上（首帧图用 MMH3ImageKeyframe），模型从这一帧往下长；
-//   2. 整条按 frames.total 切成几段，各段自己出一样的时长，一段段接起来，接缝上是 1 帧的重复（0.04 秒）。
-// 有配音时第一段照旧把配音钉住，第二段起是新生成的（声音接不接得上没验过）。重拍一截不支持：那段要读回一采、二采两个存档，
-// SelfLift 只有一遍
-export function selfliftGraph(params: VideoJobParams, seed: number, files: VideoFiles = { refs: [] }, jobId?: string): ComfyGraph {
+// 一段的流程图（API 格式）。clip 是第几段（从 0 数），prev 是上一段拷进那台 input 目录以后的名字（第 1 段没有）。
+// 第 2 段起：读上一段 → 取最后 contextFrames 帧 → 前面几帧加一点噪、最后一帧不加 → 连同这几帧的声音一起
+// 用 AddGuide 钉在这一段的第 0 帧上（frame_idx 0，要羽化就再过一道 AudioGuideFeather）；
+// 采样完把开头这几个上下文帧剪掉，再把整段颜色对齐到上一段的最后一帧。
+// 第 1 段没有上下文：有首帧图就把那张钉在第 0 帧，没有就用编码提示词本身。
+// 双 LoRA 双采：主模型和注意力补丁之上给低分辨率那遍、高分辨率那遍各挂一套 LoRA（U37 的 8 步 / 4 步两个加速 LoRA）
+export function selfliftClipGraph(
+  params: VideoJobParams,
+  seed: number,
+  files: VideoFiles = { refs: [] },
+  jobId?: string,
+  clip = 0,
+  prev?: string,
+): ComfyGraph {
   const link = (node: string, slot = 0) => [node, slot];
   const { nodes: images, refs, first } = refNodes(files);
-  const media = mediaNodes(params, files);
+  const media = mediaNodes(params, files, { dubAsRef: true });
   Object.assign(images, media.nodes);
   const model = loraChain(NODE.model, params, images);
   const sl = selfliftOf(params);
   // 不用放大器就是插件的 SelfLift-zero：靠模型自己的 VAE 锚点修（rho 0.6、修正强度 1）；用放大器就是纯潜空间提升（rho 0）
   const lift = sl.upscaler === VIDEO_SELFLIFT.none ? VIDEO_SELFLIFT.zero : VIDEO_SELFLIFT.external;
-  const windows = selfliftWindows(latentCount(params.frames.total), params.segments.length);
+  const plan = selfliftClips(params);
+  const length = plan.lengths[clip] ?? plan.lengths.at(-1)!;
+  const prompt = params.segments[plan.from[clip] ?? 0] ?? params.segments[0];
+  const context = clip > 0 && prev ? plan.context : 0;
+  // 双 LoRA：一套挂低分辨率那遍（sampler 的 model、算 sigmas 也用这个），一套挂高分辨率那遍（model_hires）；
+  // 没配就不接，采样器那边照插件自己的默认走
+  const phase: ComfyGraph = {};
+  const phaseLora = (id: string, lora: VideoLora | null | undefined, title: string) => {
+    if (!lora) return undefined;
+    phase[id] = { class_type: 'LoraLoaderModelOnly', inputs: { model: link(NODE.feedForward), lora_name: lora.name, strength_model: lora.strength }, _meta: { title } };
+    return id;
+  };
+  const lowresModel = phaseLora(SELFLIFT_NODE.lowresLora, sl.lowresLora, '低分辨率那遍的 LoRA') ?? NODE.feedForward;
+  const hiresModel = phaseLora(SELFLIFT_NODE.hiresLora, sl.hiresLora, '高分辨率那遍的 LoRA');
   const graph: ComfyGraph = {
     ...images,
     ...baseNodes(model, params.model),
+    ...phase,
     [NODE.prompts]: {
-      class_type: 'MMH3ReferenceMultiPrompt',
+      class_type: 'MiniMaxH3ReferenceToVideo',
       inputs: {
         clip: link(NODE.clip),
         vae: link(NODE.videoVae),
         audio_vae: link(NODE.audioVae),
-        // SelfLift 的 latent_image 定的是「抬到多高」，所以这里就按出片大小编码，低分辨率那段由它自己缩
+        // SelfLift 的 latent_image 定的是「抬到多高」，所以按出片大小编码，低分辨率那段由它自己缩
         width: params.finalWidth,
         height: params.finalHeight,
-        length: params.frames.total,
+        length,
         ref_image_size: 'match',
-        prompts: params.segments.map((segment) => segment.replaceAll('|', '/')).join('\n|\n'),
+        // 这一套一段一条片子，写的就是这一段提示词（多段那套的 | 分隔在这里没有意义，换掉免得被当成分段）
+        prompt: prompt.replaceAll('|', '/'),
         ...(refs && { ref_images: link(refs) }),
-        use_input_audio: false,
-        unload_text_encoder: true,
-        window_ref_video: false,
-        chunk_frames: 0,
-        overlap_frames: 0,
         ...media.inputs,
       },
-      _meta: { title: '编码每段提示词' },
+      _meta: { title: `第 ${clip + 1} 段：编码提示词` },
     },
     [NODE.sampler]: { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
     // 一套调度：总共 sl.steps 步，其中前 transitionStep 步在低分辨率跑
-    [NODE.sigmas1]: { class_type: 'BasicScheduler', inputs: { model: link(NODE.feedForward), scheduler: 'beta', steps: sl.steps, denoise: 1 } },
-    [NODE.audio]: { class_type: 'VAEDecodeAudio', inputs: { samples: link(SELFLIFT_NODE.concat(Math.max(0, params.segments.length - 2))), vae: link(NODE.audioVae) }, _meta: { title: '声音用整条' } },
-    [NODE.save]: {
-      class_type: 'MMH3StreamingSave',
-      inputs: {
-        latent: link(SELFLIFT_NODE.concat(Math.max(0, params.segments.length - 2))),
-        vae: link(NODE.videoVae),
-        groups_per_chunk: 4,
-        fps: VIDEO_FPS,
-        filename_prefix: 'media-agent/video',
-        crf: 19,
-        audio: link(NODE.audio),
-        video_encoder: 'auto',
-        ffmpeg_path: '',
-        save_metadata: true,
-      },
-      _meta: { title: '存成 mp4' },
+    [NODE.sigmas1]: { class_type: 'BasicScheduler', inputs: { model: link(lowresModel), scheduler: 'beta', steps: sl.steps, denoise: 1 } },
+    [SELFLIFT_NODE.decode]: { class_type: 'VAEDecode', inputs: { samples: link(NODE.pass1), vae: link(NODE.videoVae) }, _meta: { title: '解成画面' } },
+    [SELFLIFT_NODE.decodeAudio]: { class_type: 'VAEDecodeAudio', inputs: { samples: link(NODE.pass1), vae: link(NODE.audioVae) }, _meta: { title: '解出声音' } },
+    [SELFLIFT_NODE.video]: {
+      class_type: 'CreateVideo',
+      inputs: { images: link(SELFLIFT_NODE.decode), audio: link(SELFLIFT_NODE.decodeAudio), fps: VIDEO_FPS, bit_depth: 8, color_space: 'sRGB', codec: 'none' },
+      _meta: { title: `第 ${clip + 1} 段` },
     },
   };
-  let head = 0;
-  let made: string | null = null;
-  for (const [i, count] of windows.entries()) {
-    const window = SELFLIFT_NODE.window(i);
-    const frames = latentFrame(count);
-    // 这一段要出的潜变量：从整条的空白潜变量上切出来，形状就是这一段的大小
-    graph[SELFLIFT_NODE.trim(i)] = {
-      class_type: 'MMH3TrimAV',
-      inputs: { latent: link(NODE.prompts, 1), trim_head_latents: head, trim_tail_latents: latentCount(params.frames.total) - head - count, carry_masks: false },
-      _meta: { title: `第 ${i + 1} 段的大小` },
+  let positive = NODE.prompts;
+  if (context && prev) {
+    const components = link(SELFLIFT_NODE.components);
+    graph[SELFLIFT_NODE.load] = { class_type: 'LoadVideo', inputs: { file: prev }, _meta: { title: `读上一段（第 ${clip} 段）` } };
+    graph[SELFLIFT_NODE.tail] = {
+      class_type: 'VideoFrameSample',
+      inputs: { video: link(SELFLIFT_NODE.load), num_frames: context, strategy: 'tail', seed: 0 },
+      _meta: { title: `上一段最后 ${context} 帧` },
     };
-    // 第 1 段自己的编码就是正面；第 2 段起取这一段自己的编码，再把上一段的最后一帧钉在自己第 0 帧上
-    let positive: string;
-    if (i === 0) {
-      graph[NODE.firstCond] = { class_type: 'MMH3CondSelect', inputs: { cond_set: link(NODE.prompts), index: 0 } };
-      positive = NODE.firstCond;
-      if (first) {
-        // 图当首帧：把这张钉在第 0 帧，见 docs/dev-plan.md 5.26
-        graph[SELFLIFT_NODE.imageKeyframe] = { class_type: 'MMH3ImageKeyframe', inputs: { conditioning: link(positive), image: link(first), vae: link(NODE.videoVae), width: params.finalWidth, height: params.finalHeight, target_frame_count: frames, frame_index: 0, resize: 'auto' }, _meta: { title: '首帧图钉在第 0 帧' } };
-        positive = SELFLIFT_NODE.imageKeyframe;
-      }
-    } else {
-      graph[SELFLIFT_NODE.select(i)] = { class_type: 'MMH3CondSelect', inputs: { cond_set: link(NODE.prompts), index: i } };
-      graph[SELFLIFT_NODE.keyframe(i)] = {
-        class_type: 'MMH3LatentKeyframe',
-        inputs: { conditioning: link(SELFLIFT_NODE.select(i)), latent: link(SELFLIFT_NODE.window(i - 1)), target_frame_count: frames, position: 'first', source_frame: 'last', target_width: params.finalWidth, target_height: params.finalHeight },
-        _meta: { title: `第 ${i + 1} 段接着上一段的最后一帧` },
+    graph[SELFLIFT_NODE.components] = { class_type: 'GetVideoComponents', inputs: { video: link(SELFLIFT_NODE.tail) } };
+    // 前面几帧轻轻加一点噪（U37：减轻接缝闪烁），最后一帧一点不加 —— 这一帧就是要接上的那一帧
+    graph[SELFLIFT_NODE.head] = { class_type: 'GetImageRangeFromBatch', inputs: { images: components, start_index: 0, num_frames: context - 1 } };
+    graph[SELFLIFT_NODE.noisy] = { class_type: 'ImageAddNoise', inputs: { image: link(SELFLIFT_NODE.head), seed: 0, strength: sl.noise } };
+    graph[SELFLIFT_NODE.last] = { class_type: 'GetImageRangeFromBatch', inputs: { images: components, start_index: context - 1, num_frames: 1 } };
+    graph[SELFLIFT_NODE.clean] = { class_type: 'ImageAddNoise', inputs: { image: link(SELFLIFT_NODE.last), seed: 0, strength: 0 } };
+    graph[SELFLIFT_NODE.batch] = {
+      class_type: 'ImageBatchMulti',
+      inputs: { inputcount: 2, image_1: link(SELFLIFT_NODE.noisy), image_2: link(SELFLIFT_NODE.clean) },
+      _meta: { title: '接缝这几帧' },
+    };
+    graph[SELFLIFT_NODE.guide] = {
+      class_type: 'MiniMaxH3AddGuide',
+      inputs: {
+        positive: link(NODE.prompts),
+        latent: link(NODE.prompts, 1),
+        frame_idx: 0,
+        vae: link(NODE.videoVae),
+        audio_vae: link(NODE.audioVae),
+        image: link(SELFLIFT_NODE.batch),
+        // 声音也接着上一段：连着那几帧的声音一起钉进去
+        audio: link(SELFLIFT_NODE.components, 1),
+      },
+      _meta: { title: '把上一段的尾巴钉在这一段的开头' },
+    };
+    positive = SELFLIFT_NODE.guide;
+    // 接缝那几帧的声音有硬边，羽化一下（U37 的 MiniMaxH3AudioGuideFeather）；刻度填 0 就不接这个节点
+    if (sl.audioFeather > 0) {
+      graph[SELFLIFT_NODE.feather] = {
+        class_type: 'MiniMaxH3AudioGuideFeather',
+        inputs: { positive: link(SELFLIFT_NODE.guide), audio_feather_ticks: sl.audioFeather },
+        _meta: { title: '接缝声音羽化' },
       };
-      positive = SELFLIFT_NODE.keyframe(i);
+      positive = SELFLIFT_NODE.feather;
     }
-    graph[SELFLIFT_NODE.zero(i)] = { class_type: 'ConditioningZeroOut', inputs: { conditioning: link(positive) } };
-    graph[window] = {
-      class_type: 'SelfLiftH3Sampler',
-      inputs: {
-        model: link(NODE.feedForward),
-        positive: link(positive),
-        negative: link(SELFLIFT_NODE.zero(i)),
-        vae: link(NODE.videoVae),
-        latent_image: link(SELFLIFT_NODE.trim(i)),
-        sampler: link(NODE.sampler),
-        sigmas: link(NODE.sigmas1),
-        // 每段换一个种子，跟 ComfyUI 界面上「每段加一」一样
-        seed: seed + i,
-        cfg: 1,
-        transition_step: sl.transitionStep,
-        lowres_scale: sl.lowresScale,
-        rho: lift.rho,
-        w_min: lift.wMin,
-        w_max: lift.wMax,
-        upscaler_model: sl.upscaler,
-        highres_tiling: false,
-      },
-      _meta: { title: `第 ${i + 1} 段（SelfLift）` },
+  } else if (first) {
+    // 图当首帧：这一张钉在第 0 帧，见 docs/dev-plan.md 5.26
+    graph[SELFLIFT_NODE.firstGuide] = {
+      class_type: 'MiniMaxH3AddGuide',
+      inputs: { positive: link(NODE.prompts), latent: link(NODE.prompts, 1), frame_idx: 0, vae: link(NODE.videoVae), audio_vae: link(NODE.audioVae), image: link(first) },
+      _meta: { title: '首帧图钉在第 0 帧' },
     };
-    // 一段段接起来；接缝上是同 1 帧，不切
-    if (made === null) made = window;
-    else {
-      const id = SELFLIFT_NODE.concat(i - 1);
-      graph[id] = { class_type: 'MMH3ConcatAV', inputs: { latent_a: link(made), latent_b: link(window), trim_b_latents: 0, carry_masks: false }, _meta: { title: `接上第 ${i + 1} 段` } };
-      made = id;
+    positive = SELFLIFT_NODE.firstGuide;
+  }
+  // 负面照 U37：拿编码出来的正面全零掉
+  graph[NODE.firstCond] = { class_type: 'ConditioningZeroOut', inputs: { conditioning: link(NODE.prompts) }, _meta: { title: '负面（全零）' } };
+  graph[NODE.pass1] = {
+    class_type: 'SelfLiftH3Sampler',
+    inputs: {
+      model: link(lowresModel),
+      positive: link(positive),
+      negative: link(NODE.firstCond),
+      vae: link(NODE.videoVae),
+      latent_image: link(NODE.prompts, 1),
+      sampler: link(NODE.sampler),
+      sigmas: link(NODE.sigmas1),
+      // 双 LoRA 双采：高分辨率那遍换成另一套 LoRA（U37 那边是 4 步那个）；没配就不接
+      ...(hiresModel && { model_hires: link(hiresModel) }),
+      // 每段换一个种子，跟 ComfyUI 界面上「每段加一」一样
+      seed: seed + clip,
+      cfg: 1,
+      transition_step: sl.transitionStep,
+      lowres_scale: sl.lowresScale,
+      rho: lift.rho,
+      w_min: lift.wMin,
+      w_max: lift.wMax,
+      upscaler_model: sl.upscaler,
+      highres_tiling: false,
+    },
+    _meta: { title: `第 ${clip + 1} 段（SelfLift）` },
+  };
+  // 出片：带上下文的把开头那几个上下文帧剪掉（U37 的 VideoTemporalCrop），再把整段颜色对齐到上一段的最后一帧
+  let out: string = SELFLIFT_NODE.video;
+  if (context && prev) {
+    graph[SELFLIFT_NODE.crop] = {
+      class_type: 'VideoTemporalCrop',
+      inputs: { video: link(SELFLIFT_NODE.video), start_frame: context, length: 99999 },
+      _meta: { title: '剪掉开头的上下文帧' },
+    };
+    out = SELFLIFT_NODE.crop;
+    if (sl.colorMatch > 0) {
+      graph[SELFLIFT_NODE.refTail] = { class_type: 'VideoFrameSample', inputs: { video: link(SELFLIFT_NODE.load), num_frames: 1, strategy: 'tail', seed: 0 } };
+      graph[SELFLIFT_NODE.refComponents] = { class_type: 'GetVideoComponents', inputs: { video: link(SELFLIFT_NODE.refTail) } };
+      graph[SELFLIFT_NODE.outComponents] = { class_type: 'GetVideoComponents', inputs: { video: link(SELFLIFT_NODE.crop) } };
+      graph[SELFLIFT_NODE.color] = {
+        class_type: 'ColorTransfer',
+        inputs: {
+          image_target: link(SELFLIFT_NODE.outComponents),
+          image_ref: link(SELFLIFT_NODE.refComponents),
+          method: 'mkl_lab',
+          // 动态下拉的下一级输入在 API 格式里是「父项.子项」这个名字（照报错里的 input_name 写的）
+          source_stats: 'target_frame',
+          'source_stats.target_index': 0,
+          strength: sl.colorMatch,
+        },
+        _meta: { title: '颜色对齐上一段的最后一帧' },
+      };
+      graph[SELFLIFT_NODE.colorVideo] = {
+        class_type: 'CreateVideo',
+        inputs: { images: link(SELFLIFT_NODE.color), audio: link(SELFLIFT_NODE.outComponents, 1), fps: VIDEO_FPS, bit_depth: 8, color_space: 'sRGB', codec: 'none' },
+      };
+      out = SELFLIFT_NODE.colorVideo;
     }
-    head += count;
   }
-  // 第一段出完先存一份低清预览：后面几段还在跑的时候就能看个大概，叫停时留下的也是它，见 docs/dev-plan.md 5.27。
-  // 只有一段时不存（那一份就是成片，白解一遍）
-  if (windows.length > 1) {
-    graph[SELFLIFT_NODE.previewAudio] = { class_type: 'VAEDecodeAudio', inputs: { samples: link(SELFLIFT_NODE.window(0)), vae: link(NODE.audioVae) } };
-    graph[SELFLIFT_NODE.preview] = {
-      class_type: 'MMH3StreamingSave',
-      inputs: {
-        latent: link(SELFLIFT_NODE.window(0)),
-        vae: link(NODE.videoVae),
-        groups_per_chunk: 4,
-        fps: VIDEO_FPS,
-        filename_prefix: jobId ? `media_agent_${jobId}_preview` : 'media-agent/preview',
-        crf: 28,
-        audio: link(SELFLIFT_NODE.previewAudio),
-        video_encoder: 'auto',
-        ffmpeg_path: '',
-        save_metadata: false,
-      },
-      _meta: { title: '第一段出完先存低清预览' },
-    };
-  }
+  graph[NODE.save] = {
+    class_type: 'SaveVideo',
+    inputs: { video: link(out), filename_prefix: `media-agent/selflift_${jobId ?? 'job'}_s${clip}`, format: 'auto' },
+    _meta: { title: `存第 ${clip + 1} 段` },
+  };
+  return graph;
+}
+
+// 最后把各段拼成一条：读各段（都拷进那台 input 目录了）→ ConcatenateVideo（已经是编码好的 mp4，直接接、不重新解）→ 存
+export function selfliftMergeGraph(clips: { name: string }[], jobId?: string): ComfyGraph {
+  const graph: ComfyGraph = {};
+  clips.forEach((clip, i) => {
+    graph[MERGE_NODE.load(i)] = { class_type: 'LoadVideo', inputs: { file: clip.name }, _meta: { title: `第 ${i + 1} 段` } };
+  });
+  graph[MERGE_NODE.concat] = {
+    class_type: 'ConcatenateVideo',
+    inputs: { ...Object.fromEntries(clips.map((_, i) => [`videos.video${i}`, [MERGE_NODE.load(i), 0]])), codec: 'auto' },
+    _meta: { title: '一段段接起来' },
+  };
+  graph[MERGE_NODE.save] = {
+    class_type: 'SaveVideo',
+    inputs: { video: [MERGE_NODE.concat, 0], filename_prefix: `media_agent_${jobId ?? 'job'}`, format: 'auto' },
+    _meta: { title: '存成整条' },
+  };
   return graph;
 }
 

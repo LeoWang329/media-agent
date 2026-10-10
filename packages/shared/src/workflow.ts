@@ -28,6 +28,12 @@ export const PLUGIN_OF: Record<string, string> = {
   ImageTensorList: 'ComfyUI-KJNodes',
   MinimaxH3LatentUpscaler3D: 'Comfyui_Minimax_h3_latent_Upscaler',
   VHS_LoadVideo: 'ComfyUI-VideoHelperSuite',
+  // SelfLift 接续那套用的，见 docs/dev-plan.md 5.32：编码和上下文用 H3 官方的插件，采样器用 SelfLift 那个插件，
+  // 接缝声音羽化用作者给的那个（刻度填 0 就不接、不装也能跑）
+  MiniMaxH3ReferenceToVideo: 'ComfyUI-MiniMax-H3（H3 官方节点包）',
+  MiniMaxH3AddGuide: 'ComfyUI-MiniMax-H3（H3 官方节点包）',
+  SelfLiftH3Sampler: 'comfyui-SelfLift',
+  MiniMaxH3AudioGuideFeather: 'ComfyUI-MiniMax-H3-Audio-Guide-Feather（wjc573/ComfyUI-MiniMax-H3-Audio-Guide-Feather）',
 };
 export const DETAILER_NODES = ['FaceDetailer', 'UltralyticsDetectorProvider'];
 
