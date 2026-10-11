@@ -13,6 +13,8 @@
 > - 查实 `web/prototype/` 里**没有**掩码编辑器原型，所以 P24 多了一步「先出原型给你看」。
 >
 > **第三版**（又一轮不动代码的准备）：补了 **§8 接入点清单**——每一步落在哪个文件哪一行都定下来了，另外记了三个实施时要绕开的坑。P23 现在是"照着清单填"，不用边做边找地方。
+>
+> **第四版**（你提出「要支持两张图」）：T07 全名就是「单图**双图**」，补了 **§2.5 双图：场景在前、主体在后**——两张参考图怎么接、要改哪些文件、开工前还得在实例上核对哪几件事。§5 也多问了两条。
 
 ---
 
@@ -86,6 +88,8 @@ VAEDecode → SaveImage
 
 `Krea2EditGroundedEncode` 里的 "grounded" 是**把参考图喂给 Qwen3-VL 做图文对齐**（`grounding_px` 是喂给视觉编码器的最长边上限），**不是**输出空间掩码。
 
+另外：**T07 是「单图双图」**——一张参考图和两张参考图都支持，两张时顺序是训练时定死的「场景在前、主体在后」，见 2.5。
+
 **和我们现有代码的关系**：`packages/shared/src/krea2.ts` 里「四视图」那档用的就是这两个节点，形状一模一样。所以加「编辑」不是新流程，是**换三处**：
 
 | | 四视图（现在） | 编辑（要加） |
@@ -125,6 +129,63 @@ LoRA 两个版本都在那台上：`krea2_identity_edit_v1_1` 和 `v1_2`。顺�
 因为是从空白重画、`denoise 1`，**你没提到的部分不保证像素不动** —— 背景、姿态、构图可能跟着变一点。人物长相靠身份编辑 LoRA 保住。
 
 要「只改一块、别处一个像素不动」，那是 B 干的事。
+
+### 2.5 双图：场景在前、主体在后（T07 名字里的「双图」）
+
+T07 全名是 `T07-Krea2图像编辑krea2edit版单图双图`，也就是**一张参考图和两张参考图都能跑**。节点本身就把这半边留出来了（下表的 `_b` 都是真机 `object_info` 里的可选输入）：
+
+| 节点 | 单图用 | 双图多接 |
+| --- | --- | --- |
+| `Krea2EditModelPatch` | `source_latent` / `source_image` | `source_latent_b` / `source_image_b` |
+| `Krea2EditGroundedEncode` | `image` | `image_b` |
+
+顺序**不是我们定的，是训练时定的**，节点注解原文：
+
+- `source_latent_b`：`2nd reference (subject photo) for multi-ref LoRAs -> RoPE frame=2, training-matched order: scene first, subject second`
+- `image_b`：`2nd reference (subject) for multi-ref LoRAs; vision blocks in training order: scene, subject`
+- `ref_boost`：`Applies to the LAST ref (= the subject in two-ref workflows, the only ref in single-ref)`
+- `ref_boost_a`：`same dial for the FIRST ref (= the scene in two-ref workflows). No effect in single-ref workflows`
+
+所以两张图的角色是定死的：
+
+| | 图 1（`reference`） | 图 2（`referenceB`，可不选） |
+| --- | --- | --- |
+| 角色 | **场景**：构图、背景、姿势 | **主体**：人物长相 / 身份 |
+| 相似度 | `ref_boost_a`（单图时无效） | `ref_boost`，就是现在那个「参考图相似度」 |
+
+接线（在 2.1 那条路上加 B 这一路，别的不动）：
+
+```
+LoadImage(A) → ImageResizeKJv2 → VAEEncode ─┐
+LoadImage(B) → ImageResizeKJv2 → VAEEncode ─┤
+                                            ├→ Krea2EditModelPatch(
+                                            │     source_latent = A、source_latent_b = B、
+                                            │     source_image  = A、source_image_b  = B、
+                                            │     ref_boost = 主体那个、ref_boost_a = 场景那个、
+                                            │     vae、target_latent、fit_mode )
+Krea2EditGroundedEncode（正面、负面两个都）：image = A、image_b = B
+```
+
+没选图 2 时**接线和现在一个字节都不差**（单图模式），这一点要有单测卡住。
+
+要改的地方：
+
+| 层 | 改什么 |
+| --- | --- |
+| `packages/shared/src/types.ts` | `KreaSettings` 加 `referenceB: RefImage \| null`（没选就是单图） |
+| `packages/shared/src/krea2.ts` | 带参考图那条路里，有 B 就多一个 `LoadImage` + `ImageResizeKJv2` + `VAEEncode`，并给 `source_latent_b` / `source_image_b` / `image_b` |
+| `packages/server/src/comfy/jobs.ts` | 两张都上传；找不到时文案分开（「图 1（场景）的参考图找不到了」/「图 2（人物）的参考图找不到了」） |
+| `packages/server/src/routes/validate.ts` | `referenceB` 可空，格式和 `reference` 一样 |
+| `packages/client/src/canvas/GenSettings.tsx` | 参考图那一行拆成「图 1 · 场景」+「图 2 · 人物（可不选）」两个选择器；相似度看 §5 第 5 条 |
+| `tools/mock-comfyui/src/app.ts` | **要补**：`Krea2EditModelPatch` 加 `source_latent_b` / `source_image_b`，`Krea2EditGroundedEncode` 加 `image_b`（现在 mock 里没有，不加会被判「值不在列表里」） |
+| 测试 | 单测（双图接线 + 单图不变）、集成（传两张、两张都记进这一组）、e2e（选两张 → mock 收到两个 `LoadImage`、两个 `_b` 输入、两张上传） |
+
+**开工前要在实例上核对四件事**（T07 的 JSON 我们没存，`outputs/` 里只有 T01/T02/T03/T04/T10，所以下面这几条现在是照节点注解推的）：
+
+1. T07 的 `image_b` 是正负两个 `Krea2EditGroundedEncode` 都给，还是只给正面？
+2. `ref_boost` / `ref_boost_a` 在 T07 里填的什么值（单图现在用 1）。
+3. 有没有用 `ref_boost_mask`（往主体那张的某块区域加力，比如脸）。
+4. 两张图是各自缩到出图尺寸（现在的做法），还是各按各的比例。
 
 ---
 
@@ -230,7 +291,7 @@ A 是「换三个值」，B 是**从零建一条链路**：接口、任务类型
 
 | 步 | 做什么 | 完成标准 |
 | --- | --- | --- |
-| **P23** | A：Krea2 指令编辑 | 界面上「起图」多一档「编辑」；选参考图 + 写一句话能出图；没选参考图时拦住并说清楚；真机跑一张，改的和说的是同一件事；`typecheck` / `vitest` / `e2e` 全绿 |
+| **P23** | A：Krea2 指令编辑 | 界面上「起图」多一档「编辑」；**单图和双图都能出**（图 1 场景 + 图 2 主体，图 2 不选就是单图）；选参考图 + 写一句话能出图；没选图 1 时拦住并说清楚；真机跑一张，改的和说的是同一件事；`typecheck` / `vitest` / `e2e` 全绿 |
 | **P24a-原型** | B 的掩码编辑器**原型**（`web/prototype` 里加一屏） | 你能在浏览器里点开看：拖框、涂、擦、清空、两工具叠加，看着顺眼才进下一步 |
 | **P24a** | B 的掩码编辑器实现 | 大图窗口里能拖框、能涂、能擦清空、能叠加；导出的 PNG 正确（原图尺寸、要重画处 alpha=0、边缘和缩放都对） |
 | **P24b** | B 的服务端 + 流程 + 出图 | 拖一个框 → 开始重绘 → 框下面多一组，参数里记着从哪张来；mock 收到的那张 PNG 涂过的地方透明；缺插件时说清楚；e2e 覆盖 |
@@ -246,6 +307,8 @@ A 是「换三个值」，B 是**从零建一条链路**：接口、任务类型
 2. **参考图从哪来**：沿用现有的参考图选择器 —— 可以选**槽位里的图**，也可以选**这个节点出过的图**。够用吗？
 3. **拖框和涂抹**：按计划做成同一个窗口里的两个工具（可叠加）。如果你更想要「只有拖框、不要涂抹」，P24a 能省掉画笔那块。
 4. **要不要顺便把 P17（图生图 / 画风参考 / 反推）也排进来**：它和 B 在同一批没做的清单里，都要动内置流程和大图窗口。分开做也行，一起做能少改一遍那些文件。
+5. **双图的相似度给几个**：接线决定了「场景」和「主体」各有一个（`ref_boost_a` / `ref_boost`）。我打算**给两个**（默认都 1），比只给一个更贴 T07 的做法 —— 但界面上会多一行。也可以只留「主体」那个、场景固定 1，你说。
+6. **双图开工前要不要先开一次实例**：T07 的 JSON 我们没存，双图那半边现在是照节点注解推的（场景在前、主体在后）。花几分钟把 T07 读下来核对 2.5 末尾那四条，比做完再返工划算。**要的话我一并把这个和 P23 的真机验证凑一次。**
 
 ---
 
@@ -301,8 +364,9 @@ A 是「换三个值」，B 是**从零建一条链路**：接口、任务类型
 | 同上 | `:441` | 上传参考图那条从 `mode === 'four-view'` 放宽成 `!== 'text'`（报错文案按档分开） |
 | `packages/client/src/canvas/GenSettings.tsx` | `:150-160` | 「起图」那排加第三个按钮；参考图区块从 `krea.mode === 'four-view'` 放宽成 `!== 'text'`；两档各自的 hint |
 | `packages/client/src/canvas/imageActions.ts` | `:177` `jobLabel` | 加 `'edit'` → 「编辑」 |
-| `packages/client/src/canvas/ImageViewer.tsx` | `:313` | 大图参数里「起图」显示「编辑 · 相似度 N」 |
-| `tools/mock-comfyui/src/app.ts` | — | **不用改**：`Krea2EditModelPatch`(`:145`)、`Krea2EditGroundedEncode`(`:146`)、`ImageResizeKJv2`(`:147`)、`LoadImage`(`:168`)、`VAEEncode`(`:165`)、`EmptySD3LatentImage`(`:101`) 都在 |
+| `packages/client/src/canvas/ImageViewer.tsx` | `:313` | 大图参数里「起图」显示「编辑 · 相似度 N」；双图时写「编辑 · 场景 N / 人物 M」 |
+| `tools/mock-comfyui/src/app.ts` | `:145` `:146` | 单图不用改；**双图要补** `Krea2EditModelPatch` 的 `source_latent_b` / `source_image_b` 和 `Krea2EditGroundedEncode` 的 `image_b`，见 2.5。`ImageResizeKJv2`(`:147`)、`LoadImage`(`:168`)、`VAEEncode`(`:165`)、`EmptySD3LatentImage`(`:101`) 都在 |
+| 双图那一路 | 见 2.5 | `KreaSettings` 加 `referenceB`、`kreaGraph` 多接 B、`jobs.ts` 传两张、设置里两个选择器。⚠️ 双图那一行的行号等实例上核对完 T07 再补 |
 
 ### 8.2 B（局部重绘）
 
