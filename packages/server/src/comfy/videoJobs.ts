@@ -125,6 +125,9 @@ const UNCHANGED = new Error('没有要改的');
 export type VideoAgain = { jobId: string; sameSeed: boolean };
 // 重拍一截：在哪一版上重拍、第几帧到第几帧（不含）、种子（null 是随机）、改过的段（键是第几段，从 0 数），见 docs/dev-plan.md 5.30
 export type VideoReshoot = { jobId: string; from: number; to: number; seed: number | null; prompts: Record<number, string> };
+// 从第 N 段起重出（只有 SelfLift 接力那套有）：照着哪条、从第几段起（从 1 数，前 N−1 段照旧留着）、
+// 框里现在的提示词（没给就照原来那条的），见 docs/dev-plan.md 5.34
+export type VideoRerun = { jobId: string; clip: number; prompts?: string[] };
 
 export type VideoJobs = ReturnType<typeof createVideoJobs>;
 
@@ -225,8 +228,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     );
 
   // 点「生成视频」生成这个框，见 docs/dev-plan.md 5.27；again 是「同样参数再来」「只换种子再来」，照着那一条的参数；
-  // reshoot 是在一条出完的视频上重拍一截，出的是原片的一个版本，见 5.30
-  async function create(place: VideoPlace, promptIndex: number, again?: VideoAgain, reshoot?: VideoReshoot): Promise<VideoJob> {
+  // reshoot 是在一条出完的视频上重拍一截，出的是原片的一个版本，见 5.30；
+  // rerun 是接力那套「从第 N 段起重出」：前 N−1 段照旧留着，从第 N 段往后再跑一遍再拼起来，见 5.34
+  async function create(place: VideoPlace, promptIndex: number, again?: VideoAgain, reshoot?: VideoReshoot, rerun?: VideoRerun): Promise<VideoJob> {
     const settings = await readSettings(place.work);
     const { autodlToken } = await readComfyConfig(configDir);
     if (!(autodlToken && settings.comfy.videoAutodl.instanceUuid)) throw new HttpError(400, '先在设置里填 AutoDL 的开发者 Token、选好生成视频用的实例');
@@ -259,6 +263,35 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       const from = message.videos?.find((j) => j.id === again.jobId);
       if (!from) throw new HttpError(404, '找不到要照着再来的那条视频');
       job = { ...fresh, promptIndex: from.promptIndex, source: { jobId: from.id }, params: from.params, seed: again.sameSeed ? from.seed : randomSeed() };
+    } else if (rerun) {
+      const base = message.videos?.find((j) => j.id === rerun.jobId);
+      if (!base) throw new HttpError(404, '找不到要重出的那条视频');
+      if (workflowOf(base.params) !== 'selflift' || !base.chain) throw new HttpError(400, '只有 SelfLift 接续那套能「从第 N 段起重出」；两遍生成那套用「重拍一截」');
+      if (isLive(base)) throw new HttpError(400, '这条还在跑：等它出完，或者先叫停再来');
+      const at = rerun.clip - 1; // 前 at 段照旧留着，从第 at 段（从 0 数）开始重出
+      if (rerun.clip < 2 || rerun.clip > base.chain.total) {
+        throw new HttpError(400, `只能从第 2 到第 ${base.chain.total} 段起重出；从第 1 段起就是整条重出，点「同样参数再来」`);
+      }
+      if (base.chain.clips.length < at) throw new HttpError(400, `这条只出完 ${base.chain.clips.length} 段，从第 ${rerun.clip} 段起接不上：前面 ${at} 段得都在`);
+      // 提示词照框里现在的（改过第 N 段就改好再来）；段数变了每段的帧数就对不上，留下来的几段接不进去
+      const segments = rerun.prompts?.length ? rerun.prompts : base.params.segments;
+      if (segments.length !== base.params.segments.length) throw new HttpError(400, '框里的段数变了，留下来的那几段接不上，只能整条重出');
+      const params = { ...base.params, segments };
+      const plan = selfliftClips(params);
+      // 留下来的几段换成新这条的名字（新的一条要重新拷进 input 目录），帧数还得对得上
+      const kept: VideoChainClip[] = base.chain.clips.slice(0, at).map((clip, i) => ({ ...clip, name: chainName(fresh.id, i) }));
+      for (const [i, clip] of kept.entries()) {
+        if (clip.frames !== plan.lengths[i]) throw new HttpError(400, '这条的分段和现在对不上（时长、段数或者接几帧改过？），只能整条重出');
+      }
+      job = {
+        ...fresh,
+        promptIndex: base.promptIndex,
+        rerun: { base: base.id, clip: rerun.clip },
+        params,
+        // 种子照原来那条：留下来的那几段还是同一个种子出的，重出的第 N 段跟上一版也能对着比
+        seed: base.seed,
+        chain: { total: plan.lengths.length, clips: kept },
+      };
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
@@ -277,9 +310,10 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       job = { ...fresh, promptIndex, params: videoParams(segments, node.duration, message.aspectRatio, video, images, media), seed: video.seed ?? randomSeed() };
     }
 
-    // SelfLift 接续那套是分段接力的：先记上要分几段，一段一个任务发给 ComfyUI，见 docs/dev-plan.md 5.32
+    // SelfLift 接续那套是分段接力的：先记上要分几段，一段一个任务发给 ComfyUI，见 docs/dev-plan.md 5.32。
+    // 「从第 N 段起重出」的那条已经带着前几段了，别覆盖掉
     const chain = chainOf(job.params);
-    if (chain) job.chain = chain;
+    if (chain && !job.chain) job.chain = chain;
     await updateNode(place.work, place.canvasId, place.nodeId, (current) => {
       const target = current.messages[place.messageId];
       if (!target) throw new HttpError(404, '找不到这条回复');
@@ -357,8 +391,12 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
         if (!base?.latents) throw new comfy.ComfyError('要重拍的那一版删掉了');
         await requireLatents(base.latents);
       }
-      const graphOf = (job: VideoJob, files: VideoFiles) =>
-        job.reshoot && base?.latents ? reshootGraph(job.params, job.seed, files, job.id, reshootPlan(job.params, job.reshoot.from, job.reshoot.to), base.latents) : videoGraph(job.params, job.seed, files, job.id);
+      const graphOf = (job: VideoJob, files: VideoFiles) => {
+        if (job.reshoot && base?.latents) return reshootGraph(job.params, job.seed, files, job.id, reshootPlan(job.params, job.reshoot.from, job.reshoot.to), base.latents);
+        // 接力那套从「已经出完几段」那里接着跑：新的一条是第 0 段，「从第 N 段起重出」的那条前面几段是照旧留着的
+        if (job.chain) return selfliftClipGraph(job.params, job.seed, files, job.id, job.chain.clips.length, job.chain.clips.at(-1)?.name);
+        return videoGraph(job.params, job.seed, files, job.id);
+      };
       // 查缺不缺节点时 LoadImage 填什么都行，先拿图的 id 顶上。接力那套还要查最后把几段拼起来那条图里的节点
       await requireNodes(address, graphOf(first, { refs: first.params.refs ?? [], firstFrame: first.params.firstFrame }));
       if (first.chain) await requireNodes(address, selfliftMergeGraph([{ name: chainName(first.id, 0) }], first.id));
@@ -367,6 +405,13 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       await withLock(`video-job:${jobId}`, async () => {
         const job = await readJob(place, jobId);
         if (job.status !== 'queued' || job.promptId) return;
+        // 从第 N 段起重出的：前面几段是原来出的，这会儿还在那台上，先照新名字拷进 input 目录
+        // （下一段的 LoadVideo 和最后拼接都读它；拷完才发得出第一段）
+        for (const [i, clip] of (job.chain?.clips ?? []).entries()) {
+          await copyToInput(clip, clip.name).catch((err) => {
+            throw new comfy.ComfyError(`第 ${i + 1} 段在那台上找不到了（那条视频删了？）：${(err as Error).message}。只能整条重出`);
+          });
+        }
         const promptId = await comfy.queuePrompt(address, graphOf(job, files), id);
         await changeJob(place, jobId, (current) => ({ ...current, promptId }));
         // 接力那套：这个任务跑的是第几段（已经出完几段就是第几段，从 0 数）

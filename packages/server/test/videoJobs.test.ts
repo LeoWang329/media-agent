@@ -787,6 +787,66 @@ describe('生成视频任务', () => {
     expect(ofType(await lastGraph(), 'SelfLiftH3Sampler')).toEqual([]);
   }, 30_000);
 
+  it('接力那套能从第 N 段起重出：前面几段照旧留着（照新名字拷进 input），只重跑后面几段再拼起来', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 20, video: { workflow: 'selflift' } });
+    const reply = await edited(twoWay('第一段：女孩站在窗边'));
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(job.chain).toEqual({ total: 2, clips: [] });
+    const done = await settledJob(job.id, reply, 20000);
+    expect(done).toMatchObject({ status: 'done' });
+    expect(done.chain!.clips.map((clip) => [clip.frames, clip.name])).toEqual([
+      [260, `media_agent_${job.id}_s0.mp4`],
+      [260, `media_agent_${job.id}_s1.mp4`],
+    ]);
+
+    // 校验：只能从第 2 段起；段数变了不行
+    const rerun = (body: object) => t.call('POST', videosUrl(reply), { rerun: body });
+    expect(await rerun({ jobId: job.id, clip: 1 })).toMatchObject({ status: 400, body: { error: '从第几段起重出要是不小于 2 的整数' } });
+    expect(await rerun({ jobId: job.id, clip: 3 })).toMatchObject({ status: 400, body: { error: '只能从第 2 到第 2 段起重出；从第 1 段起就是整条重出，点「同样参数再来」' } });
+    expect(await rerun({ jobId: job.id, clip: 2, prompts: ['只有一段'] })).toMatchObject({ status: 400, body: { error: '框里的段数变了，留下来的那几段接不上，只能整条重出' } });
+
+    // 从第 2 段起重出：第 1 段照旧，只重跑第 2 段再拼；提示词换成改过的
+    const moved = await t.ok<VideoJob>('POST', videosUrl(reply), { rerun: { jobId: job.id, clip: 2, prompts: ['第一段：女孩站在窗边', '第二段：她走近窗户，外面下起雨来'] } });
+    expect(moved.rerun).toEqual({ base: job.id, clip: 2 });
+    expect(moved.seed).toBe(job.seed);
+    expect(moved.chain).toMatchObject({ total: 2 });
+    // 留着的那一段还是原来那一段（同一个文件），只是换成新这条的名字
+    expect(moved.chain!.clips).toHaveLength(1);
+    expect(moved.chain!.clips[0].filename).toBe(done.chain!.clips[0].filename);
+    expect(moved.chain!.clips[0].frames).toBe(260);
+    expect(moved.chain!.clips[0].name).toBe(`media_agent_${moved.id}_s0.mp4`);
+    const after = await settledJob(moved.id, reply, 20000);
+    expect(after).toMatchObject({ status: 'done' });
+    expect(after.chain!.clips.map((clip) => clip.frames)).toEqual([260, 260]);
+    expect(after.chain!.clips[1].name).toBe(`media_agent_${moved.id}_s1.mp4`);
+    // 以前那一段拷进了 input（用新这条的名字）；这一条只发了 1 段 + 1 条拼接
+    expect(mock.ssh.commands.filter((command) => command.startsWith('cp ') && command.includes(`media_agent_${moved.id}_s0.mp4`))).toHaveLength(1);
+    const sent = ((await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: ComfyGraph }[]).map((one) => one.prompt).slice(-2);
+    expect(ofType(sent[0], 'MiniMaxH3ReferenceToVideo')[0].inputs.prompt).toBe('第二段：她走近窗户，外面下起雨来');
+    expect(ofType(sent[0], 'LoadVideo')[0].inputs.file).toBe(`media_agent_${moved.id}_s0.mp4`);
+    expect(ofType(sent[1], 'ConcatenateVideo')).toHaveLength(1);
+    expect(ofType(sent[1], 'LoadVideo').map((node) => node.inputs.file)).toEqual([`media_agent_${moved.id}_s0.mp4`, `media_agent_${moved.id}_s1.mp4`]);
+  }, 30_000);
+
+  it('接力那套带参考图：一张一张接 ref_images.ref_image_0（发整条会被当张量，真机上报 Boolean value of Tensor … ambiguous）', async () => {
+    await useVideoAutodl();
+    const image = await t.addImage(canvasId, '#445566');
+    await t.ok('PATCH', nodeUrl(), { slots: [image], duration: 8, video: { workflow: 'selflift' } });
+    const reply = await send('照这张图写', replyId);
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(job.params).toMatchObject({ refs: [image], frames: { total: 192, chunk: 192, overlap: 22 } });
+    expect(await settledJob(job.id, reply, 20000)).toMatchObject({ status: 'done' });
+    // 这条最后发的是「把几段拼起来」，往前找那一段的图（这套才用 MiniMaxH3ReferenceToVideo）
+    const sent = ((await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: ComfyGraph }[]).map((one) => one.prompt);
+    const graph = [...sent].reverse().find((one) => ofType(one, 'MiniMaxH3ReferenceToVideo').length)!;
+    const encode = ofType(graph, 'MiniMaxH3ReferenceToVideo')[0];
+    expect(encode.inputs['ref_images.ref_image_0']).toEqual(['30', 0]);
+    expect(encode.inputs.ref_images).toBeUndefined();
+    // 串成一串的那个节点是两遍生成那套的，这套不接
+    expect(ofType(graph, 'ImageTensorList')).toEqual([]);
+  }, 20_000);
+
   it('接力那套叫停：正在跑的那段停掉，已经出的几段接起来留一份（partial）', async () => {
     await useVideoAutodl();
     await t.ok('PATCH', nodeUrl(), { duration: 30, video: { workflow: 'selflift' } });

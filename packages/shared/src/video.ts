@@ -429,8 +429,11 @@ export const LATENT_SAVE = { pass1: '60', pass2: '61', pass1Path: '62', pass2Pat
 // 让用户在一采完、二采还在跑的时候就能看到片子大概什么样，见 docs/dev-plan.md 5.27
 export const PREVIEW_NODE = NODE.preview;
 
-// 带的参考图、首帧图接成节点：参考图从 30 号起，一张直接接、几张用 ImageTensorList 串起来；首帧图不在参考图里时单独一个 39 号
-function refNodes(files: VideoFiles): { nodes: ComfyGraph; refs?: string; first?: string } {
+// 带的参考图、首帧图接成节点：参考图从 30 号起，一张直接接、几张用 ImageTensorList 串起来（chained，两遍生成那套的节点要一整条）；
+// 首帧图不在参考图里时单独一个 39 号。loads 是每张图各自的 LoadImage 编号：H3 官方那个编码节点的参考图是「自动增长」输入，
+// 要一张一张发（ref_images.ref_image_0…），不能发串起来的那一整条（发过去是一块张量，节点里 `(ref_images or {})` 一判真假就报
+// Boolean value of Tensor … ambiguous），所以那套不接 ImageTensorList
+function refNodes(files: VideoFiles, chained = true): { nodes: ComfyGraph; refs?: string; loads: string[]; first?: string } {
   const link = (node: string, slot = 0) => [node, slot];
   const nodes: ComfyGraph = {};
   const loads = files.refs.map((name, i) => {
@@ -438,11 +441,13 @@ function refNodes(files: VideoFiles): { nodes: ComfyGraph; refs?: string; first?
     nodes[id] = { class_type: 'LoadImage', inputs: { image: name }, _meta: { title: `参考图 ${i + 1}` } };
     return id;
   });
-  let refs = loads[0];
-  for (const [i, id] of loads.slice(1).entries()) {
-    const list = String(REF_LIST + i);
-    nodes[list] = { class_type: 'ImageTensorList', inputs: { image1: link(refs), image2: link(id) } };
-    refs = list;
+  let refs = chained ? loads[0] : undefined;
+  if (chained) {
+    for (const [i, id] of loads.slice(1).entries()) {
+      const list = String(REF_LIST + i);
+      nodes[list] = { class_type: 'ImageTensorList', inputs: { image1: link(refs!), image2: link(id) } };
+      refs = list;
+    }
   }
   let first: string | undefined;
   if (files.firstFrame) {
@@ -450,7 +455,7 @@ function refNodes(files: VideoFiles): { nodes: ComfyGraph; refs?: string; first?
     first = index >= 0 ? loads[index] : FIRST_LOAD;
     if (index < 0) nodes[FIRST_LOAD] = { class_type: 'LoadImage', inputs: { image: files.firstFrame }, _meta: { title: '首帧图' } };
   }
-  return { nodes, refs, first };
+  return { nodes, refs, loads, first };
 }
 
 // 挂的 LoRA 接在主模型和注意力节点之间，返回最后一个的 id
@@ -643,7 +648,7 @@ export function selfliftClipGraph(
   prev?: string,
 ): ComfyGraph {
   const link = (node: string, slot = 0) => [node, slot];
-  const { nodes: images, refs, first } = refNodes(files);
+  const { nodes: images, loads, first } = refNodes(files, false);
   const media = mediaNodes(params, files, { dubAsRef: true });
   Object.assign(images, media.nodes);
   const model = loraChain(NODE.model, params, images);
@@ -681,7 +686,8 @@ export function selfliftClipGraph(
         ref_image_size: 'match',
         // 这一套一段一条片子，写的就是这一段提示词（多段那套的 | 分隔在这里没有意义，换掉免得被当成分段）
         prompt: prompt.replaceAll('|', '/'),
-        ...(refs && { ref_images: link(refs) }),
+        // 参考图一张一张接：H3 官方这个节点是「自动增长」输入（ref_images.ref_image_0、_1…），发整条会被当张量
+        ...Object.fromEntries(loads.map((id, i) => [`ref_images.ref_image_${i}`, link(id)])),
         ...media.inputs,
       },
       _meta: { title: `第 ${clip + 1} 段：编码提示词` },
@@ -836,6 +842,21 @@ export function selfliftMergeGraph(clips: { name: string }[], jobId?: string): C
   };
   return graph;
 }
+
+// ─── 从第 N 段起重出（只有 SelfLift 接力那套有），见 docs/dev-plan.md 5.34 ───
+
+// 前 N−1 段照旧留着，从第 N 段往后再跑一遍再拼起来。为什么不能只重出中间一段：接力是链式的，
+// 第 N+1 段是接着第 N 段的画面长出来的，换了第 N 段后面就得跟着重出；所以能选的起点就这几档。
+// 老的那条得先把前面几段出完（留着的那几段得在那台上），最多只能从「已经出完的下一段」起；第 1 段起等于整条重出，所以从 2 起
+export const rerunFroms = (job: Pick<VideoJob, 'chain'>): number[] => {
+  const total = job.chain?.total ?? 0;
+  const done = job.chain?.clips.length ?? 0;
+  const last = Math.min(total, done + 1);
+  return Array.from({ length: Math.max(0, last - 1) }, (_, i) => i + 2);
+};
+
+export const rerunText = (clip: number) => `从第 ${clip} 段起重出`;
+export const rerunKeptText = (clip: number) => `前 ${clip - 1} 段照旧`;
 
 // ─── 重拍一截，见 docs/dev-plan.md 5.30 ───
 

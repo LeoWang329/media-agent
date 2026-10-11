@@ -1,6 +1,6 @@
 import express, { type Request } from 'express';
 import { copyVideoToFolder, imageFile, videoFile } from '../comfy/files';
-import type { VideoAgain, VideoJobs, VideoPlace, VideoReshoot } from '../comfy/videoJobs';
+import type { VideoAgain, VideoJobs, VideoPlace, VideoRerun, VideoReshoot } from '../comfy/videoJobs';
 import { requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
 import { readNode } from '../store/canvases';
@@ -18,12 +18,14 @@ export function videoRoutes(configDir: string, jobs: VideoJobs): express.Router 
     messageId: String(req.params.messageId),
   });
 
-  // again 是「同样参数再来」「只换种子再来」，照着那一条的参数；reshoot 是在一条出完的视频上重拍一截，见 docs/dev-plan.md 5.30
+  // again 是「同样参数再来」「只换种子再来」，照着那一条的参数；reshoot 是在一条出完的视频上重拍一截，见 docs/dev-plan.md 5.30；
+  // rerun 是接力那套「从第 N 段起重出」：前 N−1 段照旧，从第 N 段往后再跑，见 5.34
   router.post(base, async (req, res) => {
     const again = req.body?.again === undefined ? undefined : againOf(req.body.again);
     const reshoot = req.body?.reshoot === undefined ? undefined : reshootOf(req.body.reshoot);
-    const promptIndex = again || reshoot ? 0 : v.index(req.body?.promptIndex, '提示词框');
-    res.status(201).json(await jobs.create(await place(req), promptIndex, again, reshoot));
+    const rerun = req.body?.rerun === undefined ? undefined : rerunOf(req.body.rerun);
+    const promptIndex = again || reshoot || rerun ? 0 : v.index(req.body?.promptIndex, '提示词框');
+    res.status(201).json(await jobs.create(await place(req), promptIndex, again, reshoot, rerun));
   });
 
   router.post(`${base}/:jobId/stop`, async (req, res) => {
@@ -107,6 +109,22 @@ function reshootOf(value: unknown): VideoReshoot {
     seed: fields.seed === null || fields.seed === undefined ? null : v.integer(fields.seed, '种子', 0),
     prompts,
   };
+}
+
+// 从第 N 段起重出：从第几段起（从 1 数）、框里现在的提示词（没给就照原来那条的）
+function rerunOf(value: unknown): VideoRerun {
+  const fields = (value ?? {}) as Record<string, unknown>;
+  const prompts = fields.prompts === undefined ? undefined : promptsList(fields.prompts);
+  return {
+    jobId: v.nonEmptyText(fields.jobId, '要重出的那条视频'),
+    clip: v.integer(fields.clip, '从第几段起重出', 2),
+    ...(prompts && { prompts }),
+  };
+}
+
+function promptsList(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new HttpError(400, '提示词格式不对');
+  return value.map((text) => v.nonEmptyText(text, '提示词的段'));
 }
 
 function downloadItem(value: unknown) {

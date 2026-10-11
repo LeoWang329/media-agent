@@ -18,6 +18,9 @@ import {
   selfliftOfSettings,
   selfliftPlan,
   SELFLIFT_NODE,
+  rerunFroms,
+  rerunKeptText,
+  rerunText,
   SELFLIFT_U37_LORAS,
   slotDiff,
   splitSegments,
@@ -631,6 +634,38 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
     const samplerOne = of(one, 'SelfLiftH3Sampler')[0];
     expect(samplerOne.inputs.model).toEqual(['75', 0]);
     expect(samplerOne.inputs.model_hires).toBeUndefined();
+  });
+
+  it('从第 N 段起重出：能选的起点只有「已经出完的下一段」到总段数，第 1 段起等于整条重出所以从 2 起', () => {
+    const chain = (total: number, done: number) => ({ total, clips: Array.from({ length: done }, () => ({ filename: 'a.mp4', subfolder: '', frames: 260, name: 'b.mp4' })) });
+    // 3 段都出完了：能从第 2、3 段起
+    expect(rerunFroms({ chain: chain(3, 3) })).toEqual([2, 3]);
+    // 只出完 1 段（叫停过）：只能从第 2 段起
+    expect(rerunFroms({ chain: chain(3, 1) })).toEqual([2]);
+    // 2 段出完、一共 5 段：能从第 2、3 段起（第 4 段起前面只出完 3 段，接不上）
+    expect(rerunFroms({ chain: chain(5, 2) })).toEqual([2, 3]);
+    // 一段一条片子的短视频：前一段都没出完，没得选
+    expect(rerunFroms({ chain: chain(1, 1) })).toEqual([]);
+    expect(rerunFroms({ chain: chain(2, 0) })).toEqual([]);
+    expect(rerunFroms({})).toEqual([]);
+    expect(rerunText(3)).toBe('从第 3 段起重出');
+    expect(rerunKeptText(3)).toBe('前 2 段照旧');
+  });
+
+  it('接力的参考图一张一张接：H3 官方节点是自动增长输入（ref_images.ref_image_0…），发整条会被当张量炸', () => {
+    const two = videoParams(['第一段'], 8, '16:9', selflift, { refs: ['a', 'b'] });
+    const graph = videoGraph(two, 1, { refs: ['a.png', 'b.png'] }, 'job');
+    const encode = of(graph, 'MiniMaxH3ReferenceToVideo')[0];
+    expect(encode.inputs['ref_images.ref_image_0']).toEqual(['30', 0]);
+    expect(encode.inputs['ref_images.ref_image_1']).toEqual(['31', 0]);
+    // 整条的那个键不能出现：节点里 `(ref_images or {})` 拿一块张量判真假，真机上报 Boolean value of Tensor … ambiguous
+    expect(encode.inputs.ref_images).toBeUndefined();
+    // 串成一串的 ImageTensorList 是两遍生成那套用的（它那边的节点要一整条）
+    expect(of(graph, 'ImageTensorList')).toHaveLength(0);
+    const pass2 = videoGraph(videoParams(['第一段'], 8, '16:9', { ...selflift, workflow: 'two-pass' }, { refs: ['a', 'b'] }), 1, { refs: ['a.png', 'b.png'] }, 'job');
+    expect(graph[40]).toBeUndefined();
+    expect(of(pass2, 'ImageTensorList')[0].inputs).toEqual({ image1: ['30', 0], image2: ['31', 0] });
+    expect(of(pass2, 'MMH3ReferenceMultiPrompt')[0].inputs.ref_images).toEqual(['40', 0]);
   });
 
   it('双 LoRA 都不挂就不接额外节点：model 还是主模型那条，也没有 model_hires', () => {

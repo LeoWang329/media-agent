@@ -1,6 +1,9 @@
 import {
   isLiveVideo,
   mediaSummary,
+  rerunFroms,
+  rerunKeptText,
+  rerunText,
   reshootText,
   splitSegments,
   VIDEO_FPS,
@@ -23,8 +26,9 @@ import { secondsSince, useNow } from '../components/ComfyPill';
 import { useVideoStore, type VideoProgress } from '../store/videoStore';
 import { clock, fmtSize } from '../ui/format';
 import { Icon } from '../ui/Icon';
+import { Popover } from '../ui/Popover';
 import { useOverlays } from './overlays';
-import { againVideo, previewSrc, removeVideo, stopVideo, videoSrc } from './videoActions';
+import { againVideo, previewSrc, removeVideo, rerunVideo, stopVideo, videoSrc } from './videoActions';
 import { VideoReshoot } from './VideoReshoot';
 
 // 框下面挂着的视频：点一次「生成视频」一条，按生成的先后排，见 docs/dev-plan.md 5.28；重拍一截出的版本挂在原片下面，见 5.30
@@ -83,14 +87,15 @@ export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
       {jobs
         .filter((job) => !job.parent)
         .map((job) => (
-          <Video key={job.id} node={node} message={message} root={job} versions={jobs.filter((j) => j.parent === job.id)} jobs={jobs} ro={ro} />
+          <Video key={job.id} node={node} message={message} root={job} versions={jobs.filter((j) => j.parent === job.id)} jobs={jobs} text={text} ro={ro} />
         ))}
     </div>
   );
 }
 
-// 一条的叫法：照着哪条再来的写清楚
+// 一条的叫法：照着哪条再来的、从第 N 段起重出的写清楚
 function videoLabel(job: VideoJob, jobs: VideoJob[]): string {
+  if (job.rerun) return `${rerunText(job.rerun.clip)} · ${rerunKeptText(job.rerun.clip)}`;
   if (!job.source) return '生成视频';
   const from = jobs.find((j) => j.id === job.source!.jobId);
   if (from?.seed === job.seed) return `同样参数再来 · 种子 ${job.seed}`;
@@ -159,7 +164,7 @@ export function LiveState({ job }: { job: VideoJob }) {
 }
 
 // 一条原片和它重拍出的各个版本：上面一排切换看哪一版，默认看最新的
-function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; message: Message; root: VideoJob; versions: VideoJob[]; jobs: VideoJob[]; ro: boolean }) {
+function Video({ node, message, root, versions, jobs, text, ro }: { node: ChatNode; message: Message; root: VideoJob; versions: VideoJob[]; jobs: VideoJob[]; text: string; ro: boolean }) {
   const place = { nodeId: node.id, messageId: message.id };
   const all = [root, ...versions];
   const [picked, setPicked] = useState<string | null>(null);
@@ -209,7 +214,7 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
         </div>
       )}
       <header className="ig-head">
-        <span className={`ig-kind${job.source || job.reshoot ? ' is-derived' : ''}`}>{job.reshoot ? reshootText(job.reshoot.from, job.reshoot.to) : videoLabel(job, jobs)}</span>
+        <span className={`ig-kind${job.source || job.reshoot || job.rerun ? ' is-derived' : ''}`}>{job.reshoot ? reshootText(job.reshoot.from, job.reshoot.to) : videoLabel(job, jobs)}</span>
         <span className="ig-meta meta">
           <span className="mono">{clock(job.createdAt)}</span>
           {params.segments.length > 1 && <span>{params.segments.length} 段</span>}
@@ -329,6 +334,8 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
                 <Icon name="sparkles" />
                 只换种子再来
               </button>
+              {/* 接力那套：前几段照旧留着，从第 N 段往后再跑，见 docs/dev-plan.md 5.34 */}
+              {rerunFroms(job).length > 0 && <VideoRerun place={place} job={job} text={text} onStart={() => setPicked(null)} />}
             </>
           )}
           <span className="grow" />
@@ -348,5 +355,53 @@ function Video({ node, message, root, versions, jobs, ro }: { node: ChatNode; me
         </div>
       )}
     </section>
+  );
+}
+
+// 接力那套「从第 N 段起重出」（只有 SelfLift 有，见 docs/dev-plan.md 5.34）：点开挑从第几段起。
+// 只有几档可选：接力是链式的，换掉第 N 段后面就得跟着重出，前面几段可以留着；前面的段得先出完
+function VideoRerun({ place, job, text, onStart }: { place: { nodeId: string; messageId: string }; job: VideoJob; text: string; onStart: () => void }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const froms = rerunFroms(job);
+  if (!froms.length) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        data-vact="rerun"
+        title="前面几段照旧留着，从这一段往后再跑一遍再拼起来"
+        onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}
+      >
+        <Icon name="retry" />
+        从第几段起重出
+      </button>
+      {anchor && (
+        <Popover anchor={anchor} className="rerun-pop" odId="popover-rerun" label="从第几段起重出" onClose={() => setAnchor(null)}>
+          <p className="hint">前面几段照旧留着（省时间），从选的这一段往后再跑一遍，然后重新拼成整条。接力的画面是一段接一段长出来的，所以换掉中间一段，后面的都得跟着重出。</p>
+          <div className="row rerun-list">
+            {froms.map((clip) => (
+              <button
+                key={clip}
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-rerun={clip}
+                onClick={() => {
+                  setAnchor(null);
+                  onStart();
+                  void rerunVideo(place, job, clip, splitSegments(text));
+                }}
+              >
+                {rerunText(clip)}
+                <span className="meta">（{rerunKeptText(clip)}）</span>
+              </button>
+            ))}
+          </div>
+          <p className="hint">
+            提示词照框里现在的：要改哪一段就先改好再点。时长、段数、接几帧不能变——变了每段的帧数对不上，留下来的几段接不进去；那几段要是已经从那台上删了，只能整条重出。
+          </p>
+        </Popover>
+      )}
+    </>
   );
 }

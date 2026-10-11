@@ -899,7 +899,9 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 - 二采重画多少：两遍生成里二采那个 `BasicScheduler` 的 `denoise`，原来是写死的 0.2，现在照 `params.denoise`。0.2 是留着放大后的构图细修，1 是照放大后的重出一遍。
 - 一段的流程图（照 U37 的单段结构，用 H3 官方节点 `MiniMaxH3ReferenceToVideo` 编码、不是多段提示词那个 `MMH3ReferenceMultiPrompt`）：
   - `MiniMaxH3ReferenceToVideo`（`prompt` 是这一段那段的提示词、`width`/`height` 按出片大小、`length` 是这一段的帧数）→ `positive` + 空白 `LATENT`；
-    参考图、参考视频、参考音频照 5.31 那套接（`ref_images`、`ref_videos`、`ref_video_audios`、`ref_audios`）。配音在这套里当参考音频接进去（官方节点没有 `use_input_audio` 那个口子）。
+    参考图**一张一张**接 `ref_images.ref_image_0`、`ref_image_1`…（H3 官方节点的这几项是「自动增长」输入，发成整条 `ref_images` 会被当成一块张量，
+    节点里 `for img in (ref_images or {}).values()` 直接报 `RuntimeError: Boolean value of Tensor with more than one value is ambiguous`，2026-10-10 修，见报告）；
+    参考视频、参考音频照 5.31 那套接（`ref_videos.ref_video_0`、`ref_video_audios.ref_video_audio_0`、`ref_audios.ref_audio_0`）。配音在这套里当参考音频接进去（官方节点没有 `use_input_audio` 那个口子）。
   - 第 2 段起：`LoadVideo` 读上一段（程序拷进 input 目录的名字）→ `VideoFrameSample`（`strategy` tail，取 `contextFrames` 帧）→ `GetVideoComponents`
     → 前 `contextFrames - 1` 帧 `ImageAddNoise`（`noise`，U37 是 0.1，减轻接缝闪烁）、最后一帧加 0 噪 → `ImageBatchMulti` 合成一沓；
     连着这几帧的**声音**一起，用 `MiniMaxH3AddGuide`（`frame_idx` 0）钉在这一段的第 0 帧上，接出来的 `positive` 给采样器。
@@ -934,6 +936,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   正在跑的那段让 ComfyUI 停掉、不算；一段都没出完就是普通的叫停。删这条时那台上拷进 input 的几份和一段一段出的那几个片子一起删（那台关着就留在那台上）。
 - 程序重启：`chain` 存在这条里，`resume` 按 `promptId` 查 `/history`，出完了就接着发下一段（那一段已经记过的不会记两遍）；正在拼的那条也认。
 - 没有一采二采的存档，所以这套**不能重拍一截**：界面上那条不出现「重拍一截」，接口也拦（说「这条出的时候没存一采、二采的结果，只能整条重出」）。
+  只改后面几段的话用 5.34 的「从第 N 段起重出」。
 - 进度和用时：每段的采样器都算「一采」，小窗里写「生成 第 2/5 段 3/8 步」（第几段是服务端记的，不靠步数往回跳），没有「放大」「二采」这两步。
   `VideoTiming` 记下 `workflow` 和段数（这里是分几条接力），估还要多久只跟同一套流程、同样大小段数的记录比；SelfLift 那种记录里放大、二采每步用时是 0。
 - 界面（生成设置小窗）：最上面「流程」，选 SelfLift 接续时把一采、二采那套（步数、二采重画多少）换成接续那套的
@@ -973,6 +976,27 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   `LoraLoaderModelOnly` 两套（都接 `['4', 0]`，8 步 @0.75 / 4 步 @0.7）、`SelfLiftH3Sampler.model` = `['75', 0]`、`model_hires` = `['76', 0]`、`BasicScheduler.model` = `['75', 0]`；
   第 2 段有 `MiniMaxH3AudioGuideFeather`（刻度 12、`positive` 接 `AddGuide`），第 1 段没有；拼接那条读 `media_agent_<jobId>_s0/s1.mp4`。
   羽化「真的起作用」也单独验过：同种子只差刻度，音频指纹 0 = `8f0534a9…`、12 = `d434b2f0…`，同参数复跑逐比特相同；而作者原版 `compat.py` 下 12 和 0 一模一样（假绿）。
+
+### 5.34 SelfLift 接续：从第 N 段起重出（第四批）
+
+接力那套是**链式**的：第 N+1 段是「接着第 N 段的画面」长出来的，所以**不能只重出中间一段**——换掉第 N 段，后面几段的接缝立刻对不上；
+这套也没存一采二采的潜变量，用不了两遍生成那套的「重拍一截」。真正合理的粒度是「**从第 N 段起往后的都重出**，前面几段留着」：
+5 段里第 3 段有问题，就那么改（省掉前 2 段的时间），而不是整条重来。
+
+- 界面上：出完的那条视频（`chain.clips` 至少 1 段）上多一个「从第几段起重出」，点开挑从第几段起。
+  能选的起点（`rerunFroms`）是 `2` 到 `min(总段数, 已经出完几段 + 1)`：第 1 段起等于整条重出（用「同样参数再来」），所以从 2 起；
+  前面几段得先出完（留着的那几段得在那台上）。
+- 参数照原来那条（跟「同样参数再来」一样），**种子也照原来那条**（留下来的几段还是同一个种子出的，重出的那几段能跟上一版对着比）；
+  提示词照**框里现在的**（要改第 N 段就先改好再点）。段数不能变：变了每段的帧数就对不上，留下来的几段接不进去。
+- `VideoJob.rerun = { base, clip }`（base 是照着哪条重出、clip 是从第几段起，从 1 数）。它是另一条独立的成片，不跟原片并成版本。
+- 服务端（`videoJobs.create` 的 `rerun` 分支）：留下的前 `clip − 1` 段原样记进新这条的 `chain.clips`，但**名字换成新这条的**（`media_agent_<新 jobId>_s<i>.mp4`）；
+  发第一段之前把这几个文件从那台的 `output/media-agent/` 照新名字拷回 `input/`（原文件还在——程序只在删这条视频时才清那几段）。
+  校验：只有接力那套能这么重出、不能在还在跑的那条上重出、`clip` 得在可选范围、段数不能变、留下来的每段帧数要和这一版的计划一样；
+  那几段要是在那台上没了，报「第 k 段在那台上找不到了（那条视频删了？）…只能整条重出」。
+- 发哪一段的图：`submit` 现在按「已经出完几段」决定发第几段（新的一条是第 0 段），所以同一条代码路径既能起一条新接力，也能从中途接着跑
+  （「从第 N 段起重出」就是给新的一条预先记上前 `clip − 1` 段）。
+- 覆盖：`packages/shared` 里 `rerunFroms` 的档位、服务端集成测试（真发假 ComfyUI：留下的那一段只拷一次、只发后面几段 + 一条拼接、合并读的是新名字）、
+  e2e（界面上点出来跑通）；真机也跑过一遍（见 `docs/reports/selflift-u37.md`）。
 
 ## 6. 界面
 

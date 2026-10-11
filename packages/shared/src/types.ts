@@ -415,6 +415,7 @@ export type VideoChain = { total: number; clips: VideoChainClip[]; merging?: boo
 // 点一次「生成视频」出的一条，挂在 assistant 消息的 videos 里，见 docs/dev-plan.md 5.27。
 // source 是照着哪条再来的；file 是临时文件夹里的视频，相对工作文件夹、用 / 隔开；bytes 是文件多大，ms 是从开始跑到出完用了多久，savedPath 是下载到哪。
 // 重拍一截出的是原来那条的一个版本：parent 是原片的 id，reshoot 是在哪一版上重拍、重拍第几帧到第几帧（不含），见 5.30。
+// rerun 是接力那套「从第 N 段起重出」（SelfLift）：base 是照着哪条重出，clip 是从第几段起（从 1 数，前 clip−1 段照旧留着），见 5.34。
 // rev 每改一次加一，前端拿它丢掉旧的
 export type VideoJob = {
   id: string;
@@ -424,6 +425,7 @@ export type VideoJob = {
   source?: { jobId: string };
   parent?: string;
   reshoot?: { base: string; from: number; to: number };
+  rerun?: { base: string; clip: number };
   latents?: VideoLatents;
   // SelfLift 接续那套接力的进度：分几段、已经出完哪几段（存盘，程序重启了接着跑），见 docs/dev-plan.md 5.32
   chain?: VideoChain;

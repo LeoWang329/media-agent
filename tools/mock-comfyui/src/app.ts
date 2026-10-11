@@ -647,11 +647,20 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
     const encodeId = merge ? undefined : of('MiniMaxH3ReferenceToVideo')[0] ?? of('MMH3ReferenceMultiPrompt')[0];
     const text = String(graph[encodeId ?? '']?.inputs.prompt ?? graph[encodeId ?? '']?.inputs.prompts ?? '');
     const wait = text.includes('慢') ? slowStepMs : videoStepMs;
-    const failure = text.includes('显存')
-      ? 'CUDA out of memory. Tried to allocate 20.00 GiB'
-      : text.includes('报错')
-        ? 'mock-comfyui：提示词含「报错」，按约定出错'
-        : null;
+    // H3 官方那个编码节点的参考图是「自动增长」输入，得一张一张发（ref_images.ref_image_0…）。
+    // 发成整条 ref_images 时，节点里 `for img in (ref_images or {}).values()` 会拿一块张量判真假，
+    // 真机上报 RuntimeError: Boolean value of Tensor with more than one value is ambiguous —— 照真的报同一个错。
+    // 注意只有 MiniMaxH3ReferenceToVideo 这样：两遍生成那套的 MMH3ReferenceMultiPrompt 就是要一整条 ref_images
+    const encodeType = graph[encodeId ?? '']?.class_type;
+    const wholeRefs = encodeType === 'MiniMaxH3ReferenceToVideo' && graph[encodeId!].inputs.ref_images !== undefined;
+    const failure = wholeRefs
+      ? 'Boolean value of Tensor with more than one value is ambiguous'
+      : text.includes('显存')
+        ? 'CUDA out of memory. Tried to allocate 20.00 GiB'
+        : text.includes('报错')
+          ? 'mock-comfyui：提示词含「报错」，按约定出错'
+          : null;
+    const failureWhere = wholeRefs ? { node: encodeId, type: 'MiniMaxH3ReferenceToVideo' } : null;
     const sampler = of('SelfLiftH3Sampler')[0];
     const steps = Number(linked(graph, graph[sampler]?.inputs.sigmas)?.inputs.steps ?? 8);
     // 拼起来那一条：把各段的名字写进历史，测试能看出拼的是哪几段
@@ -697,11 +706,11 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const [type, data] = events[sent];
       sent += 1;
       sendTo(task.clientId, type, data);
-      if (failure && sampler && type === 'progress' && data.value === 2) {
+      if (failure && (failureWhere || sampler) && type === 'progress' && data.value === 2) {
         const error = {
           prompt_id: task.id,
-          node_id: sampler,
-          node_type: 'SelfLiftH3Sampler',
+          node_id: failureWhere?.node ?? sampler,
+          node_type: failureWhere?.type ?? 'SelfLiftH3Sampler',
           executed: [],
           exception_message: failure,
           exception_type: failure.includes('CUDA') ? 'torch.OutOfMemoryError' : 'RuntimeError',

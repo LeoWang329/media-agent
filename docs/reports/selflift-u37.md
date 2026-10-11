@@ -81,6 +81,28 @@
 - 视频 md5 连同参数两次都不稳（编码器抖动），所以画面改用 SSIM：同参数两次 0.9932，0 vs 12 是 0.8885（差一个量级）→ 画面也被改变。
 - 两次提交的图只有 3 处不同（多 feather 节点、`sampler.positive` 指向、`SaveVideo` 前缀），其余 30 个节点逐字相同。
 
+## 第三轮补的一处：从第 N 段起重出（5.34）
+
+用户问「5 段里第 3 段有问题，是重拍第 3 段还是 5 段都重拍」——这套原本只能整条重出。加了「从第 N 段起重出」：
+
+- 为什么不能只重出中间一段：接力是**链式**的，第 N+1 段是接着第 N 段的画面长出来的，换掉第 N 段后面就对不上；所以粒度是「从第 N 段起往后的都重出，前面几段留着」。
+- 能选的起点是 `2` 到 `min(总段数, 已经出完几段 + 1)`（第 1 段起等于整条重出）；参数和**种子**照原来那条，提示词照框里现在的，段数不能变。
+- 留下的那几段原样记进新这条的 `chain.clips`，只是换成新这条的名字，发第一段之前从那台的 `output/media-agent/` 拷回 `input/`。
+
+### 真机验过（`outputs/u37/try-rerun.real.ts`，实例 A，ComfyUI 0.38.0）
+
+15 秒 2 段、0.3 百万像素 ×1.5（1120×640）、6 步（前 3 步低分辨率）、22 帧上下文、双 LoRA 0.75/0.7 + 羽化 12：
+
+| | 结果 |
+| --- | --- |
+| 第一条 | 2 段各 192 帧，成片 1,960,240 字节 |
+| 从第 2 段起重出 | `rerun {base: 第一条, clip: 2}`，种子照旧 `3206708544`；带过来的段就 1 个（第 1 段，文件名还是第一条那个 `selflift_<第一条>_s0_00001_.mp4`） |
+| 进度 | 直接从 `pass1 第 2/2 段` 开始——**第 1 段没重跑** |
+| 成片 | 2 段各 192 帧（第 0 段是原来那一段的文件、第 1 段是新出的），1,708,100 字节 |
+| 那台 `/history` | 这条 job 只跑了 2 个任务：`selflift_<新>_s1`（34 个节点）+ 拼接（4 个节点）；第 2 段的提示词是改过的那句、`LoadVideo` 读的是 `media_agent_<新>_s0.mp4`，拼接读 `_s0` / `_s1` |
+
+两条成片都留在 `outputs/u37/videos/`（`整条-原版-f2d49327.mp4`、`整条-从第2段重出-b28c70bd.mp4`），跑完把那台上这条 job 留的三个文件清掉了。
+
 ## 真机跑出来的数
 
 ### 一次手工拼图（`outputs/u37/try-chain.mjs`，只验接线）
@@ -121,6 +143,27 @@
 
 中途踩到的坑：`ColorTransfer` 的动态下拉子项在 API 格式里得写成 `source_stats.target_index`（照报错里的 `input_name`），写成 `target_index` 会被拦下来。
 
+### 带着参考图跑就炸：`Boolean value of Tensor with more than one value is ambiguous`（2026-10-10 修）
+
+用户 8 秒单段的接力（**带一张参考图**）报「生成视频出错（MiniMaxH3ReferenceToVideo）：Boolean value of Tensor with more than one value is ambiguous」。
+那台的 `/history` 里有完整 traceback，指的是插件自己那一行：
+
+```
+File "/root/ComfyUI/comfy_extras/nodes_minimax_h3.py", line 297, in execute
+    for img in (ref_images or {}).values():
+RuntimeError: Boolean value of Tensor with more than one value is ambiguous
+```
+
+`current_inputs` 里 `ref_images` 是**一整块 `tensor([...])`**：H3 官方节点的 `ref_images`/`ref_videos`/`ref_video_audios`/`ref_audios` 都是「自动增长」输入
+（`io.Autogrow`，前缀 `ref_image_` 等），要**一张一张**写成 `ref_images.ref_image_0`、`ref_image_1`…；我们把参考图串成一条 `ImageTensorList`
+按整条 `ref_images` 发过去，节点拿到一块张量，`(ref_images or {})` 一判真假就炸。**没有参考图的跑法碰不到那一行**，所以前几轮真机验证没暴露。
+
+- 修法：接力的图改成 `ref_images.ref_image_<i>` 一张条一项（两遍生成那套保持原样，它那边的 `MMH3ReferenceMultiPrompt` 就是要一整条），
+  接力这条也不再接用不着的 `ImageTensorList`；假 ComfyUI 照真的报同一个错，这类回归以后跑测试就能拦住。
+- 真机复验（8 秒 1 段、0.4 百万像素 ×2 = 1728×960、一张参考图、8 步）：`done`，成片 1,652,478 字节；那台上那张编码图的输入键是
+  `clip, vae, audio_vae, width, height, length, ref_image_size, prompt, ref_images.ref_image_0`（没有整条 `ref_images`）。
+  成片留在 `outputs/u37/videos/带参考图-8秒-5065c640.mp4`。
+
 ## 调参放开到哪
 
 生成设置小窗「流程」选 SelfLift 接续后能改：总步数、低分辨率跑几步、低分辨率倍数、放大器、**接上一段带几帧**（22/39/90）、**接缝加噪**（0–0.5）、
@@ -131,7 +174,8 @@
 
 ## 限制
 
-- **不能重拍一截**：没有一采、二采存档，界面上不出现那条，接口也拦。
+- **不能重拍一截**：没有一采、二采存档，界面上不出现那条，接口也拦。要改后面几段用「**从第 N 段起重出**」（5.34）：
+  接力是链式的，换掉第 N 段后面就得跟着重出，所以能选的是「从第 N 段起往后的都重出、前面几段留着」，不能只重出中间一段。
 - **接缝的声音只验到「刻度真的起作用」**：0 和 12 出来的音频逐比特不同、同参数可复现，画面也差一个量级；但「12 是不是比 0 好听」得自己听。
   另外画面靠上下文帧接上，声音是每段自己生成的（只有接缝那几帧的声音是钉进去的）。
 - **插件要装、还要修**：不装那个羽化插件就把刻度填 0（照样跑）；装了的话作者那版 `compat.py` 在 0.38.0 上不起作用，得按 4 空格修一次。

@@ -619,8 +619,28 @@ test('生成设置里能选 SelfLift 接续那套：二采重画多少、总步�
   expect(graphNodes(clip, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 39, strategy: 'tail' });
   expect(graphNodes(clip, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 39 });
   expect(graphNodes(clip, 'ColorTransfer')[0].inputs).toMatchObject({ strength: 0.4 });
-  // 这套没有一采二采的存档，所以没有「重拍一截」
+  // 这套没有一采二采的存档，所以没有「重拍一截」；但有「从第 N 段起重出」
   await expect(videos(page).locator('[data-vact="reshoot"]')).toHaveCount(0);
+  const before = prompts.length;
+  await videos(page).locator('[data-vact="rerun"]').click();
+  await expect(page.locator('[data-od-id="popover-rerun"]')).toBeVisible();
+  // 3 条都出完了：能从第 2、3 段起
+  await expect(page.locator('[data-rerun]')).toHaveText([/从第 2 段起重出/, /从第 3 段起重出/]);
+  await page.locator('[data-rerun="2"]').click();
+  await expect(finished(page)).toHaveCount(2, { timeout: 30_000 });
+  await expect(videos(page).locator('.ig-kind').last()).toHaveText('从第 2 段起重出 · 前 1 段照旧');
+  const moved = (await comfyPrompts(page)).map((one) => one.prompt).slice(before);
+  // 只重跑了第 2、3 段，再拼一次；留下的第 1 段是照原样拷进 input 的
+  expect(moved).toHaveLength(3);
+  const rerunClips = moved.filter((graph) => graphNodes(graph, 'MiniMaxH3ReferenceToVideo').length > 0);
+  expect(rerunClips).toHaveLength(2);
+  expect(graphNodes(rerunClips[0], 'LoadVideo')[0].inputs.file).toBe(graphNodes(moved[2], 'LoadVideo')[0].inputs.file);
+  const rerunMerge = moved.filter((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0);
+  expect(rerunMerge).toHaveLength(1);
+  const names = graphNodes(rerunMerge[0], 'LoadVideo').map((node) => String(node.inputs.file));
+  expect(names).toHaveLength(3);
+  expect(names.map((name) => name.replace(/_s\d\.mp4$/, '')).every((one) => one === names[0].replace(/_s\d\.mp4$/, ''))).toBe(true);
+  expect(names.map((name) => name.match(/_s(\d)\.mp4$/)![1])).toEqual(['0', '1', '2']);
 });
 
 // 视频和音频参考用的文件夹：测试用的小视频、小音频和一张图，导入资产库

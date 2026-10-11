@@ -92,6 +92,10 @@ export const againVideo = (place: VideoPlace, job: VideoJob, sameSeed: boolean) 
 export type ReshootPick = { from: number; to: number; seed: number | null; prompts: Record<number, string> };
 export const reshootVideo = (place: VideoPlace, job: VideoJob, pick: ReshootPick) => start(place, { reshoot: { jobId: job.id, ...pick } }, '开始重拍这一截');
 
+// 接力那套从第 N 段起重出：前 N−1 段照旧留着，从第 N 段往后再跑一遍再拼起来；提示词照现在框里的，见 docs/dev-plan.md 5.34
+export const rerunVideo = (place: VideoPlace, job: VideoJob, clip: number, prompts: string[]) =>
+  start(place, { rerun: { jobId: job.id, clip, prompts } }, `从第 ${clip} 段起重出，前 ${clip - 1} 段照旧`);
+
 export async function stopVideo(place: VideoPlace, job: VideoJob) {
   try {
     const stopped = await trackWrite(api<VideoJob>(`${jobsUrl(place)}/${job.id}/stop`, { method: 'POST' }));
