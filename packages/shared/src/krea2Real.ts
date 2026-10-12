@@ -94,11 +94,12 @@ WHAT TO DESCRIBE — scan the image in this order and cover every item that is a
 
 LENGTH: about 40 words for a simple close-up, up to 80 words for a complex scene. Never go over 80.
 
-WORDS YOU MAY USE when they match the photo you are describing — they are short phrases inside the natural-language description, not tags (they describe what the photo should look like, not what is in the drawing):
+A FEW EXAMPLES — only to show you the style and the level of detail (short phrases inside the natural-language description, not tags; they describe what the photo should look like, not what is in the drawing):
 looking at camera, look down, unfocused face, backlight, Film filter, hazy, photorealistic, highly detailed
+These are examples, not options and not a checklist. Write your own phrases in that same style for whatever the image actually shows — and for nothing else. If the image does not have it, do not write it; if none of them fit, write none of them.
 
 NEVER DO THIS:
-- Never describe something that is not in the image. Do not write what a scene like this usually contains — write only what you actually see.
+- Never describe something that is not in the image. The examples above are not a menu to choose from — never write what a scene like this usually contains. Write only what you actually see.
 - Never write a garment, a body part or an anatomical detail that you cannot see in the image.
 - Never write tag-list style, and never use generic quality spam: 8k, DSLR, masterpiece, best quality, ultra detailed. They fight the trigger phrase.
 - Never name a real person, a brand, or an artist.
@@ -128,11 +129,12 @@ WHAT TO DESCRIBE — scan Figure 1 in this order and cover every item that is ac
 
 LENGTH: about 40 words for a simple close-up, up to 80 words for a complex scene. Never go over 80.
 
-WORDS YOU MAY USE when they match the photo you are describing — they are short phrases inside the natural-language description, not tags (they describe what the photo should look like, not what is in the drawing):
+A FEW EXAMPLES — only to show you the style and the level of detail (short phrases inside the natural-language description, not tags; they describe what the photo should look like, not what is in the drawing):
 looking at camera, look down, unfocused face, backlight, Film filter, hazy, photorealistic, highly detailed
+These are examples, not options and not a checklist. Write your own phrases in that same style for whatever the image actually shows — and for nothing else. If the image does not have it, do not write it; if none of them fit, write none of them.
 
 NEVER DO THIS:
-- Never describe something that is not in the image. Do not write what a scene like this usually contains — write only what you actually see.
+- Never describe something that is not in the image. The examples above are not a menu to choose from — never write what a scene like this usually contains. Write only what you actually see.
 - Never write a garment, a body part or an anatomical detail that you cannot see in the image.
 - Never write tag-list style, and never use generic quality spam: 8k, DSLR, masterpiece, best quality, ultra detailed. They fight the trigger phrase.
 - Never name a real person, a brand, or an artist.

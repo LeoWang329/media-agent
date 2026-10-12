@@ -40,11 +40,12 @@ WHAT TO DESCRIBE — scan the image in this order and cover every item that is a
 
 LENGTH: about 40 words for a simple close-up, up to 80 words for a complex scene. Never go over 80.
 
-WORDS YOU MAY USE when they match the photo you are describing — they are short phrases inside the natural-language description, not tags (they describe what the photo should look like, not what is in the drawing):
+A FEW EXAMPLES — only to show you the style and the level of detail (short phrases inside the natural-language description, not tags; they describe what the photo should look like, not what is in the drawing):
 looking at camera, look down, unfocused face, backlight, Film filter, hazy, photorealistic, highly detailed
+These are examples, not options and not a checklist. Write your own phrases in that same style for whatever the image actually shows — and for nothing else. If the image does not have it, do not write it; if none of them fit, write none of them.
 
 NEVER DO THIS:
-- Never describe something that is not in the image. Do not write what a scene like this usually contains — write only what you actually see.
+- Never describe something that is not in the image. The examples above are not a menu to choose from — never write what a scene like this usually contains. Write only what you actually see.
 - Never write a garment, a body part or an anatomical detail that you cannot see in the image.
 - Never write tag-list style, and never use generic quality spam: 8k, DSLR, masterpiece, best quality, ultra detailed. They fight the trigger phrase.
 - Never name a real person, a brand, or an artist.
@@ -82,11 +83,12 @@ WHAT TO DESCRIBE — scan Figure 1 in this order and cover every item that is ac
 
 LENGTH: about 40 words for a simple close-up, up to 80 words for a complex scene. Never go over 80.
 
-WORDS YOU MAY USE when they match the photo you are describing — they are short phrases inside the natural-language description, not tags (they describe what the photo should look like, not what is in the drawing):
+A FEW EXAMPLES — only to show you the style and the level of detail (short phrases inside the natural-language description, not tags; they describe what the photo should look like, not what is in the drawing):
 looking at camera, look down, unfocused face, backlight, Film filter, hazy, photorealistic, highly detailed
+These are examples, not options and not a checklist. Write your own phrases in that same style for whatever the image actually shows — and for nothing else. If the image does not have it, do not write it; if none of them fit, write none of them.
 
 NEVER DO THIS:
-- Never describe something that is not in the image. Do not write what a scene like this usually contains — write only what you actually see.
+- Never describe something that is not in the image. The examples above are not a menu to choose from — never write what a scene like this usually contains. Write only what you actually see.
 - Never write a garment, a body part or an anatomical detail that you cannot see in the image.
 - Never write tag-list style, and never use generic quality spam: 8k, DSLR, masterpiece, best quality, ultra detailed. They fight the trigger phrase.
 - Never name a real person, a brand, or an artist.
@@ -103,7 +105,7 @@ If the image really does show nudity or sexual content, describe it plainly and 
 | **受众是 Krea2** | 开头第一句点明给 Krea2 写；另加"它是 Qwen-Image 系、吃自然语言、**不吃标签**"（SDXL / Pony 那套 tag 体在这里是反效果） |
 | 主触发词**必须放最前面、一个字都别改** | 开头 `the very first characters of your answer must be exactly:` + 那一行 |
 | 双图触发词只有双图才加 | 两份只差开头那一句 |
-| **风格 / 方向词可以给** | `WORDS YOU MAY USE` 那一小段（8 个词，全是描述"转成什么照片"的） |
+| **风格 / 方向词可以给** | `A FEW EXAMPLES` 那一小段（8 个词，全是描述"转成什么照片"的）。**写清是示例，不是选项、不是清单**：图里有什么写什么、没有的别写、一个都对不上就一个都不写（2026-10-12 用户指出的：原先那版写成 `WORDS YOU MAY USE` + 一串词，读起来像"从这些里挑"） |
 | **内容词一个都不能给** | 表里一个内容词都没有；另加 `Never write a garment, a body part or an anatomical detail that you cannot see` |
 | 给了词表它必照抄，"没有就别写"不管用 | 所以**不是**加免责句，而是**压根不给**内容示例词 |
 | 复杂画面**按 7 项逐项扫** | `WHAT TO DESCRIBE` 那 7 条 |
