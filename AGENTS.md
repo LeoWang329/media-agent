@@ -1,6 +1,7 @@
 # 提示词画布
 
 需求为什么这么定看 `docs/requirements-interview.md`，具体怎么做看 `docs/dev-plan.md`，每个阶段的报告在 `docs/reports/`。
+接到手里时先看最近一轮的交接说明：`docs/handoff-video-lead.md`（生成视频配置弹窗 + SelfLift 续写起点，含现状、怎么验、坑）。
 
 ## 安装
 
