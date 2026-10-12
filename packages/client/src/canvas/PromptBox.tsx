@@ -7,9 +7,8 @@ import { useCanvasStore } from '../store/canvasStore';
 import { copyText, fmtNum } from '../ui/copy';
 import { Icon, type IconName } from '../ui/Icon';
 import { toast } from '../ui/toast';
-import { closeRefPicker, openRefPicker, useOverlays } from './overlays';
+import { closeRefPicker, openGenVideo, openRefPicker, useOverlays } from './overlays';
 import { promptBody } from './tokens';
-import { generateVideo } from './videoActions';
 import { VideoJobs } from './VideoJobs';
 import { generate } from './imageActions';
 import { ImageJobs } from './ImageJobs';
@@ -67,8 +66,8 @@ export function PromptBox({ node, message, index, label, text, ro, writing, inco
               className="btn btn-secondary btn-sm"
               data-act="genVideo"
               disabled={Boolean(tooShort)}
-              title={tooShort ?? '按这条回复的时长、比例和节点的生成设置，在生成视频用的 AutoDL 实例上生成'}
-              onClick={() => void generateVideo({ nodeId: node.id, messageId: message.id }, index)}
+              title={tooShort ?? '按这条回复的时长、比例和节点的生成设置生成：先弹出配置窗，改完点「开始生成」'}
+              onClick={() => openGenVideo({ nodeId: node.id, messageId: message.id, promptIndex: index })}
             >
               <Icon name="film" />
               <span className="lbl">生成视频</span>

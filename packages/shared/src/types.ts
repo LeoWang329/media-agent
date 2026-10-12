@@ -313,12 +313,22 @@ export type VideoSpeed = 'fast' | 'full';
 export type VideoSteps = { pass1: number; pass2: number };
 // 两遍生成（一采 → 潜空间放大 → 二采）还是 SelfLift 接续（照 U37 那份，一段接一段出，见 docs/dev-plan.md 5.32）
 export type VideoWorkflow = 'two-pass' | 'selflift';
+// 续写起点：给一段「前一段视频」，SelfLift 从那一段接着往下出，出来的整条 = 这一段 + 新出的几段，见 docs/dev-plan.md 5.35。
+// 三种来源：job 是这个框下面已经生成的一条（用它的临时文件，或者下载下来的那份）；
+// media 是这台画布上导入的视频素材；lead 是本机传上来的（存在画布的 leads/ 下）
+export type VideoLead = { kind: 'job'; jobId: string } | { kind: 'media'; mediaId: string } | { kind: 'lead'; leadId: string };
+
+// 当续写起点传上来的视频：原样存一份。不记时长、宽高、有没有声音——浏览器不一定读得出来（HEVC 就报不出宽高），
+// 我们也不需要：规整成出片大小、补静音是在生成视频那台上做的
+export type LeadRecord = { id: string; sha256: string; ext: string; originalName: string; originalPath: string; bytes: number; addedAt: string };
+
 // SelfLift 接续那套的参数，照实例上「U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573」：
 // steps 总共几步、transitionStep 前几步在低分辨率跑、lowresScale 低分辨率缩到多少、
 // upscaler 提升用哪个放大器（'none' 是不用放大器，走模型自己的像素锚点）、
 // contextFrames 接上一段带几帧（22、39、90 这几档，17 的倍数加 5）、noise 接缝加多少噪、colorMatch 偏色对齐强度（0 是不对齐）、
 // lowresLora、hiresLora 是双 LoRA 双采：低分辨率那遍和高分辨率那遍各挂一套 LoRA，接在主模型和注意力补丁之上，null 是不另挂；
-// audioFeather 是接缝声音羽化几个刻度（走 MiniMaxH3AudioGuideFeather），0 是不羽化、就不接那个节点
+// audioFeather 是接缝声音羽化几个刻度（走 MiniMaxH3AudioGuideFeather），0 是不羽化、就不接那个节点；
+// lead 是续写起点：给了就从这段视频接着往下出（空着或者 null 是重新生成）
 export type VideoSelfLift = {
   steps: number;
   transitionStep: number;
@@ -330,6 +340,7 @@ export type VideoSelfLift = {
   lowresLora: VideoLora | null;
   hiresLora: VideoLora | null;
   audioFeather: number;
+  lead?: VideoLead | null;
 };
 export type VideoSettings = {
   megapixels: number;
@@ -408,9 +419,14 @@ export type VideoLatents = { pass1: string; pass2: string; instance: string };
 
 // SelfLift 接续那套是分段接力的：一条视频分好几段，一段一个任务发给 ComfyUI，上一段出完接下一段，最后把几段拼成一条，见 docs/dev-plan.md 5.32。
 // clips 是已经出完的各段：filename、subfolder 是它在生成视频那台 output 下的位置，frames 是这一段多少帧，
-// name 是拷进那台 input 目录以后的名字（下一段用 LoadVideo 读它、最后拼起来也读它）
+// name 是拷进那台 input 目录以后的名字（下一段用 LoadVideo 读它、最后拼起来也读它）。
+// lead 是「续写起点」那段（传上去的前一段视频）：它不在 clips 里（clips 只放这次新出的几段），
+// 拼成整条时它排在最前面，见 docs/dev-plan.md 5.35
 export type VideoChainClip = { filename: string; subfolder: string; frames: number; name: string };
-export type VideoChain = { total: number; clips: VideoChainClip[]; merging?: boolean };
+// 「续写起点」那段：name 是接进流程用的那份（规整过的就是规整出来的那份），uploaded 是原来传上去的那份（规整过才有，
+// 两份都是要删的临时文件），seconds 是多长（探得到才有）
+export type VideoChainLead = VideoChainClip & { uploaded?: string; seconds?: number };
+export type VideoChain = { total: number; clips: VideoChainClip[]; merging?: boolean; lead?: VideoChainLead };
 
 // 点一次「生成视频」出的一条，挂在 assistant 消息的 videos 里，见 docs/dev-plan.md 5.27。
 // source 是照着哪条再来的；file 是临时文件夹里的视频，相对工作文件夹、用 / 隔开；bytes 是文件多大，ms 是从开始跑到出完用了多久，savedPath 是下载到哪。
@@ -429,6 +445,8 @@ export type VideoJob = {
   latents?: VideoLatents;
   // SelfLift 接续那套接力的进度：分几段、已经出完哪几段（存盘，程序重启了接着跑），见 docs/dev-plan.md 5.32
   chain?: VideoChain;
+  // 「续写起点」：这条是接着哪一段视频往下出的（label 是那段从哪来、叫什么，显示用），见 docs/dev-plan.md 5.35
+  lead?: { label: string; seconds?: number };
   params: VideoJobParams;
   seed: number;
   promptId?: string;
@@ -733,7 +751,7 @@ export type NodeSummary = CanvasNodeLayout & {
 // originalMissing：原文件已经不在了（只查槽位里正放着的图）
 export type CanvasImage = ImageRecord & { originalMissing?: boolean };
 
-export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, CanvasImage>; media: Record<string, MediaRecord> };
+export type CanvasDetail = { canvas: Canvas; nodes: NodeSummary[]; images: Record<string, CanvasImage>; media: Record<string, MediaRecord>; leads: Record<string, LeadRecord> };
 
 // 上传清单里一张图该传哪个文件；size 是那个文件的字节数
 export type ChecklistPath = { path: string; kind: 'original' | 'canvas'; note?: string; size: number };

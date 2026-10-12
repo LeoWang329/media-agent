@@ -27,6 +27,7 @@ import {
   type TagWeighting,
   type TranslateLanguage,
   type UpscaleSettings,
+  type VideoLead,
   type VideoSelfLift,
   type VideoSettings,
   type VideoSteps,
@@ -287,7 +288,19 @@ function selfliftSettings(value: unknown): VideoSelfLift {
     hiresLora: phaseLora(fields.hiresLora, '高分辨率那遍的 LoRA'),
     // 羽化刻度没写就是照默认（老界面发的记录里没有这一项）；写了就照写的，0 是不接羽化那个节点
     audioFeather: fields.audioFeather === undefined ? DEFAULT_SELFLIFT.audioFeather : integer(fields.audioFeather, '接缝声音羽化', VIDEO_SELFLIFT.audioFeather.min, VIDEO_SELFLIFT.audioFeather.max),
+    // 续写起点：没写或者 null 是重新生成；写了就是那段前一段视频从哪来，见 docs/dev-plan.md 5.35
+    lead: leadSetting(fields.lead),
   };
+}
+
+// 续写起点从哪来：这个框下面已生成的一条、画布上的视频素材、本机传上来的前一段
+function leadSetting(value: unknown): VideoLead | null {
+  if (value === null || value === undefined) return null;
+  const fields = (value ?? {}) as Record<string, unknown>;
+  if (fields.kind === 'job') return { kind: 'job', jobId: nonEmptyText(fields.jobId, '当续写起点的那条视频') };
+  if (fields.kind === 'media') return { kind: 'media', mediaId: uuid(fields.mediaId) };
+  if (fields.kind === 'lead') return { kind: 'lead', leadId: uuid(fields.leadId) };
+  throw new HttpError(400, '续写起点只能是这个框下面已生成的一条、画布上的视频素材，或者传上来的前一段视频');
 }
 
 // 双 LoRA 双采里的一遍挂的 LoRA：null（或者没写，老记录就是没写）是不挂

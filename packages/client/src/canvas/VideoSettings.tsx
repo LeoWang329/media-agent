@@ -21,6 +21,7 @@ import {
   workflowOfSettings,
   type AspectRatio,
   type ChatNode,
+  type Message,
   type VideoLora,
   type VideoSettings,
   type VideoSpeed,
@@ -33,6 +34,7 @@ import { anyNumber, CommitInput, integerBetween, integerFrom } from '../ui/Commi
 import { Icon } from '../ui/Icon';
 import { Popover } from '../ui/Popover';
 import { NameSelect } from './GenSettings';
+import { VideoLeadPick } from './VideoLeadPick';
 
 // 视频节点的时长和生成设置，见 docs/dev-plan.md 5.24、5.27
 
@@ -116,6 +118,16 @@ export function VideoGenButton({ node }: { node: ChatNode }) {
 }
 
 function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: ChatNode; onClose: () => void }) {
+  return (
+    <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg, .gc-lora-pop'))}>
+      <VideoSettingsBody node={node} />
+    </Popover>
+  );
+}
+
+// 生成设置的内容：「生成设置」那个小窗和点「生成视频」弹出来的窗用的是同一份，见 docs/dev-plan.md 5.36。
+// message 给了就多几样跟这个框相关的（比如「续写起点」能挑这个框下面已生成的那条）
+export function VideoSettingsBody({ node, message }: { node: ChatNode; message?: Message }) {
   const settings = videoSettingsOf(node.video);
   const workflow = workflowOfSettings(settings);
   const selflift = selfliftOfSettings(settings);
@@ -143,7 +155,7 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
   const setPhaseLora = (key: 'lowresLora' | 'hiresLora', lora: VideoLora | null) =>
     save({ selflift: key === 'lowresLora' ? { ...selflift, lowresLora: lora } : { ...selflift, hiresLora: lora } });
   return (
-    <Popover anchor={anchor} align="right" className="vc-pop" odId="popover-video-settings" label="生成设置" onClose={onClose} keepOpen={(t) => Boolean(t.closest('#btnVideoCfg, .gc-lora-pop'))}>
+    <>
       <div className="vc-sec">
         <h4>
           流程<span className="meta">这个节点走哪套内置流程</span>
@@ -328,6 +340,16 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
       </div>
       {workflow === 'selflift' && (
         <>
+          <div className="vc-sec">
+            <h4>
+              续写起点<span className="meta">从一段已有的视频接着往下出；不选就是重新生成</span>
+            </h4>
+            <VideoLeadPick node={node} message={message} />
+            <p className="hint">
+              选了一段，出来的整条就是「这一段 + 按这个节点时长新出的几段」：新出的第 1 段先读它的尾巴（开头那几帧，出片时剪掉）钉进去接着往下长，
+              出完再把两段接成一条。跟自己这个大小、帧率、有没有声音对不上的，会先在那台上规整一份（缩到出片大小、24 帧、没声音的补静音）。
+            </p>
+          </div>
           <div className="vc-sec">
             <h4>
               低分辨率倍数、放大器<span className="meta">SelfLift 那套怎么抬上去</span>
@@ -584,6 +606,6 @@ function VideoSettingsPop({ anchor, node, onClose }: { anchor: DOMRect; node: Ch
         </b>
         <span className="meta">采样器、调度器、分段重叠照内置流程，不用调</span>
       </div>
-    </Popover>
+    </>
   );
 }

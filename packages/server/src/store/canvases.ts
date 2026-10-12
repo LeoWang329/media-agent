@@ -20,6 +20,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { HttpError } from '../httpError';
 import { readImages } from './images';
+import { readLeadRecords } from './leads';
 import { readMediaRecords } from './media';
 import { readJson, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
@@ -118,7 +119,7 @@ export async function canvasDetail(work: string, canvasId: string, isGenerating:
       if (image?.originalPath && !(await exists(image.originalPath))) images[id] = { ...image, originalMissing: true };
     }),
   );
-  return { canvas, images, nodes: summaries, media: await readMediaRecords(work, canvasId) };
+  return { canvas, images, nodes: summaries, media: await readMediaRecords(work, canvasId), leads: await readLeadRecords(work, canvasId) };
 }
 
 // 删除画布：整个文件夹移到 .trash，返回回收站里那个文件夹的名字，撤销时用

@@ -144,10 +144,11 @@ export async function uploadImage(url: string, data: Uint8Array, name: string): 
   return body.subfolder ? `${body.subfolder}/${body.name}` : body.name;
 }
 
-// 传一个本机文件（图，或者带的视频、音频），文件名按内容算，同一个文件传几次都是同一个名字
-export async function uploadFile(url: string, file: string): Promise<string> {
+// 传一个本机文件（图，或者带的视频、音频），文件名按内容算，同一个文件传几次都是同一个名字。
+// name 给了就用它（「续写起点」按任务起名：同一条视频被两条任务用着时不至于互相删掉）
+export async function uploadFile(url: string, file: string, name?: string): Promise<string> {
   const data = await fs.readFile(file);
-  return uploadImage(url, data, `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}${path.extname(file).toLowerCase() || '.png'}`);
+  return uploadImage(url, data, name ?? `media-agent-${createHash('sha256').update(data).digest('hex').slice(0, 16)}${path.extname(file).toLowerCase() || '.png'}`);
 }
 
 // 队列里正在跑的和排着的，按排队先后

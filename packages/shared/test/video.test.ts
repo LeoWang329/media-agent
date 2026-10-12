@@ -604,9 +604,46 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
       lowresLora: null,
       hiresLora: null,
       audioFeather: 12,
+      lead: null,
     });
     expect(stepsOf(params)).toEqual({ pass1: 8, pass2: 0 });
     expect(stepsOf(videoParams(['一段'], 15, '16:9', DEFAULT_VIDEO_SETTINGS))).toEqual({ pass1: 10, pass2: 3 });
+  });
+
+  it('续写起点：给了前一段视频，新出的第 1 段就带上下文（读前一段的尾巴钉在第 0 帧、出片剪掉、颜色对齐）', () => {
+    const lead = { kind: 'lead' as const, leadId: '11111111-2222-3333-4444-555555555555' };
+    const withLead = videoParams(['第一段'], 8, '16:9', { ...selflift, selflift: { ...sel, lead } });
+    expect(withLead.selflift).toMatchObject({ lead });
+    // 没给前一段的：第 1 段没有上下文，不读片子、不剪、不对齐颜色
+    const alone = selfliftClipGraph(withLead, 123, { refs: [] }, 'job', 0);
+    expect(of(alone, 'LoadVideo')).toHaveLength(0);
+    expect(of(alone, 'MiniMaxH3AddGuide')).toHaveLength(0);
+    expect(of(alone, 'VideoTemporalCrop')).toHaveLength(0);
+    // 给了：第 1 段就照第 2 段起那套接（读前一段、取 22 帧尾巴、钉在第 0 帧、剪掉、对齐颜色）
+    const graph = selfliftClipGraph(withLead, 123, { refs: [] }, 'job', 0, 'media-agent-abc.mp4');
+    expect(of(graph, 'LoadVideo')[0].inputs.file).toBe('media-agent-abc.mp4');
+    expect(of(graph, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 22, strategy: 'tail' });
+    expect(of(graph, 'MiniMaxH3AddGuide')[0].inputs).toMatchObject({ frame_idx: 0 });
+    expect(of(graph, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 22 });
+    expect(of(graph, 'ColorTransfer')[0].inputs).toMatchObject({ method: 'mkl_lab', strength: 0.75 });
+    // 拼整条时前一段排在最前面：出来的整条 = 前一段 + 这次新出的
+    const merge = selfliftMergeGraph([{ name: 'media-agent-abc.mp4' }, { name: 'media_agent_job_s0.mp4' }], 'job');
+    expect(of(merge, 'LoadVideo').map((node) => node.inputs.file)).toEqual(['media-agent-abc.mp4', 'media_agent_job_s0.mp4']);
+    expect(of(merge, 'ConcatenateVideo')[0].inputs).toMatchObject({ 'videos.video0': ['400', 0], 'videos.video1': ['401', 0] });
+    // 设置里没给就是重新生成
+    expect(selfliftOfSettings(DEFAULT_VIDEO_SETTINGS).lead).toBeNull();
+  });
+
+  it('续写起点也算一段：「从第 N 段起重出」按出片顺序数段（第 2 段起＝留着前一段，这次出的重做）', () => {
+    const clip = { filename: 'a.mp4', subfolder: '', frames: 260, name: 'b.mp4' };
+    const lead = { ...clip, name: 'lead.mp4' };
+    // 前一段 + 1 段都出完了：能选的只有第 2 段
+    expect(rerunFroms({ chain: { total: 2, clips: [clip], lead } })).toEqual([2]);
+    expect(rerunFroms({ chain: { total: 3, clips: [clip, clip], lead } })).toEqual([2, 3]);
+    // 前一段在、新出的一段还没好：前一段也算出完了，能从第 2 段起
+    expect(rerunFroms({ chain: { total: 3, clips: [], lead } })).toEqual([2]);
+    // 没给前一段的照旧
+    expect(rerunFroms({ chain: { total: 2, clips: [clip] } })).toEqual([2]);
   });
 
   it('双 LoRA 双采：低分辨率那遍挂一套、高分辨率那遍挂另一套，都接在主模型和注意力补丁之上', () => {

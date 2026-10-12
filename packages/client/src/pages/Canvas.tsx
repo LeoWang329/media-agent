@@ -18,6 +18,7 @@ import { TranslateDialog } from '../canvas/TranslateDialog';
 import { BoxTagEditor, WriteTagsEditor } from '../canvas/BoxTagEditor';
 import { UploadDialog } from '../canvas/UploadDialog';
 import { onVideoEvent, showVideo } from '../canvas/videoActions';
+import { VideoGenDialog } from '../canvas/VideoGenDialog';
 import { VideoTasksButton } from '../canvas/VideoTasks';
 import { ZoomDialog } from '../canvas/ZoomDialog';
 import { fitAll, useView, zoomBy } from '../canvas/view';
@@ -279,6 +280,7 @@ export function Canvas() {
       <ImageViewer />
       <DownloadDialog />
       <VideoDownloadDialog />
+      <VideoGenDialog />
     </>
   );
 }

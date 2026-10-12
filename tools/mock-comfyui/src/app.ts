@@ -33,6 +33,8 @@ const STEPS = 5;
 
 // 生成视频那台上存一采、二采结果的文件夹
 const LATENT_DIR = '/root/ComfyUI/output/MiniMaxH3/latent_checkpoints';
+// 传上去的图、视频落在哪（和真的一样）：接力那套读的上一段、续写起点量的那段都在这里
+const COMFY_INPUT_DIR = '/root/ComfyUI/input';
 
 // 长视频出的是这个很小的真 mp4（VP9，Playwright 带的 Chromium 也能播）
 const VIDEO = fs.readFileSync(new URL('../fixtures/video.mp4', import.meta.url));
@@ -399,8 +401,7 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
   // 测试用：假装没装的节点类型，object_info 里不列，发来的任务也不收
   const hidden = new Set<string>();
   // 照 AutoDL 那台的 ComfyUI：整份 object_info 缓存着，底模、LoRA 文件夹最外层变了才重做
-  let whole: { sign: string; info: typeof OBJECT_INFO } | null = null;
-  const prompts: unknown[] = [];
+  let whole: { sign: string; info: typeof OBJECT_INFO } | null = null;  const prompts: unknown[] = [];
   let current: Run | null = null;
   let counter = 0;
   let videoCounter = 0;
@@ -862,6 +863,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       return;
     }
     uploads.set(file.name, Buffer.from(await file.arrayBuffer()));
+    // 也和真的一样落进 input 目录：接力那套要读上传的上一段、「续写起点」的量大小和规整都在那上面做
+    const target = ssh.local(`${COMFY_INPUT_DIR}/${file.name}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, uploads.get(file.name)!);
     res.json({ name: file.name, subfolder: '', type: 'input' });
   });
 

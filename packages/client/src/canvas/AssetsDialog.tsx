@@ -77,6 +77,13 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
 
   const pick = (file: AssetFile) => {
     if (mode === 'browse') return toast(`${file.name} · ${fmtSize(file.size)}`);
+    // 续写起点只能挑视频，见 docs/dev-plan.md 5.35
+    if (mode === 'lead') {
+      if (file.kind !== 'video') return toast('续写起点要一段视频', { tone: 'warn' });
+      closeAssets();
+      if (node) void useCanvasStore.getState().useLead(node.id, { path: file.path, name: file.name, mtime: file.mtime });
+      return;
+    }
     if (file.kind !== 'image' && mode !== 'slots') return toast('这里只能挑图', { tone: 'warn' });
     if (mode === 'slots') {
       setSelected((list) => (list.some((f) => f.path === file.path) ? list.filter((f) => f.path !== file.path) : [...list, file]));
@@ -112,6 +119,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
     browse: ['资产库', '图片原地引用，不会复制到别处'],
     replace: [`换掉 ${(slot ?? 0) + 1} 号槽位的图`, `挑一张，编号还是 ${(slot ?? 0) + 1} 号`],
     ref: ['挑一张图插进句子里', '不在槽位里的图会先放进下一个空槽位'],
+    lead: ['挑一段当续写起点', '只能挑视频。点一个就直接用，不用读多长、多宽——规整到出片大小是在那台上做的'],
   };
 
   const tile = (file: AssetFile) => {
@@ -268,6 +276,7 @@ function AssetsBody({ mode, slot }: { mode: AssetsMode; slot?: number }) {
   if (mode === 'browse') foot = node ? '' : '在画布上选一个节点，就能把图放进它的槽位';
   else if (mode === 'replace') foot = '点一张图直接替换';
   else if (mode === 'ref') foot = '点一张图就好';
+  else if (mode === 'lead') foot = '点一段视频就好，哪个文件夹里的都行';
   else if (selected.length) {
     foot = (
       <>

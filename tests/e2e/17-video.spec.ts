@@ -74,6 +74,17 @@ async function editBox(page: Page, text: string) {
 // 时长 60 秒要 4 段，一段最长 15 秒：手动改的框也得按段写，不然会被拦下来，见 docs/dev-plan.md 5.24
 const fourWay = (first: string) => [first, '第二段', '第三段', '第四段'].join('\n|\n');
 
+// 生成设置弹窗，见 docs/dev-plan.md 5.36
+const genDialog = (page: Page) => page.locator('[data-od-id="dialog-gen-video"]');
+
+// 点「生成视频」：先弹出配置窗（里面就是生成设置，顶上是「开始生成」），点它才真的发出去
+async function genVideo(page: Page) {
+  await box(page).locator('[data-act="genVideo"]').click();
+  await expect(genDialog(page)).toBeVisible();
+  await genDialog(page).locator('#vgGo').click();
+  await expect(genDialog(page)).toHaveCount(0);
+}
+
 test('10.4 第 1 条：设置里选生成视频用的实例，出图那台不能选；选好后顶上多出视频那台的状态，写着已关机', async ({ page }) => {
   expect((await page.request.put('/api/config', { data: { autodlToken: MOCK_AUTODL_TOKEN } })).ok()).toBe(true);
   expect((await page.request.put('/api/settings', { data: { comfy: { autodl: { instanceUuid: MOCK_AUTODL_UUID } } } })).ok()).toBe(true);
@@ -96,7 +107,7 @@ test('10.4 第 2 条：t2v、60 秒 → 说明里分 4 段 → 框里 4 段 → 
   await expect(box(page).locator('.ig-empty')).toContainText('分 4 段，约 57.6 秒，出片 1728×960');
 
   const states = await recordStates(page);
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(toasts(page).filter({ hasText: '生成视频用的 AutoDL 实例关着，先开机' })).toBeVisible();
   const player = videos(page).locator('video');
   // 一采出完会先冒出一版低清预览，所以不能只看有没有 video：.vj-info 是成片才有的，见 docs/dev-plan.md 5.27
@@ -134,7 +145,7 @@ test('10.4 第 3 条：一采 0.3、固定种子 → 出片 1472×832 → 只换
   await page.keyboard.press('Escape');
   await expect(panel(page).locator('#btnVideoCfg')).toContainText('出片 1472×832');
 
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(videos(page).first().locator('.vj-info')).toHaveCount(1, { timeout: 30_000 });
   let graph = await lastGraph(page);
   expect(graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ width: 736, height: 416 });
@@ -157,13 +168,13 @@ test('10.4 第 3 条：一采 0.3、固定种子 → 出片 1472×832 → 只换
   expect((await fs.readdir(folder)).filter((name) => before.includes(name)).length).toBe(before.length - 1);
 
   await editBox(page, fourWay('慢慢地走'));
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(videos(page).locator('.ig-state')).toContainText('一采', { timeout: 15_000 });
   await videos(page).locator('[data-vact="stop"]').click();
   await expect(videos(page).locator('.ig-state')).toContainText('已叫停', { timeout: 15_000 });
 
   await editBox(page, fourWay('报错'));
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(videos(page).locator('.vj-error')).toContainText('生成视频出错（MMH3LoopingSampler）', { timeout: 15_000 });
 });
 
@@ -176,7 +187,7 @@ test('10.4 第 4 条：下载一条，文件名是「节点标题-种子.mp4」�
   await newCanvasWithNode(page, '下载视频');
   await panel(page).locator('#cfgSys').selectOption('t2v');
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const seed = (await videos(page).locator('.vj-info').textContent())!.match(/种子 (\d+)/)![1];
 
@@ -204,7 +215,7 @@ test('10.4 第 5 条：参考模式两张图 → 两张都传上去、接进编�
   await putImages(page, [FIXTURES.first, FIXTURES.second]);
   await send(page, '照这两张图写');
   await expect(box(page).locator('.ig-empty')).toContainText('带 2 张参考图');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   let graph = await lastGraph(page);
   const uploads = (await (await page.request.get(`${COMFY_URL}/_uploads`)).json()) as { name: string }[];
@@ -221,7 +232,7 @@ test('10.4 第 5 条：参考模式两张图 → 两张都传上去、接进编�
   await send(page, '从第一张图开始');
   await expect(box(page).locator('.ig-empty')).toContainText('第 1 张图当首帧');
   await expect(box(page).locator('.ig-empty')).toContainText('出片 1472×1152');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   graph = await lastGraph(page);
   expect(graphNodes(graph, 'LoadImage')).toHaveLength(1);
@@ -232,7 +243,7 @@ test('10.4 第 5 条：参考模式两张图 → 两张都传上去、接进编�
   await panel(page).locator('#cfgSys').selectOption('fl2va');
   await send(page, '首尾两张');
   await expect(box(page).locator('.ig-empty')).toContainText('首尾帧、尾帧这两种提示词写的还不能生成视频');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(toasts(page).filter({ hasText: '首尾帧、尾帧这两种提示词写的还不能生成视频' })).toBeVisible();
 });
 
@@ -252,13 +263,13 @@ test('10.4 第 7 条：两个画布各生成一条，一条含「慢」→ 视�
   await useMegapixels(page, '0.6');
   await send(page, '写一个');
   await editBox(page, '慢慢地走');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(videos(page).locator('.ig-state')).toContainText('一采', { timeout: 15_000 });
 
   await newCanvasWithNode(page, '任务乙');
   await useMegapixels(page, '0.6');
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   const button = page.locator('#videoTasks');
   await expect(button).toContainText('视频任务2');
 
@@ -338,7 +349,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
   await page.locator('#durInput').press('Enter');
   await expect(panel(page).locator('#durSegs')).toHaveText('分 2 段');
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const saves = graphNodes(await lastGraph(page), 'MiniMaxH3NativeLatentCheckpointSaveT8Advanced');
   expect(saves.map((node) => String(node.inputs.filename_prefix))).toEqual([expect.stringMatching(/_pass1$/), expect.stringMatching(/_pass2$/)]);
@@ -408,7 +419,7 @@ test('10.4 第 8 条：两段的视频存下两份存档 → 拖选 8 到 11 秒
   await expect.poll(() => mockLatents(page, rootId, versionId, againId)).toEqual([]);
 
   // 存档没了再重拍：这一版没生成出来，说只能整条重出
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const lostId = (await videos(page).getAttribute('data-video'))!;
   await page.request.post(`${COMFY_URL}/_ssh`, { data: { removeLatents: await mockLatents(page, lostId) } });
@@ -457,7 +468,7 @@ test('10.4 第 6 条：设置「AutoDL 上的模型」切到生成视频那台�
   await page.keyboard.press('Escape');
 
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   expect(graphNodes(graph, 'UNETLoader')[0].inputs.unet_name).toBe('minimax/minimax_h3_ref2va_int8_convrot.safetensors');
@@ -477,7 +488,7 @@ test('10.4 第 9 条：生成设置里点「不加速」→ 主模型换成 DaSi
   await page.keyboard.press('Escape');
 
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   expect(graphNodes(graph, 'UNETLoader')[0].inputs.unet_name).toBe('minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors');
@@ -512,7 +523,7 @@ test('生成设置里能自己填一采、二采的步数：改完流程照它�
   await page.keyboard.press('Escape');
 
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   expect(graphNodes(await lastGraph(page), 'BasicScheduler').map((node) => node.inputs.steps)).toEqual([14, 5]);
 
@@ -581,7 +592,7 @@ test('生成设置里能选 SelfLift 接续那套：二采重画多少、总步�
   await expect(panel(page).locator('#durSegs')).toHaveText('分 2 段');
 
   await send(page, '写一个');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const prompts = (await comfyPrompts(page)).map((one) => one.prompt);
   // 最后发出去的是「把几段接起来」，再往前找带上下文那条（这套才用 MiniMaxH3AddGuide）
@@ -735,7 +746,7 @@ test('10.4 第 11 条：参考模式带画面和声音的视频、声音参考�
 
   await send(page, '写一个');
   await expect(box(page).locator('[data-od-id="video-empty"]')).toContainText('带 1 段参考视频、2 段参考音频、配音');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
   const graph = await lastGraph(page);
   const prompts = graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs;
@@ -755,7 +766,7 @@ test('10.4 第 11 条：参考模式带画面和声音的视频、声音参考�
   await placeMedia(page, ['hum.mp3']);
   await expect(panel(page).locator('#mediaProblems')).toContainText('参考音频有 4 段（视频里的声音也算），最多 3 段');
   await send(page, '加一段声音');
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
   await expect(toasts(page).filter({ hasText: '参考音频有 4 段' })).toHaveCount(1);
 });
 
@@ -771,7 +782,7 @@ test('长视频：一采出完先给一份低清预览（二采还在跑），�
   await send(page, '写一个');
   // 含「慢」：一采每步 1.2 秒，二采那会儿来得及看预览、也来得及叫停
   await editBox(page, ['慢慢地走', '第二段'].join('\n|\n'));
-  await box(page).locator('[data-act="genVideo"]').click();
+  await genVideo(page);
 
   // 一采跑完、二采还在跑：低清预览已经能看了，见 docs/dev-plan.md 5.27
   const job = videos(page).first();
@@ -816,4 +827,130 @@ test('时长和框里段数对不上时拦住不让生成：框里 1 段、时�
   await page.locator('#durInput').press('Enter');
   await expect(warn).toHaveCount(0);
   await expect(gen).toBeEnabled();
+});
+
+test('点「生成视频」先弹配置窗：里面就是生成设置，改完点顶上的「开始生成」才发出去，改了自动存', async ({ page }) => {
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, '生成视频配置窗');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await send(page, '写一个');
+
+  await box(page).locator('[data-act="genVideo"]').click();
+  const dialog = genDialog(page);
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#vgTitle')).toHaveText('生成视频');
+  await expect(dialog.locator('#vgSub')).toContainText('的第 1 个提示词框');
+  await expect(dialog.locator('[data-od-id="video-gen-summary"]')).toContainText('走 两遍生成');
+  // 里面就是生成设置那一份（跟「生成设置」小窗同源）
+  await expect(dialog.locator('#vcSteps1')).toHaveValue('10');
+  await expect(dialog.locator('#vcMp')).toHaveValue('0.4');
+  await expect(dialog.locator('#vcFinal')).toHaveText('1728×960');
+
+  // 在窗里改：一采 0.3、二采重画多少 0.5；改完按 Esc 关掉，什么都没发出去
+  await dialog.locator('#vcMp').selectOption('0.3');
+  await expect(dialog.locator('#vcFinal')).toHaveText('1472×832');
+  await dialog.locator('#vcDenoise').fill('0.5');
+  await dialog.locator('#vcDenoise').press('Enter');
+  await expect(dialog.locator('#vcDenoise')).toHaveValue('0.5');
+  await page.screenshot({ path: 'test-results/video-gen-dialog.png' });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(videos(page)).toHaveCount(0);
+
+  // 改了自动存：再打开还是改过的；点顶上的「开始生成」才发
+  await box(page).locator('[data-act="genVideo"]').click();
+  await expect(genDialog(page).locator('#vcMp')).toHaveValue('0.3');
+  await expect(genDialog(page).locator('#vcDenoise')).toHaveValue('0.5');
+  await genDialog(page).locator('#vgGo').click();
+  await expect(genDialog(page)).toHaveCount(0);
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
+  const graph = await lastGraph(page);
+  expect(graphNodes(graph, 'MMH3ReferenceMultiPrompt')[0].inputs).toMatchObject({ width: 736, height: 416 });
+  expect(graphNodes(graph, 'BasicScheduler').map((node) => node.inputs.denoise)).toEqual([1, 0.5]);
+  await expect(videos(page).locator('.vj-info')).toContainText('1472×832');
+});
+
+test('SelfLift 加「续写起点」：传一段前一段视频，出来的整条 = 这一段 + 这次出的几段；不选就是重新生成', async ({ page }) => {
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, '续写起点');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  // 8 秒一套调度出 1 段 192 帧
+  await panel(page).locator('#durVal').click();
+  await page.locator('#durInput').fill('8');
+  await page.locator('#durInput').press('Enter');
+  await send(page, '写一个');
+
+  await box(page).locator('[data-act="genVideo"]').click();
+  const dialog = genDialog(page);
+  await dialog.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 接续' }).click();
+  // 默认不接：就是重新生成（跟本来的行为一样）
+  await expect(dialog.locator('#vcLead')).toContainText('不接，重新生成');
+  // 从电脑里传一段：不读时长宽高（浏览器不一定读得出来），传完就选上
+  const leadFile = path.join(E2E_ROOT, 'lead-source', 'talk.mp4');
+  await fs.mkdir(path.dirname(leadFile), { recursive: true });
+  await fs.copyFile(new URL('../fixtures/media/talk.mp4', import.meta.url), leadFile);
+  await dialog.getByTestId('lead-file').setInputFiles(leadFile);
+  await expect(dialog.locator('#vcLead')).toContainText('talk.mp4', { timeout: 15_000 });
+  await expect(dialog.locator('.vc-lead-view')).toHaveCount(1);
+  // 点开起点那一行看看能挑什么：不接、这个框下面已生成的、画布上的素材、传上来的、电脑里的
+  await dialog.locator('#vcLead').click();
+  await expect(page.locator('[data-od-id="popover-video-lead"]')).toBeVisible();
+  await expect(page.locator('[data-od-id="popover-video-lead"]')).toContainText('传上来的前一段');
+  await dialog.locator('#vcLead').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'test-results/video-lead.png' });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-od-id="popover-video-lead"]')).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+
+  await dialog.locator('#vgGo').click();
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
+  // 框下面这条写着是接着哪一段出的
+  await expect(videos(page).locator('.ig-meta')).toContainText('续写 talk.mp4');
+  const prompts = (await comfyPrompts(page)).map((one) => one.prompt);
+  const merge = [...prompts].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
+  const files = graphNodes(merge, 'LoadVideo').map((node) => String(node.inputs.file));
+  // 前一段排在最前面（传上去按这条件务起名），后面是这次出的那一段
+  expect(files).toHaveLength(2);
+  expect(files[0]).toMatch(/_lead\.mp4$/);
+  expect(files[1]).toMatch(/_s0\.mp4$/);
+  // 这次出的第 1 段读的就是前一段：取 22 帧尾巴钉在第 0 帧上，出片剪掉、颜色对齐
+  const clip = [...prompts].reverse().find((graph) => graphNodes(graph, 'MiniMaxH3ReferenceToVideo').length > 0 && graphNodes(graph, 'VideoFrameSample').length > 0)!;
+  expect(graphNodes(clip, 'LoadVideo')[0].inputs.file).toBe(files[0]);
+  expect(graphNodes(clip, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 22, strategy: 'tail' });
+  expect(graphNodes(clip, 'MiniMaxH3AddGuide')[0].inputs).toMatchObject({ frame_idx: 0 });
+  expect(graphNodes(clip, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 22 });
+  expect(graphNodes(clip, 'MiniMaxH3AudioGuideFeather')).toHaveLength(1);
+
+  // 清掉就是重新生成：再点一次「生成视频」，在配置窗里把起点清掉，再开始生成
+  await box(page).locator('[data-act="genVideo"]').click();
+  const again = genDialog(page);
+  await expect(again.locator('#vcLead')).toContainText('talk.mp4');
+  await again.locator('#vcLead').click();
+  await page.locator('[data-lead="none"]').click();
+  await expect(page.locator('[data-od-id="popover-video-lead"]')).toHaveCount(0);
+  await expect(again.locator('#vcLead')).toContainText('不接，重新生成');
+  await again.locator('#vgGo').click();
+  await expect(again).toHaveCount(0);
+  await expect(finished(page)).toHaveCount(2, { timeout: 30_000 });
+  const after = (await comfyPrompts(page)).map((one) => one.prompt);
+  const plain = [...after].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
+  expect(graphNodes(plain, 'LoadVideo').map((node) => node.inputs.file)).toHaveLength(1);
+
+  // 另一条路：从资产库里挑一段（照样只传内容、不读宽高），挑完就选上了
+  await mediaFolder(page);
+  await box(page).locator('[data-act="genVideo"]').click();
+  const third = genDialog(page);
+  await third.locator('#vcLead').click();
+  await page.locator('[data-lead="assets"]').click();
+  await expect(assetsDialog(page)).toBeVisible();
+  await expect(assetsDialog(page).locator('#asTitle')).toHaveText('挑一段当续写起点');
+  await assetsDialog(page).locator('.as-folder').filter({ hasText: 'media-assets' }).click();
+  await assetTile(page, 'talk.mp4').click();
+  await expect(assetsDialog(page)).toHaveCount(0);
+  await expect(third.locator('#vcLead')).toContainText('talk.mp4', { timeout: 15_000 });
+  await third.locator('#vgGo').click();
+  await expect(finished(page)).toHaveCount(3, { timeout: 30_000 });
+  const picked = (await comfyPrompts(page)).map((one) => one.prompt);
+  const mediaMerge = [...picked].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
+  expect(graphNodes(mediaMerge, 'LoadVideo')).toHaveLength(2);
 });

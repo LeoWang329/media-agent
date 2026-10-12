@@ -42,6 +42,7 @@ import {
 } from '../store/canvases';
 import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
+import { canvasLeadPath, importLead, readLead, storeUploadedLead } from '../store/leads';
 import { canvasMediaPath, importMedia, readMedia, storeUploadedMedia } from '../store/media';
 import { DEFAULT_PROMPT, defaultPromptFor, readPromptMeta } from '../store/prompts';
 import { readSettings } from '../store/settings';
@@ -248,6 +249,30 @@ export function canvasRoutes(configDir: string): express.Router {
     const canvasId = v.uuid(req.params.canvasId);
     const w = await work();
     res.sendFile(canvasMediaPath(w, canvasId, await readMedia(w, canvasId, v.uuid(req.params.mediaId))), { dotfiles: 'allow' });
+  });
+
+  // 「续写起点」的前一段视频，见 docs/dev-plan.md 5.35：从资产库或电脑上的文件复制进画布。
+  // 和视频素材那套不一样：不读时长宽高（浏览器不一定读得出来，HEVC 就报不出宽高），规整是在那台上做的
+  router.post('/canvases/:canvasId/leads', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    res.json(await importLead(w, canvasId, await allowedPath(configDir, req.body?.path)));
+  });
+
+  // 从文件夹拖进来的：请求体就是文件，边收边存，不整个读进内存
+  router.post('/canvases/:canvasId/leads/upload', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    await readCanvas(w, canvasId);
+    res.json(await storeUploadedLead(w, canvasId, v.fileName(req.query.name), req));
+  });
+
+  // 界面里试着播一下前一段视频（认不出来的编码播不了不要紧，能当起点用）
+  router.get('/canvases/:canvasId/leads/:leadId/file', async (req, res) => {
+    const canvasId = v.uuid(req.params.canvasId);
+    const w = await work();
+    res.sendFile(canvasLeadPath(w, canvasId, await readLead(w, canvasId, v.uuid(req.params.leadId))), { dotfiles: 'allow' });
   });
 
   router.get('/canvases/:canvasId/images/:imageId/checklist-path', async (req, res) => {

@@ -1,9 +1,11 @@
 import {
+  DEFAULT_SELFLIFT,
   tempFolderName,
   VIDEO_MODEL,
   type AutodlState,
   type ChatNode,
   type ComfyGraph,
+  type LeadRecord,
   type MediaRecord,
   type MediaSlot,
   type Message,
@@ -120,6 +122,18 @@ async function addMedia(name: string, meta: Record<string, unknown>): Promise<Me
 }
 const fileSha = async (file: string) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
 const uploadedName = async (sha: string) => ((await (await fetch(`${comfyUrl}/_uploads`)).json()) as { name: string; sha256: string }[]).find((u) => u.sha256 === sha)?.name;
+
+// 测试用的小视频复制进工作文件夹，再当「续写起点」传进画布，见 docs/dev-plan.md 5.35
+async function addLead(name: string): Promise<LeadRecord> {
+  const file = path.join(t.work, 'test-media', name);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.copyFile(new URL(`../../../tests/fixtures/media/${name}`, import.meta.url), file);
+  return t.ok<LeadRecord>('POST', `/canvases/${canvasId}/leads`, { path: file });
+}
+
+// 这条最近发出去的那几个流程图（最后一个是拼接那条）
+const lastSent = async (count: number) =>
+  ((await (await fetch(`${comfyUrl}/_last-prompts`)).json()) as { prompt: ComfyGraph }[]).map((one) => one.prompt).slice(-count);
 
 // 收 /video-jobs/events 推来的事件
 async function watch() {
@@ -847,8 +861,149 @@ describe('生成视频任务', () => {
     expect(ofType(graph, 'ImageTensorList')).toEqual([]);
   }, 20_000);
 
-  it('接力那套叫停：正在跑的那段停掉，已经出的几段接起来留一份（partial）', async () => {
+  // ─── 续写起点，见 docs/dev-plan.md 5.35 ───
+
+  it('续写起点：传上来一段前一段视频，从它接着往下出；出来的是「前一段 + 这次出的几段」', async () => {
     await useVideoAutodl();
+    // 8 秒一套调度出 1 段 192 帧，加上前一段视频就是整条 2 段
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift', selflift: { ...DEFAULT_SELFLIFT, upscaler: 'none' } } });
+    const lead = await addLead('talk.mp4');
+    // 校验：起点只认那三种来源
+    expect(await t.call('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, lead: { kind: 'x' } } } })).toMatchObject({
+      status: 400,
+      body: { error: '续写起点只能是这个框下面已生成的一条、画布上的视频素材，或者传上来的前一段视频' },
+    });
+    await t.ok('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, upscaler: 'none', lead: { kind: 'lead', leadId: lead.id } } } });
+    const reply = await edited('第一段：女孩站在窗边，慢慢转过头来');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(job.lead).toEqual({ label: 'talk.mp4' });
+    expect(job.chain).toEqual({ total: 2, clips: [] });
+
+    const done = await settledJob(job.id, reply, 20000);
+    expect(done).toMatchObject({ status: 'done' });
+    expect(done.chain!.clips).toHaveLength(1);
+    // 前一段视频传上去了：按任务起名（出完跟那几段一起删），多长是量出来的
+    const uploaded = `media_agent_${job.id}_lead.mp4`;
+    expect(done.chain!.lead).toMatchObject({ name: uploaded, seconds: 3 });
+    expect(done.chain!.lead!.uploaded).toBeUndefined();
+    // 规格跟出片对得上就原样用，不做规整
+    expect(mock.ssh.commands.some((command) => command.includes('# media-agent:lead-probe'))).toBe(true);
+    expect(mock.ssh.commands.some((command) => command.includes('# media-agent:lead-fix'))).toBe(false);
+
+    // 第 1 段读的是前一段视频：取 22 帧尾巴钉在第 0 帧上，出片时剪掉、颜色对齐；最后拼整条把它排在最前面
+    const [clip, merge] = await lastSent(2);
+    expect(ofType(clip, 'LoadVideo').map((node) => node.inputs.file)).toEqual([uploaded]);
+    expect(ofType(clip, 'MiniMaxH3AddGuide')[0].inputs).toMatchObject({ frame_idx: 0 });
+    expect(ofType(clip, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 22, strategy: 'tail' });
+    expect(ofType(clip, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 22 });
+    expect(ofType(clip, 'ColorTransfer')).toHaveLength(1);
+    expect(ofType(clip, 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ length: 192 });
+    expect(ofType(merge, 'LoadVideo').map((node) => node.inputs.file)).toEqual([uploaded, `media_agent_${job.id}_s0.mp4`]);
+    expect(ofType(merge, 'ConcatenateVideo')[0].inputs).toMatchObject({ 'videos.video0': ['400', 0], 'videos.video1': ['401', 0] });
+
+    // 同样参数再来：起点那段照样带上
+    const again = await t.ok<VideoJob>('POST', videosUrl(reply), { again: { jobId: job.id, sameSeed: true } });
+    expect(again.lead).toEqual({ label: 'talk.mp4' });
+    expect(again.chain).toEqual({ total: 2, clips: [] });
+    const twice = await settledJob(again.id, reply, 20000);
+    // 同样参数再来是另一条任务，起点那段也按它自己的任务名传一份上去
+    expect(twice.chain!.lead).toMatchObject({ name: `media_agent_${again.id}_lead.mp4` });
+    expect(ofType((await lastSent(1))[0], 'LoadVideo').map((node) => node.inputs.file)).toEqual([
+      `media_agent_${again.id}_lead.mp4`,
+      `media_agent_${again.id}_s0.mp4`,
+    ]);
+  }, 30_000);
+
+  it('续写起点：规格跟出片对不上就先规整一份（缩到出片大小、24 帧、补静音），再接进去', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const lead = await addLead('talk.mp4');
+    await t.ok('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, lead: { kind: 'lead', leadId: lead.id } } } });
+    // 那台量出来的是 640×360、30 帧、没声音：跟出片对不上，要规整
+    mock.ssh.state.lead = 'fix';
+    const reply = await edited('第一段：女孩站在窗边，慢慢转过头来');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const done = await settledJob(job.id, reply, 20000);
+    expect(done).toMatchObject({ status: 'done' });
+
+    const uploaded = `media_agent_${job.id}_lead.mp4`;
+    const fixed = `media_agent_${job.id}_lead-fix.mp4`;
+    expect(done.chain!.lead).toMatchObject({ name: fixed, uploaded, seconds: 3 });
+    const [clip, merge] = await lastSent(2);
+    expect(ofType(clip, 'LoadVideo').map((node) => node.inputs.file)).toEqual([fixed]);
+    expect(ofType(merge, 'LoadVideo').map((node) => node.inputs.file)).toEqual([fixed, `media_agent_${job.id}_s0.mp4`]);
+    // 规整那一步带上了出片大小（0.4 百万像素 ×2 倍 = 1728×960），造出来的那份就在那台的 input 里
+    const fix = mock.ssh.commands.find((command) => command.includes('# media-agent:lead-fix'))!;
+    expect(fix).toContain(`# media-agent:lead-fix /root/ComfyUI/input/${fixed} 1728 960`);
+    // 成片出来以后，传上去的那份和规整的那份都删掉（删是出完顺手删的，稍等一下）
+    await until(
+      () => Promise.resolve(mock.ssh.commands),
+      (commands) => commands.some((command) => command.startsWith('rm -f ') && command.includes(fixed) && command.includes(uploaded)),
+      4000,
+    );
+  }, 30_000);
+
+  it('续写起点：也能拿已经生成的那条（别的框下面选的也认）；那条还在跑、或者临时文件清掉了都不行', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const reply = await edited('第一段：女孩站在窗边，慢慢转过头来');
+    const first = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    // 还在跑的不行
+    await t.ok('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, lead: { kind: 'job', jobId: first.id } } } });
+    expect(await t.call('POST', videosUrl(reply), { promptIndex: 0 })).toMatchObject({ status: 400, body: { error: '这条还在跑：等它出完，或者先叫停，再拿它当续写起点' } });
+
+    const done = await settledJob(first.id, reply, 20000);
+    const second = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    expect(second.lead).toEqual({ label: `生成过的那条（种子 ${first.seed}）`, seconds: 8 });
+    const twice = await settledJob(second.id, reply, 20000);
+    expect(twice.chain!.total).toBe(2);
+    // 当起点的是原来那条的临时文件，传上去按新这条任务起名
+    const uploaded = `media_agent_${second.id}_lead.mp4`;
+    expect(twice.chain!.lead).toMatchObject({ name: uploaded });
+    expect(ofType((await lastSent(1))[0], 'LoadVideo').map((node) => node.inputs.file)).toEqual([uploaded, `media_agent_${second.id}_s0.mp4`]);
+
+    // 别的框下面选的也认：找的是「哪条视频」，不是「哪个框」
+    const other = await send('再来一条', replyId);
+    const third = await t.ok<VideoJob>('POST', videosUrl(other), { promptIndex: 0 });
+    expect(third.lead).toMatchObject({ seconds: 8 });
+    expect(await settledJob(third.id, other, 20000)).toMatchObject({ status: 'done' });
+
+    // 临时文件清掉了、也没下载过：当场说清楚，别白开一趟机
+    await fs.rm(path.join(t.work, done.file!), { force: true });
+    expect(await t.call('POST', videosUrl(reply), { promptIndex: 0 })).toMatchObject({
+      status: 400,
+      body: { error: '那条视频的临时文件已经清理了、也没下载过，当不了续写起点：先下载一份，再从电脑里传上来' },
+    });
+  }, 30_000);
+
+  it('续写起点 + 从第 N 段起重出：前一段照旧留着，这次出的那几段从头重做', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const lead = await addLead('talk.mp4');
+    await t.ok('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, lead: { kind: 'lead', leadId: lead.id } } } });
+    const reply = await edited('第一段：女孩站在窗边，慢慢转过头来');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const done = await settledJob(job.id, reply, 20000);
+    expect(done.chain!.total).toBe(2);
+
+    // 一共 2 段：前一段是第 1 段，能选的只有「从第 2 段起」
+    expect(await t.call('POST', videosUrl(reply), { rerun: { jobId: job.id, clip: 3 } })).toMatchObject({
+      status: 400,
+      body: { error: '只能从第 2 到第 2 段起重出；从第 1 段起就是整条重出，点「同样参数再来」' },
+    });
+    const moved = await t.ok<VideoJob>('POST', videosUrl(reply), { rerun: { jobId: job.id, clip: 2, prompts: ['第一段：她转过头来，看着窗外'] } });
+    // 前一段不留在 clips 里，发任务时重新传一份上去；这次出的一段从头重做
+    expect(moved.chain).toEqual({ total: 2, clips: [] });
+    expect(moved.lead).toEqual({ label: 'talk.mp4' });
+    const after = await settledJob(moved.id, reply, 20000);
+    expect(after).toMatchObject({ status: 'done' });
+    expect(after.chain!.clips).toHaveLength(1);
+    const [clip, merge] = await lastSent(2);
+    expect(ofType(clip, 'MiniMaxH3ReferenceToVideo')[0].inputs.prompt).toBe('第一段：她转过头来，看着窗外');
+    expect(ofType(merge, 'LoadVideo').map((node) => node.inputs.file)).toEqual([after.chain!.lead!.name, `media_agent_${moved.id}_s0.mp4`]);
+  }, 30_000);
+
+  it('接力那套叫停：正在跑的那段停掉，已经出的几段接起来留一份（partial）', async () => {    await useVideoAutodl();
     await t.ok('PATCH', nodeUrl(), { duration: 30, video: { workflow: 'selflift' } });
     // 提示词里有「慢」，假的 ComfyUI 每步 150 毫秒：够点叫停
     const reply = await edited(twoWay('第一段：慢，女孩站在窗边'));

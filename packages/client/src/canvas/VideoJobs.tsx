@@ -96,6 +96,8 @@ export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
 // 一条的叫法：照着哪条再来的、从第 N 段起重出的写清楚
 function videoLabel(job: VideoJob, jobs: VideoJob[]): string {
   if (job.rerun) return `${rerunText(job.rerun.clip)} · ${rerunKeptText(job.rerun.clip)}`;
+  // 接着一段已有的视频往下出的，见 docs/dev-plan.md 5.35
+  if (job.lead) return '续写';
   if (!job.source) return '生成视频';
   const from = jobs.find((j) => j.id === job.source!.jobId);
   if (from?.seed === job.seed) return `同样参数再来 · 种子 ${job.seed}`;
@@ -222,6 +224,12 @@ function Video({ node, message, root, versions, jobs, text, ro }: { node: ChatNo
           <span className="mono">
             {params.finalWidth}×{params.finalHeight}
           </span>
+          {/* 续写起点：这条是接着哪一段往下出的，见 docs/dev-plan.md 5.35 */}
+          {job.lead && (
+            <span className="vj-lead" title={`接着「${job.lead.label}」往下出的：整条 = 那一段 + 这次出的`}>
+              续写 {job.lead.label}
+            </span>
+          )}
         </span>
         <span className="grow" />
         <span className="ig-state" data-vstate={job.status}>

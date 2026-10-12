@@ -3,8 +3,8 @@ import { create } from 'zustand';
 import { PICTURE_REF } from '../editor/document';
 import type { RefImage } from '@media-agent/shared';
 
-// 资产库弹窗的几种用法：往槽位里放、只是看看、换掉某个槽位的图、挑一张插进句子里
-export type AssetsMode = 'slots' | 'browse' | 'replace' | 'ref';
+// 资产库弹窗的几种用法：往槽位里放、只是看看、换掉某个槽位的图、挑一张插进句子里、挑一段当续写起点
+export type AssetsMode = 'slots' | 'browse' | 'replace' | 'ref' | 'lead';
 
 // 上传清单：哪条回复的第几个提示词框，images 是那条回复当时带的图
 export type UploadTarget = { nodeId: string; label?: string; text: string; images: string[] };
@@ -31,6 +31,9 @@ export type DownloadTarget = { nodeId: string; title: string; items: (ImageTarge
 // canvasId 给了就用它：视频任务小窗里点下载的可能是别的画布上那条，见 docs/dev-plan.md 5.29
 export type VideoDownloadTarget = { canvasId?: string; nodeId: string; messageId: string; jobId: string; title: string; seed: number };
 
+// 「生成视频」的弹窗：哪个框（哪个节点的哪条回复的第几个提示词框），见 docs/dev-plan.md 5.36
+export type GenVideoTarget = { nodeId: string; messageId: string; promptIndex: number };
+
 type Overlays = {
   fourView: { nodeId: string; reference: RefImage } | null;
   assets: { mode: AssetsMode; slot?: number } | null;
@@ -45,6 +48,7 @@ type Overlays = {
   viewer: ImageTarget | null; // 看大图和参数
   download: DownloadTarget | null;
   videoDownload: VideoDownloadTarget | null;
+  genVideo: GenVideoTarget | null; // 点「生成视频」弹出来的那个配置窗
   // 引用图片的小窗贴着哪儿弹；images：手动改提示词时只能挑这条回复带的图
   refpick: { left: number; top: number; images?: string[] } | null;
 };
@@ -63,6 +67,7 @@ export const CLOSED_OVERLAYS = {
   viewer: null,
   download: null,
   videoDownload: null,
+  genVideo: null,
   refpick: null,
 } satisfies Overlays;
 
@@ -70,6 +75,10 @@ export const useOverlays = create<Overlays>(() => CLOSED_OVERLAYS);
 
 export const openAssets = (mode: AssetsMode, slot?: number) => useOverlays.setState({ assets: { mode, slot }, refpick: null });
 export const closeAssets = () => useOverlays.setState({ assets: null });
+
+// 点「生成视频」弹出来的配置窗，见 docs/dev-plan.md 5.36
+export const openGenVideo = (target: GenVideoTarget) => useOverlays.setState({ genVideo: target });
+export const closeGenVideo = () => useOverlays.setState({ genVideo: null });
 
 // 引用图片插到哪个编辑器的哪个位置。编辑器对象是活的，不放进状态里
 type RefTarget = { editor: Editor; position: number; typedAt: boolean };

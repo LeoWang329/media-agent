@@ -13,6 +13,7 @@ import {
   secondsText,
   takeSeconds,
   switchVersion as switchVersionInTree,
+  selfliftOfSettings,
   videoSettingsOf,
   withTranslation,
   type CanvasDetail,
@@ -24,8 +25,10 @@ import {
   type FamilyDefaults,
   type ImageRecord,
   type ImageSettings,
+  type LeadRecord,
   type MediaRecord,
   type MediaSlot,
+  type VideoLead,
   type VideoSettings,
   type ModelConfigWithKey,
   type NodeKind,
@@ -38,7 +41,7 @@ import {
   type TurnLimit,
 } from '@media-agent/shared';
 import { create } from 'zustand';
-import { api, assetFileUrl, assetThumbUrl, mediaFileUrl, postStream, uploadImage, uploadMedia } from '../api';
+import { api, assetFileUrl, assetThumbUrl, mediaFileUrl, postStream, uploadImage, uploadLead, uploadMedia } from '../api';
 import { extensionOf, processedNote } from '../canvas/imageInfo';
 import { captureFrame, probeMedia } from '../canvas/mediaProbe';
 import { ensureVisible } from '../canvas/view';
@@ -126,6 +129,9 @@ type CanvasState = {
   changeMedia: (nodeId: string, index: number, change: MediaChange) => Promise<void>;
   removeMedia: (nodeId: string, index: number) => Promise<void>;
   moveMedia: (nodeId: string, from: number, to: number) => Promise<void>;
+  // 续写起点：换/清掉节点上选的那一段前一段视频；把本机的一段传进画布再选上，见 docs/dev-plan.md 5.35
+  setLead: (nodeId: string, lead: VideoLead | null) => Promise<boolean>;
+  useLead: (nodeId: string, source: ImageSource) => Promise<boolean>;
   revertSettings: (nodeId: string) => Promise<void>;
   undo: (only?: UndoToken) => Promise<void>; // 传了 only：只有它还是最近一步时才撤（提示条上的「撤销」）
   redo: () => Promise<void>;
@@ -925,6 +931,34 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         media.splice(to, 0, moved);
         await saveMedia(nodeId, media, '调整视频、音频的顺序');
       }).then(() => undefined),
+
+    // 续写起点：记下从哪一段视频接着往下出（null 是重新生成），见 docs/dev-plan.md 5.35
+    setLead: async (nodeId, lead) => {
+      const node = get().nodes[nodeId];
+      if (!node) return false;
+      const selflift = { ...selfliftOfSettings(videoSettingsOf(node.video)), lead };
+      return get().patchNode(nodeId, { video: { selflift } });
+    },
+
+    // 续写起点：把本机的一段视频传进画布（存在画布的 leads/ 下，只按内容存一份，不读时长宽高——
+    // 浏览器不一定读得出来，规整成出片大小是在那台上做的），传完就选上它
+    useLead: async (nodeId, source) => {
+      const canvasId = get().canvasId;
+      if (!canvasId) return false;
+      try {
+        const record =
+          'path' in source
+            ? await write<LeadRecord>(`/canvases/${canvasId}/leads`, 'POST', { path: source.path })
+            : await trackWrite(uploadLead<LeadRecord>(canvasId, source.file));
+        set((s) => (s.detail ? { detail: { ...s.detail, leads: { ...s.detail.leads, [record.id]: record } } } : {}));
+        const ok = await get().setLead(nodeId, { kind: 'lead', leadId: record.id });
+        if (ok) toast(`续写起点换成「${record.originalName}」`);
+        return ok;
+      } catch (err) {
+        failed(err);
+        return false;
+      }
+    },
 
     // 撤回没发出的改动：槽位、时长、比例回到当前路径最后一条消息当时的样子
     revertSettings: (nodeId) =>

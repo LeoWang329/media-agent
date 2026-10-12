@@ -9,16 +9,22 @@ import ssh2, { type Connection, type Server, type ServerChannel } from 'ssh2';
 // 假的 SSH，给往 AutoDL 传模型用，见 docs/dev-plan.md 9.5。
 // 那台上的 /root/... 落在一个临时文件夹里；只认程序发的那几种命令：看剩余空间、列文件、看有没有、看多大、
 // 建文件夹、cat 写文件、改名、删、curl 取大小和下载。curl 只真去取 127.0.0.1 的地址；hf-mirror.com 的给一个 4 KB 的假文件；
-// civitai.com、huggingface.co 本站和真的那台一样连不上
+// civitai.com、huggingface.co 本站和真的那台一样连不上。
+// 另外认「续写起点」量大小、规整那两步（见下面 LEAD_*），不做真的转码：照标记里的目标和出片大小回一份结果
 
 export const MOCK_SSH_PASSWORD = 'mock-password';
 const HF_FILE_BYTES = 4096;
 
+// 和 packages/shared/src/video.ts 里的 LEAD_MARK 对着改：量一次、规整一份那两步的脚本开头带这行标记
+export const LEAD_PROBE_MARK = '# media-agent:lead-probe';
+export const LEAD_FIX_MARK = '# media-agent:lead-fix';
+const INPUT_DIR = '/root/ComfyUI/input';
+
 export type MockSsh = {
   server: Server;
-  // 测试用：收到的每条命令；那台还剩多少空间，能改
+  // 测试用：收到的每条命令；那台还剩多少空间，能改；续写起点量出来的是「已经一样」还是会「要规整」
   commands: string[];
-  state: { free: number };
+  state: { free: number; lead: 'fits' | 'fix' };
   // 那台上的一个绝对路径对应到本机哪里
   local(remote: string): string;
   // 测试用：那台上的文件全清掉、命令记录清空、剩余空间复原。
@@ -91,7 +97,7 @@ function parse(command: string): { simple: Simple; then: string | null }[] {
 export function createMockSsh(): MockSsh {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-autodl-disk-'));
   const commands: string[] = [];
-  const state = { free: 14 * 1024 ** 3 };
+  const state = { free: 14 * 1024 ** 3, lead: 'fits' as 'fits' | 'fix' };
   const local = (remote: string) => path.join(root, ...remote.split('/').filter(Boolean));
   const remoteOf = (file: string) => `/${path.relative(root, file).split(path.sep).join('/')}`;
 
@@ -223,7 +229,39 @@ export function createMockSsh(): MockSsh {
     }
   }
 
+  // 续写起点那两步（packages/server/src/comfy/videoLead.ts 发过来的）：标记后面是「目标文件（规整那步才有）宽 高」。
+  // state.lead 是 fits 就回一份「已经和出片一个规格」的量法，是 fix 就回一份不一样的（尺寸不对、还没有声音），
+  // 规整那一步把目标文件造出来（真的那边是 ffmpeg 转的），后面的 LoadVideo 才找得到它
+  function leadReply(command: string, io: Io): number {
+    const fix = command.includes(LEAD_FIX_MARK);
+    const rest = command.slice(command.indexOf(fix ? LEAD_FIX_MARK : LEAD_PROBE_MARK) + (fix ? LEAD_FIX_MARK : LEAD_PROBE_MARK).length).trim();
+    const parts = rest.split(/\s+/);
+    // 路径是单引号包着传进来的，认的时候得把引号去掉
+    const target = fix ? parts[0].replace(/^'+|'+$/g, '') : '';
+    const [width, height] = (fix ? parts.slice(1, 3) : parts.slice(0, 2)).map(Number);
+    const fits = state.lead === 'fits';
+    const spec = fix || fits ? { width, height, fps: 24, audio: true } : { width: 640, height: 360, fps: 30, audio: false };
+    // 和真 ffprobe 一样的字段：规整那步之后要按这些判「跟出片对不对得上」（h264、8 位 yuv420p、24 帧、32 kHz 立体声）
+    const probed = {
+      streams: [
+        { codec_type: 'video', codec_name: 'h264', width: spec.width, height: spec.height, avg_frame_rate: `${spec.fps}/1`, pix_fmt: 'yuv420p', color_transfer: 'bt709' },
+        ...(spec.audio ? [{ codec_type: 'audio', codec_name: 'aac', sample_rate: '32000', channels: 2 }] : []),
+      ],
+      format: { duration: '3.0' },
+    };
+    if (fix) {
+      const file = local(target);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, Buffer.from('mock-fixed-lead'));
+      io.out(`---FIXED---\n${JSON.stringify(probed)}\n`);
+      return 0;
+    }
+    io.out(`---PROBE---\n${JSON.stringify(probed)}\n`);
+    return 0;
+  }
+
   async function execute(command: string, io: Io): Promise<number> {
+    if (command.includes(LEAD_PROBE_MARK) || command.includes(LEAD_FIX_MARK)) return leadReply(command, io);
     let code = 0;
     let then: string | null = null;
     for (const part of parse(command)) {
@@ -280,6 +318,7 @@ export function createMockSsh(): MockSsh {
       fs.mkdirSync(root, { recursive: true });
       commands.length = 0;
       state.free = 14 * 1024 ** 3;
+      state.lead = 'fits';
     },
     async close() {
       clients.forEach((client) => client.end());

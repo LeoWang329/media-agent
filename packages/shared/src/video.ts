@@ -90,6 +90,8 @@ export const DEFAULT_SELFLIFT: VideoSelfLift = {
   hiresLora: null,
   // 照 U37：接缝那几帧的声音羽化 12 个刻度
   audioFeather: 12,
+  // 空着就是重新生成；选了就从那段前一段视频接着往下出，见 docs/dev-plan.md 5.35
+  lead: null,
 };
 
 export const workflowOfSettings = (settings: VideoSettings): VideoWorkflow => settings.workflow ?? 'two-pass';
@@ -658,7 +660,8 @@ export function selfliftClipGraph(
   const plan = selfliftClips(params);
   const length = plan.lengths[clip] ?? plan.lengths.at(-1)!;
   const prompt = params.segments[plan.from[clip] ?? 0] ?? params.segments[0];
-  const context = clip > 0 && prev ? plan.context : 0;
+  // 上一段给的才有上下文：接力那套第 2 段起是，有「续写起点」时这次新出的第 1 段也是（它接的是前一段视频）
+  const context = prev ? plan.context : 0;
   // 双 LoRA：一套挂低分辨率那遍（sampler 的 model、算 sigmas 也用这个），一套挂高分辨率那遍（model_hires）；
   // 没配就不接，采样器那边照插件自己的默认走
   const phase: ComfyGraph = {};
@@ -847,16 +850,24 @@ export function selfliftMergeGraph(clips: { name: string }[], jobId?: string): C
 
 // 前 N−1 段照旧留着，从第 N 段往后再跑一遍再拼起来。为什么不能只重出中间一段：接力是链式的，
 // 第 N+1 段是接着第 N 段的画面长出来的，换了第 N 段后面就得跟着重出；所以能选的起点就这几档。
-// 老的那条得先把前面几段出完（留着的那几段得在那台上），最多只能从「已经出完的下一段」起；第 1 段起等于整条重出，所以从 2 起
+// 老的那条得先把前面几段出完（留着的那几段得在那台上），最多只能从「已经出完的下一段」起；第 1 段起等于整条重出，所以从 2 起。
+// 「段」按出片的顺序数：有前一段视频的（见 docs/dev-plan.md 5.35）它算第 1 段，所以「从第 2 段起」＝留着前一段视频、新出的从头重做
 export const rerunFroms = (job: Pick<VideoJob, 'chain'>): number[] => {
   const total = job.chain?.total ?? 0;
-  const done = job.chain?.clips.length ?? 0;
+  const done = (job.chain?.clips.length ?? 0) + (job.chain?.lead ? 1 : 0);
   const last = Math.min(total, done + 1);
   return Array.from({ length: Math.max(0, last - 1) }, (_, i) => i + 2);
 };
 
 export const rerunText = (clip: number) => `从第 ${clip} 段起重出`;
 export const rerunKeptText = (clip: number) => `前 ${clip - 1} 段照旧`;
+
+// ─── 续写起点（SelfLift 才有），见 docs/dev-plan.md 5.35 ───
+
+// 传上去的前一段视频要先量一下、必要时规整成出片大小，这两步是在那台上跑脚本做的（packages/server/src/comfy/videoLead.ts）。
+// 脚本里带这行标记（后面是目标和出片大小），假的 SSH（tools/mock-comfyui/src/ssh.ts）认这行，照它回一份量出来的结果；
+// 两边改一个就得改另一个
+export const LEAD_MARK = { probe: '# media-agent:lead-probe', fix: '# media-agent:lead-fix' };
 
 // ─── 重拍一截，见 docs/dev-plan.md 5.30 ───
 
