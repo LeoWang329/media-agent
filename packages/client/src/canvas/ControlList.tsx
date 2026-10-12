@@ -140,7 +140,7 @@ const generatedIndex = (node: ChatNode, ref: Extract<RefImage, { kind: 'generate
   node.messages[ref.messageId]?.images?.find((job) => job.id === ref.jobId)?.images.findIndex((image) => image.seed === ref.seed && image.status === 'done') ?? -1;
 
 // 参考图：显示选中的那张，点开从槽位和这个节点出过的图里挑
-export function RefButton({ node, value, onPick }: { node: ChatNode; value: RefImage | null; onPick: (image: RefImage) => void }) {
+export function RefButton({ node, value, onPick, what = '参考图' }: { node: ChatNode; value: RefImage | null; onPick: (image: RefImage) => void; what?: string }) {
   const canvasId = useCanvasStore((s) => s.canvasId)!;
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   let thumb: string | null = null;
@@ -156,7 +156,7 @@ export function RefButton({ node, value, onPick }: { node: ChatNode; value: RefI
   }
   return (
     <>
-      <button type="button" className="btn btn-secondary btn-sm gc-cn-ref" aria-label="参考图" title={label} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
+      <button type="button" className="btn btn-secondary btn-sm gc-cn-ref" aria-label={what} title={label} onClick={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}>
         {thumb ? <img src={thumb} alt="" /> : <Icon name="image" />}
         <span>{label}</span>
       </button>

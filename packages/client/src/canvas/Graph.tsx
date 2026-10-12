@@ -237,7 +237,7 @@ const GraphNode = memo(
     return (
       <div
         ref={register}
-        className={`gnode${n.image ? ' is-image' : ''}${selected ? ' is-selected' : ''}${dragging ? ' is-dragging' : ''}${fresh ? ' is-new' : ''}`}
+        className={`gnode${n.image ? ' is-image' : ''}${n.kind === 'edit' ? ' is-edit' : ''}${selected ? ' is-selected' : ''}${dragging ? ' is-dragging' : ''}${fresh ? ' is-new' : ''}`}
         data-id={n.id}
         data-od-id={`graph-node-${n.id}`}
         data-testid="node-card"
@@ -286,7 +286,12 @@ const GraphNode = memo(
           )}
         </div>
         <div className="gn-foot">
-          {n.image ? (
+          {n.kind === 'edit' ? (
+            <span className="tag tag-outline gn-kind">
+              <Icon name="wand" />
+              编辑
+            </span>
+          ) : n.image ? (
             <span className="tag tag-outline gn-kind">
               <Icon name="sparkles" />
               生图{n.image.family ? ` · ${n.image.family}` : ''}
@@ -325,7 +330,12 @@ const GraphNode = memo(
           {n.directionCount > 0 && <span className="tag">{n.directionCount} 个方向</span>}
           <span className="grow" />
           <span className="meta">
-            {n.image ? `${n.image.width}×${n.image.height}${n.image.family ? ` · ${n.image.family}` : ''}` : `${n.duration}秒 · ${aspectRatioText(n.aspectRatio)}`}
+            {n.kind === 'edit'
+              // 编辑节点不吃时长和比例，看的是放进来几张图
+              ? `${n.slots.length} 张图`
+              : n.image
+                ? `${n.image.width}×${n.image.height}${n.image.family ? ` · ${n.image.family}` : ''}`
+                : `${n.duration}秒 · ${aspectRatioText(n.aspectRatio)}`}
           </span>
         </div>
         {hiddenCount > 0 && (

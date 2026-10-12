@@ -174,21 +174,32 @@ test('10.3 第 4 条：挑两个小块存成片段 → 另一个生图节点的�
   await expect(picker).toContainText('没有名字里带「测试角色」的片段');
 });
 
-test('设置：系统提示词分视频和生图两组，生图的标着系列；固定格式要求三份都能看；词库显示概况', async ({ page }) => {
+test('设置：系统提示词分视频、生图、图像编辑三组，生图的标着系列、编辑的标着功能名；固定格式要求四份都能看；词库显示概况', async ({ page }) => {
   await page.goto('/settings#prompts');
   const list = page.locator('#pList');
-  await expect(list.locator('.li-sep')).toHaveText(['写视频提示词 · 视频节点用', '写生图标签 · 生图节点用']);
-  await expect(list.locator('[data-prompt]')).toHaveText([/^ref2va/, /^i2v/, /^t2v/, /^fl2va/, /^l2va/, /^il/, /^pony/, /^krea2/]);
+  await expect(list.locator('.li-sep')).toHaveText(['写视频提示词 · 视频节点用', '写生图标签 · 生图节点用', '写改图说明 · 图像编辑节点用']);
+  await expect(list.locator('[data-prompt]')).toHaveText([
+    /^ref2va/, /^i2v/, /^t2v/, /^fl2va/, /^l2va/, /^il/, /^pony/, /^krea2/,
+    /^edit/, /^edit-outfit/, /^edit-inpaint/, /^edit-real/, /^edit-depth/, /^edit-remix/, /^edit-fourview/,
+  ]);
   await expect(list.locator('[data-prompt="il"] .tag-outline')).toHaveText('生图 · IL');
   await expect(list.locator('[data-prompt="pony"] .tag-outline')).toHaveText('生图 · Pony');
   await expect(list.locator('[data-prompt="krea2"] .tag-outline')).toHaveText('生图 · Krea2');
+  await expect(list.locator('[data-prompt="edit"] .tag-outline')).toHaveText('编辑 · 指令编辑');
+  await expect(list.locator('[data-prompt="edit-real"] .tag-outline')).toHaveText('编辑 · 转真人');
+  await expect(list.locator('[data-prompt="edit-depth"] .tag-outline')).toHaveText('编辑 · 深度迁移');
+  await expect(list.locator('[data-prompt="edit-remix"] .tag-outline')).toHaveText('编辑 · 风格 Remix');
+  await expect(list.locator('[data-prompt="edit-fourview"] .tag-outline')).toHaveText('编辑 · 四视图');
   await list.locator('[data-prompt="pony"]').click();
   await expect(page.locator('.editor .hint')).toContainText('（生图那一份）。开头的「用途: 生图」「底模: Pony」是程序认它的依据，别删。');
+  await list.locator('[data-prompt="edit-outfit"]').click();
+  await expect(page.locator('.editor .hint')).toContainText('（图像编辑那一份）。开头的「用途: 编辑」「功能: 换装」是程序认它的依据，别删');
 
   await page.locator('[data-tab="format"]').click();
   await expect(page.locator('[data-od-id="format-requirement"]')).toContainText('概括这条视频的内容');
   await expect(page.locator('[data-od-id="format-requirement-image"]')).toContainText('框里只放英文标签');
   await expect(page.locator('[data-od-id="format-requirement-krea2"]')).toContainText('英文自然语言描述');
+  await expect(page.locator('[data-od-id="format-requirement-edit"]')).toContainText('一个字都不会被程序改动');
 
   await page.locator('[data-tab="taglib"]').click();
   const info = page.locator('#libInfo');

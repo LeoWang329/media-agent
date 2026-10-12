@@ -2,17 +2,22 @@ import {
   addMessage,
   defaultImageSettings,
   descendantIds,
+  editDiff,
   editedPromptMessage,
   editedUserMessage,
+  editFnOf,
+  editSettingsOf,
   handwrittenMessage,
   isTurnLimit,
   parentKey,
+  promptNameForFn,
   slotDiff,
   TURN_LIMITS,
   videoSettingsOf,
   type ChatNode,
   type ImageSettings,
   type Message,
+  type NodeKind,
 } from '@media-agent/shared';
 import express, { type Request } from 'express';
 import { randomUUID } from 'node:crypto';
@@ -44,9 +49,16 @@ import { homeData } from '../store/home';
 import { canvasImagePath, checklistPath, importImage, readImage, storeDroppedImage } from '../store/images';
 import { canvasLeadPath, importLead, readLead, storeUploadedLead } from '../store/leads';
 import { canvasMediaPath, importMedia, readMedia, storeUploadedMedia } from '../store/media';
-import { DEFAULT_PROMPT, defaultPromptFor, readPromptMeta } from '../store/prompts';
+import { DEFAULT_PROMPT, defaultPromptFor, listPromptInfos, readPromptMeta } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import * as v from './validate';
+
+// 提示词选错类型时的说法，见 docs/dev-plan.md 5.39
+const KIND_PROMPT_ERROR = {
+  video: '视频节点只能选写视频提示词的系统提示词',
+  image: '生图节点只能选生图用的系统提示词',
+  edit: '图像编辑节点只能选图像编辑用的系统提示词',
+} satisfies Record<NodeKind, string>;
 
 export function canvasRoutes(configDir: string): express.Router {
   const router = express.Router();
@@ -92,12 +104,13 @@ export function canvasRoutes(configDir: string): express.Router {
     res.json({ trash: await trashCanvas(w, canvasId) });
   });
 
-  // 新建空节点：视频节点或生图节点，不说是视频节点；模型配置取第一个，系统提示词取这种节点默认的那套
+  // 新建空节点：视频节点、生图节点或图像编辑节点，不说是视频节点；模型配置取第一个，系统提示词取这种节点默认的那套
   router.post('/canvases/:canvasId/nodes', async (req, res) => {
     const w = await work();
     const kind = req.body?.kind === undefined ? 'video' : v.nodeKind(req.body.kind);
     const [{ modelConfigs }, prompt] = await Promise.all([readConfig(configDir), defaultPromptFor(w, kind)]);
     if (!prompt && kind === 'image') throw new HttpError(400, '设置里还没有生图用的系统提示词');
+    if (!prompt && kind === 'edit') throw new HttpError(400, '设置里还没有图像编辑用的系统提示词');
     const node = await createNode(w, v.uuid(req.params.canvasId), {
       x: v.finiteNumber(req.body?.x, '节点位置'),
       y: v.finiteNumber(req.body?.y, '节点位置'),
@@ -118,10 +131,18 @@ export function canvasRoutes(configDir: string): express.Router {
     const w = await work();
     const body = (req.body ?? {}) as Record<string, unknown>;
     let resetImage = false;
+    const before = await readNode(w, canvasId, nodeId);
+    // 图像编辑节点换了功能：系统提示词自己换成那个功能那一份（每份说明段里写着「功能: 」），见 docs/dev-plan.md 5.39。
+    // 请求里明写了 systemPromptName 的照请求里的来
+    if (body.edit !== undefined && body.systemPromptName === undefined && before.kind === 'edit') {
+      const fn = editFnOf(v.editSettings(body.edit, editSettingsOf(before.edit, before.slots.length)).fn);
+      const name = promptNameForFn(await listPromptInfos(w), fn);
+      if (name && name !== before.systemPromptName) body.systemPromptName = name;
+    }
     // 节点的类型建好就定了，系统提示词只能换成这种节点用的
     if (typeof body.systemPromptName === 'string') {
       const [node, meta] = await Promise.all([readNode(w, canvasId, nodeId), readPromptMeta(w, body.systemPromptName)]);
-      if ((meta?.use ?? 'video') !== node.kind) throw new HttpError(400, node.kind === 'image' ? '生图节点只能选生图用的系统提示词' : '视频节点只能选写视频提示词的系统提示词');
+      if ((meta?.use ?? 'video') !== node.kind) throw new HttpError(400, KIND_PROMPT_ERROR[node.kind]);
       const old = await readPromptMeta(w, node.systemPromptName);
       resetImage = meta?.family !== old?.family && (meta?.family === 'Krea2' || old?.family === 'Krea2');
       if (resetImage && body.image === undefined) body.image = {};
@@ -129,7 +150,7 @@ export function canvasRoutes(configDir: string): express.Router {
     // 改出图设置：节点还没改过的，先按它系列的默认值补全
     let imageBase: ImageSettings | undefined;
     if (body.image !== undefined) {
-      const promptName = typeof body.systemPromptName === 'string' ? body.systemPromptName : (await readNode(w, canvasId, nodeId)).systemPromptName;
+      const promptName = typeof body.systemPromptName === 'string' ? body.systemPromptName : before.systemPromptName;
       const family = await imageFamily(w, promptName);
       imageBase = defaultImageSettings((await readSettings(w)).defaults[family], family);
     }
@@ -167,8 +188,10 @@ export function canvasRoutes(configDir: string): express.Router {
     await runGeneration({ configDir, work: w, canvasId, nodeId }, res, (node) => {
       const parent = parentId === null ? null : node.messages[parentId];
       if (parent === undefined) throw new HttpError(404, '找不到要接着回复的那条消息');
-      // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明；生图节点不说时长和比例
-      const { systemNote, attachments, frames } = slotDiff(parent, node, node.kind);
+      // 和上一条消息记下的槽位、时长、比例比，算出这次带哪些图、加什么说明；生图节点不说时长和比例。
+      // 图像编辑节点只把选中的那张发给模型（模型要看着它写「要改什么」），见 docs/dev-plan.md 5.39
+      const { systemNote, attachments, frames } =
+        node.kind === 'edit' ? editDiff(node.slots, editSettingsOf(node.edit, node.slots.length)) : slotDiff(parent, node, node.kind);
       const userMessage: Message = {
         id: randomUUID(),
         parentId,
@@ -389,6 +412,9 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase
   }
   // 节点存的出图设置里没有的项（后来加的）用系列的默认值补上
   if (body.image !== undefined) next.image = v.imageSettings(body.image, { ...imageBase!, ...node.image });
+  // 图像编辑节点记住的功能、用哪张图、那句话，见 docs/dev-plan.md 5.39。
+  // 走 editSettingsOf 补全：老节点缺 real / inpaint 两层时也得是完整的一份（不然存下去会缺字段）
+  if (body.edit !== undefined) next.edit = v.editSettings(body.edit, editSettingsOf(node.edit, node.slots.length));
   if (body.video !== undefined) next.video = v.videoSettings(body.video, videoSettingsOf(node.video));
   if (body.activeChildOf !== undefined) {
     const entries = Object.entries((body.activeChildOf ?? {}) as Record<string, unknown>);

@@ -1,11 +1,27 @@
 import {
   activePath,
   addMessage,
+  defaultEditSettings,
   defaultImageSettings,
+  DEFAULT_IMAGE_SIZE,
+  editPresetOf,
+  editFnOf,
+  editSettingsOf,
+  editTextBlock,
   fourViewPrompt,
   kreaDefaults,
+  kreaEditSetup,
   kreaGraph,
+  kreaOutfitSetup,
   parseReply,
+  realLorasOf,
+  realModelsOf,
+  REAL_CFG,
+  REAL_SAMPLER,
+  REAL_SCHEDULER,
+  REAL_STEPS,
+  REAL_VAE,
+  reverseInstructionOf,
   BUILTIN_WORKFLOW,
   builtinGraph,
   checkpointFamily,
@@ -14,10 +30,12 @@ import {
   familyWords,
   imageSettingsOf,
   importedGraph,
+  inpaintGraph,
   isLiveImage as isLive,
   jobSeeds,
   missingNodeTypes,
   negativePrompt,
+  newDetailPass,
   parsePromptMeta,
   PLUGIN_OF,
   positivePrompt,
@@ -27,6 +45,8 @@ import {
   type ComfyTarget,
   type ControlSettings,
   type DetailPass,
+  type EditFnId,
+  type EditSettings,
   type Family,
   type FamilyDefaults,
   type ImageJob,
@@ -36,6 +56,7 @@ import {
   type ImageSettings,
   type Message,
   type JobImage,
+  type PartialEditSettings,
   type RefImage,
   type SharedSettings,
   type UpscaleSettings,
@@ -49,15 +70,15 @@ import { HttpError } from '../httpError';
 import { listNodes, readAllCanvases, readNode, updateNode } from '../store/canvases';
 import { withLock } from '../store/locks';
 import { canvasImagePath, readImage } from '../store/images';
-import { readPrompt, snapshotPrompt } from '../store/prompts';
+import { readPrompt, readPromptMeta, snapshotPrompt } from '../store/prompts';
 import { readSettings } from '../store/settings';
 import { readWorkflow } from '../store/workflows';
 import { loadLibrary } from '../tags/library';
 import { checkTag } from '../tags/search';
 import { BootCancelled, type Autodl } from './autodl';
 import * as comfy from './client';
-import { imageFile, saveTemp } from './files';
-import { comfyCheckpoints, loadObjectInfo } from './options';
+import { imageFile, saveMaskTemp, saveTemp } from './files';
+import { comfyCheckpoints, comfyUpscaleModels, loadObjectInfo } from './options';
 
 // 一组图挂在哪条回复下
 export type JobPlace = { work: string; canvasId: string; nodeId: string; messageId: string };
@@ -207,17 +228,268 @@ async function refineParams(work: string, node: ChatNode, from: ImageJobParams, 
   };
 }
 
+// 局部重绘要发出去的参数，见 docs/dev-plan.md 5.38：步数、采样器、调度器、VAE、LoRA 这些照原图那组记的，
+// 原图是导入的工作流出的就用节点现在的出图设置（原图那组没记步数这些，工作流自己带着）；正面、负面填了就按普通
+// 出图拼固定开头和默认负面词，空着就用原图那组的。编辑节点的局部重绘（5.39）原图是槽位里那张、手上没有
+// 「原图那组参数」，就整条按**这个系列的默认值**来 —— 编辑节点上存的那份 image 是 Krea2 编辑档的参数
+// （步数 10 / simple 那些），SDXL 这条路吃不了；底模出图时会挑这台 ComfyUI 上这个系列的第一个。
+// 两条路都只到「要发什么参数」为止，真发出去的流程是同一个 inpaintGraph
+async function inpaintParams(
+  work: string,
+  node: ChatNode,
+  family: Family,
+  from: ImageJobParams | null,
+  image: Pick<JobImage, 'width' | 'height'>,
+  inpaint: { mask: string; positive: string; negative: string; denoise: number; image?: RefImage },
+  settings: SharedSettings,
+): Promise<ImageJobParams> {
+  if (family === 'Krea2') throw new HttpError(400, 'Krea2 这期不支持局部重绘');
+  const defaults = settings.defaults[family];
+  const current = imageSettingsOf(node.image, defaults, family);
+  const model = !from
+    ? { ...defaultImageSettings(defaults, family), ...e02Params(current), loras: current.loras }
+    : from.workflow.id
+      ? { checkpoint: current.checkpoint, loras: current.loras, steps: current.steps, cfg: current.cfg, sampler: current.sampler, scheduler: current.scheduler, clipSkip: defaults.clipSkip, ...e02Params(current) }
+      : { checkpoint: from.checkpoint, loras: from.loras, steps: from.steps, cfg: from.cfg, sampler: from.sampler, scheduler: from.scheduler, clipSkip: from.clipSkip, ...e02Params(from) };
+  const compose = await tagComposer(work, defaults);
+  return {
+    // model 是从 defaultImageSettings 起头的（里面带着默认的 832×1216），所以尺寸得压在它后面
+    ...model,
+    family,
+    positive: inpaint.positive.trim() ? positivePrompt(defaults, current.rating, compose(inpaint.positive)) : (from?.positive ?? ''),
+    negative: inpaint.negative.trim() ? negativePrompt(defaults, inpaint.negative) : (from?.negative ?? defaults.negative),
+    workflow: BUILTIN_WORKFLOW,
+    // 尺寸就是原图（掩码和它同源）。编辑节点这条路原图不在手边时填原图的默认竖幅 ——
+    // E05 那条流程其实不看出图尺寸（裁多大、拼回哪张都是 InpaintCropImproved / InpaintStitchImproved 定的）
+    width: image.width ?? from?.width ?? DEFAULT_IMAGE_SIZE.width,
+    height: image.height ?? from?.height ?? DEFAULT_IMAGE_SIZE.height,
+    inpaint: { mask: inpaint.mask, denoise: inpaint.denoise, ...(inpaint.image && { image: inpaint.image }) },
+  };
+}
+
+// 编辑节点走局部重绘（E05）和放大（内置流程那条放大路）时用哪个系列：说明段里明写了「底模: IL / Pony」的照它
+//（这两条走的都是内置 SDXL 那条路，跟提示词是不是生图用的无关），没写的按 IL —— 编辑节点那份默认提示词里本来也没有这一行。
+// Krea2 那条路走不了 E05、也没有放大这一档，在这儿就当「不是 SDXL 这两个系列」，进 inpaintParams / upscaleParams 前先拦掉
+async function sdxlFamily(work: string, node: ChatNode): Promise<Exclude<Family, 'Krea2'>> {
+  const meta = await readPromptMeta(work, node.systemPromptName);
+  return meta?.family === 'Pony' ? 'Pony' : 'IL';
+}
+
+// 编辑节点「放大 / 高清」要发出去的参数，见 docs/plan-image-edit-node.md 第 3 节：底模、LoRA、步数这些照
+// **这个系列的默认值**（编辑节点上没有生图节点那套出图设置），原图是槽位里那张、尺寸也照它 ——
+// 放大倍数是「原图乘几倍」，出图时 builtinGraph 按 params.width/height × 倍数算（scaledSize）。
+// 放大模型空着是有意的：到 submit 里用这台 ComfyUI 上第一个（chooseUpscaleModel），跟底模那套一样。
+// 重绘强度固定 0：**只放大不重画**，原来的像素一个都不改；要修脸就开「面部修复」那一道（走部位重绘）
+async function upscaleParams(
+  work: string,
+  node: ChatNode,
+  family: Exclude<Family, 'Krea2'>,
+  imageId: string,
+  image: Pick<JobImage, 'width' | 'height'>,
+  up: EditSettings['upscale'],
+  settings: SharedSettings,
+): Promise<ImageJobParams> {
+  const defaults = settings.defaults[family];
+  const current = imageSettingsOf(node.image, defaults, family);
+  return {
+    // 照局部重绘那条起头（里面带着默认的 832×1216），所以尺寸得压在它后面
+    ...defaultImageSettings(defaults, family),
+    ...e02Params(current),
+    loras: current.loras,
+    family,
+    positive: positivePrompt(defaults, current.rating, ''),
+    negative: negativePrompt(defaults, ''),
+    workflow: BUILTIN_WORKFLOW,
+    width: image.width ?? DEFAULT_IMAGE_SIZE.width,
+    height: image.height ?? DEFAULT_IMAGE_SIZE.height,
+    upscale: { on: true, model: up.model, scale: up.scale, denoise: 0 },
+    // 面部修复就是部位重绘的一道：检测模型用面板上那个，默认参数照 newDetailPass（阈值 0.3、强度 0.4、重画 1024）
+    ...(up.face && { details: [newDetailPass([up.face])] }),
+    upscaleFrom: { kind: 'slot', imageId },
+  };
+}
+
+// 槽位里那张图的尺寸（掩码是按它画的、和它同源）；画布上的记录读不到就当没尺寸
+async function imageSize(work: string, canvasId: string, imageId: string): Promise<Pick<JobImage, 'width' | 'height'>> {
+  const record = await readImage(work, canvasId, imageId).catch(() => null);
+  return { width: record?.width, height: record?.height };
+}
+
 export type Again = { jobId: string; index: number; sameSeed: boolean };
 export type Refine = { jobId: string; index: number; upscale: UpscaleSettings; details: DetailPass[] };
+// 局部重绘：mask 是把原图要重画的地方抠成透明的 PNG（字节），正面、负面空着就用原图那组的，见 docs/dev-plan.md 5.38
+export type InpaintRequest = { jobId: string; index: number; mask: Uint8Array; positive: string; negative: string; denoise: number };
 type FourView = { reference: RefImage; extra: string };
+// 图像编辑节点的「开始」发出来的：哪个功能、拿第几张图当原图、要改什么，见 docs/dev-plan.md 5.39。
+// slotB / real / inpaint / depth / remix / upscale 是这几轮陆续加的（转真人、局部重绘、深度迁移、风格 Remix、
+// 放大 / 高清用的），老界面只发前四项，缺的按默认值补。
+// messageId + promptIndex 是**框上那个「开始」**发的：带上时不新建回复，出的图挂在这条框（这条回复的第几个框）下面；
+// 不带时照旧自己造一条回复，见 docs/plan-image-edit-node-layout.md 第 4 节 ④
+export type EditJobRequest = {
+  fn: EditFnId;
+  slot: number;
+  slotB?: number;
+  text: string;
+  refBoost: number;
+  real?: PartialEditSettings['real'];
+  inpaint?: PartialEditSettings['inpaint'];
+  depth?: PartialEditSettings['depth'];
+  remix?: PartialEditSettings['remix'];
+  upscale?: PartialEditSettings['upscale'];
+  messageId?: string;
+  promptIndex?: number;
+  // 局部重绘在界面上画的那张抠过透明的 PNG（base64），到 editJob 里落成临时文件；只有这个功能会带
+  maskBytes?: Uint8Array;
+};
+
+// 建任务时用的那份：maskBytes 已经换成临时文件夹里的路径（「掩码文件找不到了」那套跟着适用）
+export type EditRequest = Omit<EditJobRequest, 'maskBytes'> & { mask?: string };
+
+// 图像编辑节点那一组任务的参数：原图是槽位里选中的那张，尺寸不出（跟着原图走），见 docs/dev-plan.md 5.39、5.37。
+// 八个功能分成几条路：
+//   指令编辑 → Krea2 编辑档（Ostris 两个节点）+ 身份编辑 v1.1
+//   换装     → 同一条路，只把 LoRA 换成 krea_outfittransfer
+//   转真人   → krea2Real.ts 那张图（mode: 'real'），底模 / 文字理解照用户标准，出图尺寸跟着缩放后的图 1 走
+//   局部重绘 → E05 那条内置 SDXL 流程（inpaintParams + inpaintGraph），掩码是界面上画的那份，跟大图窗口那条一模一样
+//   深度迁移 → krea2Depth.ts 那张图（mode: 'depth'）：控制类三节点那一组，底模和文字理解照跑通的那套
+//   风格 Remix / 换人 → krea2Remix.ts 那张图（mode: 'remix'）：Ostris 那条，只喂 model，换 LoRA 分两档
+//   放大 / 高清 → 生图节点那条内置 SDXL 放大路（upscaleParams + builtinGraph），放大模型 + 可选的面部重绘，不用写字
+//   四视图   → 跟生图节点「做四视图」同一条路（mode: 'four-view'，krea2_4panel），框里那句只当额外要求
+// 返回的 note 是给界面的说明（现在只有「换脸没选图 2」这一种）
+async function editParams(work: string, canvasId: string, node: ChatNode, edit: EditRequest, settings: SharedSettings): Promise<{ params: ImageJobParams; note?: string }> {
+  const fn = editFnOf(edit.fn);
+  if (!fn.ready) throw new HttpError(400, `「${fn.name}」还没做，下一批上`);
+  const edit_ = editSettingsOf(edit, node.slots.length);
+  const defaults = settings.defaults.Krea2;
+  const imageId = node.slots[edit_.slot];
+  if (!imageId) throw new HttpError(400, '先选一张要改的图');
+  const text = edit_.text.trim();
+  // 放大 / 高清整条路不看提示词、四视图的主指令是固定的（框里那句只当额外要求，不写也行），这两条不用写字；
+  // 转真人 + 反推时那句话是反推模型跑图时现写的，用户不写也行
+  const needText = editTextBlock(edit_);
+  if (needText) throw new HttpError(400, needText);
+  if (fn.id === 'inpaint') {
+    if (!edit.mask) throw new HttpError(400, '先在图上拖个框或者涂抹出要重画的地方');
+    const family = await sdxlFamily(work, node);
+    return {
+      params: await inpaintParams(work, node, family, null, await imageSize(work, canvasId, imageId), {
+        mask: edit.mask,
+        positive: text,
+        negative: '',
+        denoise: edit_.inpaint.denoise,
+        // 底图是槽位里选中的那张：真发图时要跟掩码分两张传（LoadImage 会把 alpha=0 的地方合成成黑）
+        image: { kind: 'slot', imageId },
+      }, settings),
+    };
+  }
+  // 放大 / 高清：走生图节点已有的那条放大路（内置 SDXL 那套），跟局部重绘一样跟提示词是不是生图用的无关
+  if (fn.id === 'upscale') {
+    const family = await sdxlFamily(work, node);
+    return { params: await upscaleParams(work, node, family, imageId, await imageSize(work, canvasId, imageId), edit_.upscale, settings) };
+  }
+  // 四视图：跟生图节点那个「做四视图」是同一条路（krea2_4panel + Krea2Edit 那两个节点），
+  // 原图是槽位里选中的那张，框里那句话当额外要求（主指令 FOUR_VIEW_INSTRUCTION 由 fourViewPrompt 接在最前面）
+  if (fn.id === 'fourview') {
+    const image = { ...defaultImageSettings(defaults, 'Krea2'), ...kreaDefaults('four-view'), seed: null };
+    const krea: ImageJobParams['krea'] = { ...image.krea!, mode: 'four-view', reference: { kind: 'slot', imageId }, extra: text };
+    return { params: kreaParams({ ...image, krea }, '') };
+  }
+  if (fn.id === 'real') {
+    const real = edit_.real;
+    const models = realModelsOf(real.uncensored);
+    const image = {
+      ...defaultImageSettings(defaults, 'Krea2'),
+      ...kreaDefaults('real'),
+      checkpoint: models.checkpoint,
+      textEncoder: models.textEncoder,
+      vae: REAL_VAE,
+      steps: REAL_STEPS,
+      cfg: REAL_CFG,
+      sampler: REAL_SAMPLER,
+      scheduler: REAL_SCHEDULER,
+      seed: null,
+    };
+    // 图 2（真人参考）只有「换脸」用得着。没给第二张（slotB 跟图 1 指同一张，默认两张都是第 1 张）时
+    // 不报错：图里退回图 1，返回值里带一句说明 —— 照作者那份工作流「双图关掉时 image2 取图 1」的行为
+    const slotB = edit_.slotB ?? 0;
+    const imageIdB = real.dual && slotB !== edit_.slot ? node.slots[slotB] : undefined;
+    const krea: ImageJobParams['krea'] = {
+      ...image.krea!,
+      mode: 'real',
+      reference: { kind: 'slot', imageId },
+      referenceB: imageIdB ? { kind: 'slot', imageId: imageIdB } : null,
+      refBoost: edit_.refBoost,
+    };
+    const params = kreaParams({ ...image, krea }, text);
+    return {
+      params: {
+        ...params,
+        // 转真人那张图要的东西：反推 / 双图两个开关、像图 2 多少、两组 LoRA、无审查
+        real: {
+          reverse: real.reverse,
+          dual: real.dual,
+          image2Strength: real.image2Strength,
+          loras: realLorasOf(real),
+          uncensored: real.uncensored,
+          reverseInstruction: reverseInstructionOf(real.dual),
+        },
+      },
+      ...(real.dual && !imageIdB && { note: '「换脸」要两张图，这次只给了一张 —— 退回只转真人（图 2 用图 1）' }),
+    };
+  }
+  // 深度迁移 / 风格 Remix：两条新路，接线和参数都照真机摸出来的 JSON 抄（kreaDepthGraph / kreaRemixGraph）。
+  // 底模和文字理解照**跑通的那套**（turbo fp8 / int8 + fp8 clip，见 kreaDefaults），这轮不扩成「无审查」两档 ——
+  // 那一档没在真机上验过，先用验过的这套。出图尺寸出（1024×1024，跟 JSON 一样），LoRA 不放 params.loras：
+  // 深度那条走控制类 LoRA、Remix 那条走 params.remix.lora（图里各自现挂）
+  if (fn.id === 'depth' || fn.id === 'remix') {
+    const image = {
+      ...defaultImageSettings(defaults, 'Krea2'),
+      ...kreaDefaults(fn.id),
+      vae: REAL_VAE,
+      steps: REAL_STEPS,
+      cfg: REAL_CFG,
+      sampler: REAL_SAMPLER,
+      scheduler: 'simple',
+      seed: null,
+    };
+    const krea: ImageJobParams['krea'] = {
+      ...image.krea!,
+      mode: fn.id,
+      reference: { kind: 'slot', imageId },
+      refBoost: edit_.refBoost,
+    };
+    const params = kreaParams({ ...image, krea }, text);
+    return {
+      params: {
+        ...params,
+        // 深度迁移用控制强度，风格 Remix 用挂哪条 LoRA：两条路都在 kreaGraph 里按 params.remix 现挂
+        remix: {
+          controlStrength: edit_.depth.strength,
+          lora: { ...edit_.remix.lora },
+        },
+      },
+    };
+  }
+  // 指令编辑 / 换装照作者 T07：官方 Turbo + 身份编辑 / 换装 LoRA，不是生图节点那条真人化编辑档
+  const image = { ...defaultImageSettings(defaults, 'Krea2'), ...kreaDefaults('edit'), ...(fn.id === 'outfit' ? kreaOutfitSetup() : kreaEditSetup()), seed: null };
+  return {
+    params: kreaParams(
+      { ...image, krea: { ...image.krea!, mode: 'edit', reference: { kind: 'slot', imageId }, refBoost: edit_.refBoost } },
+      text,
+    ),
+  };
+}
 
 function kreaParams(image: ImageSettings, text: string): ImageJobParams {
   const krea = image.krea!;
   if (krea.mode === 'four-view' && !krea.reference) throw new HttpError(400, '四视图还没选参考图');
+  if (krea.mode === 'edit' && !krea.reference) throw new HttpError(400, '编辑还没选参考图');
   if (image.workflowId) throw new HttpError(400, 'Krea2 使用内置流程，请先取消导入的工作流');
   if (image.upscale.on || image.details.some((p) => p.on) || image.controls.some((c) => c.on)) throw new HttpError(400, 'Krea2 这期不支持放大、部位重绘和 ControlNet');
+  // 编辑档挂了带触发词的 LoRA（动漫转真人那类）时，把触发词放在你写的那句话前面，见 docs/dev-plan.md 5.37
+  const preset = krea.mode === 'edit' ? editPresetOf(image.loras) : null;
   return {
-    family: 'Krea2', positive: krea.mode === 'four-view' ? fourViewPrompt(text, krea.extra) : text.trim(), negative: '',
+    family: 'Krea2', positive: krea.mode === 'four-view' ? fourViewPrompt(text, krea.extra) : [preset?.trigger, text.trim()].filter(Boolean).join('\n\n'), negative: '',
     workflow: BUILTIN_WORKFLOW, width: image.width, height: image.height,
     checkpoint: image.checkpoint, textEncoder: image.textEncoder, vae: image.vae, loras: image.loras,
     steps: image.steps, cfg: image.cfg, sampler: image.sampler, scheduler: image.scheduler, krea,
@@ -289,8 +561,13 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       },
     );
 
-  // 点「生图」出这个框；again 是「同样参数再来」「只换种子再来」，refine 是出完的图上补做放大和部位重绘
-  async function create(place: JobPlace, promptIndex: number, { again, refine, fourView }: { again?: Again; refine?: Refine; fourView?: FourView } = {}): Promise<ImageJob> {
+  // 点「生图」出这个框；again 是「同样参数再来」「只换种子再来」，refine 是出完的图上补做放大和部位重绘，
+  // inpaint 是在一张出完的图上局部重绘
+  async function create(
+    place: JobPlace,
+    promptIndex: number,
+    { again, refine, fourView, edit, inpaint, notes }: { again?: Again; refine?: Refine; fourView?: FourView; edit?: EditRequest; inpaint?: InpaintRequest; notes?: string[] } = {},
+  ): Promise<ImageJob> {
     const settings = await readSettings(place.work);
     const { comfyTarget: target, autodlToken } = await readComfyConfig(configDir);
     const lanUrl = settings.comfy.lanUrl;
@@ -301,9 +578,22 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
 
     let source: { promptIndex: number; kind: ImageJob['kind']; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
-    if (fourView) {
-      const family = await imageFamily(place.work, node.systemPromptName);
-      const current = imageSettingsOf(node.image, settings.defaults[family], family);
+    if (edit) {
+      // 图像编辑节点：原图是槽位里选中的那张，一句话改图，出 1 张，见 docs/dev-plan.md 5.39
+      if (node.kind !== 'edit') throw new HttpError(400, '编辑要图像编辑节点');
+      const made = await editParams(place.work, place.canvasId, node, edit, settings);
+      if (made.note) notes?.push(made.note);
+      // 局部重绘是「在一张图上改一块」，跟大图窗口那条一样记 kind: 'inpaint'（5.38）；四视图跟生图节点那个
+      // 「做四视图」同一个说法，记 kind: 'four-view'；放大 / 高清和其余几条都记 'edit'
+      source = {
+        promptIndex,
+        kind: made.params.inpaint ? 'inpaint' : made.params.krea?.mode === 'four-view' ? 'four-view' : 'edit',
+        params: made.params,
+        seeds: [randomSeed()],
+      };
+    } else if (fourView) {
+      const family = node.kind === 'image' ? await imageFamily(place.work, node.systemPromptName) : 'Krea2';
+      const current = imageSettingsOf(node.kind === 'image' ? node.image : undefined, settings.defaults[family], family);
       const image = family === 'Krea2' && current.krea?.mode === 'four-view'
         ? current : { ...defaultImageSettings(settings.defaults.Krea2, 'Krea2'), ...kreaDefaults('four-view'), seed: current.seed };
       const krea = { ...image.krea!, reference: fourView.reference, extra: fourView.extra };
@@ -319,7 +609,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
         kind: job.kind,
         params: job.params,
         seeds: [again.sameSeed ? image.seed : randomSeed()],
-        from: job.kind === 'refine' ? job.source : { kind: 'generated', jobId: job.id, seed: image.seed },
+        from: job.kind === 'refine' || job.kind === 'inpaint' ? job.source : { kind: 'generated', jobId: job.id, seed: image.seed },
       };
     } else if (refine) {
       const job = message.images?.find((j) => j.id === refine.jobId);
@@ -333,6 +623,19 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
         seeds: [image.seed],
         from: { kind: 'generated', jobId: job.id, seed: image.seed },
       };
+    } else if (inpaint) {
+      const job = message.images?.find((j) => j.id === inpaint.jobId);
+      const image = job?.images[inpaint.index];
+      if (!job || image?.status !== 'done') throw new HttpError(404, '找不到要重绘的那张图');
+      if (!(await imageFile(place.work, image))) throw new HttpError(409, '这张图的临时文件清掉了，也没下载过，没法重绘');
+      const mask = await saveMaskTemp(place.work, inpaint.mask);
+      source = {
+        promptIndex: job.promptIndex,
+        kind: 'inpaint',
+        params: await inpaintParams(place.work, node, job.params.family, job.params, image, { ...inpaint, mask, image: { kind: 'generated', messageId: message.id, jobId: job.id, seed: image.seed } }, settings),
+        seeds: [randomSeed()],
+        from: { kind: 'generated', jobId: job.id, seed: image.seed },
+      };
     } else {
       const box = message.parsed?.prompts[promptIndex];
       if (!box) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
@@ -340,7 +643,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       const made = previous && await imageFamily(place.work, node.systemPromptName) !== 'Krea2'
         ? { params: { ...previous.params, positive: box.text.trim() }, seeds: [node.image?.seed ?? randomSeed()] }
         : await paramsFor(place.work, node, box.text, settings);
-      source = { promptIndex, kind: made.params.krea?.mode === 'four-view' ? 'four-view' : 'txt2img', ...made };
+      source = { promptIndex, kind: made.params.krea?.mode === 'four-view' ? 'four-view' : made.params.krea?.mode === 'edit' ? 'edit' : 'txt2img', ...made };
     }
 
     const job: ImageJob = {
@@ -381,6 +684,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       submitting.set(address, (submitting.get(address) ?? 0) + 1);
       await connect(address);
       await chooseCheckpoint(place, jobId, address);
+      await chooseUpscaleModel(place, jobId, address);
       const graphFor = await graphMaker(place, jobId, address);
       const id = await (clientId ??= comfyClientId(configDir));
       for (let more = true; more; ) {
@@ -429,6 +733,16 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     await changeJob(place, jobId, (job) => ({ ...job, params: { ...job.params, checkpoint: name } }));
   }
 
+  // 编辑节点的「放大 / 高清」没选放大模型：用这台 ComfyUI 上第一个，跟底模那套（chooseCheckpoint）一个路子 ——
+  // 这样面板上点「开始」就能直接放大，不用先挑一个模型。这台一个放大模型都没有时说清去哪儿放
+  async function chooseUpscaleModel(place: JobPlace, jobId: string, url: string): Promise<void> {
+    const { params } = await readJob(place, jobId);
+    if (!params.upscale || params.upscale.model) return;
+    const names = comfyUpscaleModels(await loadObjectInfo(url));
+    if (!names.length) throw new comfy.ComfyError('这台 ComfyUI 上没有放大模型：往 ComfyUI 的 models/upscale_models 里放一个（.pth 或 .safetensors），或者在参数区选一个');
+    await changeJob(place, jobId, (job) => ({ ...job, params: { ...job.params, upscale: { ...job.params.upscale!, model: names[0] } } }));
+  }
+
   // 怎么拼发出去的流程，见 docs/dev-plan.md 5.18、5.21：先对照这台 ComfyUI 装了哪些节点，缺的说清楚，一张都不发。
   // 出完的图上补做的，先把原图传上去；用了 ControlNet 的，先把参考图传上去
   async function graphMaker(place: JobPlace, jobId: string, url: string): Promise<(params: ImageJobParams, seed: number) => ComfyGraph> {
@@ -437,18 +751,44 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     if (params.family === 'Krea2') {
       await requireNodes(url, kreaGraph(params, 0));
       let uploaded = '';
-      if (params.krea?.mode === 'four-view') {
+      let uploadedB = '';
+      const mode = params.krea?.mode;
+      if (mode && mode !== 'text') {
         const node = await readNode(place.work, place.canvasId, place.nodeId);
-        const file = params.krea.reference && await refFile(place, node, params.krea.reference);
-        if (!file) throw new comfy.ComfyError('四视图的参考图找不到了：删掉了，或者临时文件清掉了又没下载过');
+        const label = mode === 'four-view' ? '四视图' : mode === 'real' ? '转真人' : mode === 'depth' ? '深度迁移' : mode === 'remix' ? '风格 Remix' : '编辑';
+        const file = params.krea!.reference && await refFile(place, node, params.krea!.reference);
+        if (!file) throw new comfy.ComfyError(`「${label}」的参考图找不到了：删掉了，或者临时文件清掉了又没下载过`);
         uploaded = await comfy.uploadFile(url, file);
+        // 双图的第二张（主体），顺序是训练时定的：图 1 场景在前、图 2 主体在后。
+        // 转真人只有「换脸」才有第二张（editParams 里 dual 关着时不带 referenceB）
+        if ((mode === 'edit' || mode === 'real') && params.krea!.referenceB) {
+          const fileB = await refFile(place, node, params.krea!.referenceB);
+          if (!fileB) throw new comfy.ComfyError(`「${label}」的第二张参考图（人物）找不到了：删掉了，或者临时文件清掉了又没下载过`);
+          uploadedB = await comfy.uploadFile(url, fileB);
+        }
       }
-      return (jobParams, seed) => kreaGraph(jobParams, seed, uploaded);
+      return (jobParams, seed) => kreaGraph(jobParams, seed, uploaded, uploadedB);
+    }
+    // 局部重绘：底图和掩码分两张传（LoadImage 会把 RGBA 按 alpha 合成到黑底，合成一张的话
+    // 要重画那块在底图里是黑的，见 docs/dev-plan.md 5.38）；两张的路径由参数里那个 ref 决定
+    if (params.inpaint) {
+      await requireNodes(url, inpaintGraph(params, 0, { mask: '' }));
+      const file = path.join(place.work, params.inpaint.mask);
+      if (!(await fs.stat(file).catch(() => null))?.isFile()) throw new comfy.ComfyError('这张图的掩码文件找不到了：临时文件清掉了，或者程序换过工作文件夹');
+      const mask = await comfy.uploadFile(url, file);
+      const source = params.inpaint.image ? await refFile(place, await readNode(place.work, place.canvasId, place.nodeId), params.inpaint.image) : null;
+      if (params.inpaint.image && !source) throw new comfy.ComfyError('这张图的底图找不到了：删掉了，或者临时文件清掉了又没下载过');
+      const image = source ? await comfy.uploadFile(url, source) : undefined;
+      return (jobParams, seed) => inpaintGraph(jobParams, seed, { mask, image });
     }
     if (!params.workflow.id) {
-      const refine = job.kind === 'refine';
-      await requireNodes(url, builtinGraph(params, 0, refine ? { image: '' } : {}));
-      const uploaded = refine ? { image: await uploadSource(place, job, url) } : { controls: await uploadControls(place, params.controls ?? [], url) };
+      // 从一张现成的图开始的有两条：出完的图上补做（kind: 'refine'，大图窗口那条），和编辑节点的
+      // 「放大 / 高清」（params.upscaleFrom 指着槽位里那张，见 docs/plan-image-edit-node.md 第 3 节）
+      const fromImage = job.kind === 'refine' || Boolean(params.upscaleFrom);
+      await requireNodes(url, builtinGraph(params, 0, fromImage ? { image: '' } : {}));
+      const uploaded = fromImage
+        ? { image: params.upscaleFrom ? await uploadSlot(place, url, params.upscaleFrom) : await uploadSource(place, job, url) }
+        : { controls: await uploadControls(place, params.controls ?? [], url) };
       return (jobParams, seed) => builtinGraph(jobParams, seed, uploaded);
     }
     const workflow = await chosenWorkflow(place.work, params.workflow.id);
@@ -474,6 +814,14 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       ?.images.find((image) => image.seed === job.source?.seed && image.status === 'done');
     const file = from && (await imageFile(place.work, from));
     if (!file) throw new comfy.ComfyError('要补做的那张原图找不到了：删掉了，或者临时文件清掉了又没下载过');
+    return comfy.uploadFile(url, file);
+  }
+
+  // 编辑节点「放大 / 高清」的原图（槽位里那张）传给 ComfyUI；文件名按内容算，同一张传几次都是同一个名字
+  async function uploadSlot(place: JobPlace, url: string, ref: RefImage): Promise<string> {
+    const node = await readNode(place.work, place.canvasId, place.nodeId);
+    const file = await refFile(place, node, ref);
+    if (!file) throw new comfy.ComfyError('「放大 / 高清」的原图找不到了：删掉了，或者程序换过工作文件夹');
     return comfy.uploadFile(url, file);
   }
 
@@ -775,7 +1123,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
 
   async function fourView(at: Omit<JobPlace, 'messageId'>, reference: RefImage, extra: string) {
     let node = await readNode(at.work, at.canvasId, at.nodeId);
-    if (node.kind !== 'image') throw new HttpError(400, '做四视图需要生图节点');
+    if (node.kind !== 'image' && node.kind !== 'edit') throw new HttpError(400, '做四视图需要生图或图像编辑节点');
     if (reference.kind === 'slot' && !node.slots.includes(reference.imageId)) throw new HttpError(400, '这张图不在当前节点的槽位里');
     if (!await refFile({ ...at, messageId: '' }, node, reference)) throw new HttpError(404, '四视图的参考图找不到了');
     let messageId: string;
@@ -791,6 +1139,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
         id: messageId, parentId: activePath(node).at(-1)?.id ?? null, role: 'assistant', createdAt: new Date().toISOString(), text,
         slotSnapshot: [...node.slots], duration: node.duration, aspectRatio: node.aspectRatio,
         systemPromptName: 'krea2', systemPromptHash: prompt.hash, handwritten: true, parsed: { prompts: parseReply(text).prompts },
+        ...(node.kind === 'edit' && { edit: { fn: 'fourview' as const, slot: node.slots.indexOf(reference.imageId) } }),
       };
       node = await updateNode(at.work, at.canvasId, at.nodeId, (current) => addMessage(current, message));
     }
@@ -798,5 +1147,55 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     return { node: await readNode(at.work, at.canvasId, at.nodeId), job, messageId };
   }
 
-  return { create, fourView, stop, removeImage, updateImage, subscribe, resume, close };
+  // 图像编辑节点上点「开始」：自己造一条回复（框里就是要改什么），再按它建一组任务。
+  // 照「做四视图」那套，出的图挂在框下面，见 docs/dev-plan.md 5.39。
+  // **框上那个「开始」**带着目标回复来（messageId + promptIndex）：不新建回复，出的图直接挂在**这条框**下面，
+  // 跟生图节点框上那个「生图」一样，见 docs/plan-image-edit-node-layout.md 第 4 节 ④。
+  // 转真人「换脸」没选图 2 时不报错，退回只转真人，返回的 note 里带一句说明；
+  // 局部重绘的掩码是界面上画的那份（base64 PNG），在这儿落进临时文件夹，跟大图窗口那条一样能跟着任务清理
+  async function editJob(at: Omit<JobPlace, 'messageId'>, edit: EditJobRequest) {
+    const node = await readNode(at.work, at.canvasId, at.nodeId);
+    if (node.kind !== 'edit') throw new HttpError(400, '「开始」是图像编辑节点上的');
+    const request = { ...edit, ...(edit.maskBytes && { mask: await saveMaskTemp(at.work, edit.maskBytes) }) };
+    const fn = editFnOf(request.fn);
+    const settings = editSettingsOf(request, node.slots.length);
+    const imageId = node.slots[settings.slot];
+    if (!imageId) throw new HttpError(400, '先选一张要改的图');
+    // 放大 / 高清整条路不看提示词、四视图的主指令是固定的（框里那句只当额外要求），这两条不用写字；
+    // 反推开着时那句话由反推模型现写，用户不写也行；局部重绘不写字就不知道那块画成什么
+    const needText = editTextBlock(settings);
+    if (needText) throw new HttpError(400, needText);
+    if (fn.id === 'inpaint' && !request.mask) throw new HttpError(400, '先在图上拖个框或者涂抹出要重画的地方');
+    if (!await refFile({ ...at, messageId: '' }, node, { kind: 'slot', imageId })) throw new HttpError(404, '这张图找不到了：删掉了，或者程序换过工作文件夹');
+
+    let messageId = request.messageId;
+    let promptIndex = 0;
+    if (messageId) {
+      // 框上那个「开始」：挂到这条框（这条回复的第 promptIndex 个框）下面，不新建回复
+      const target = node.messages[messageId];
+      if (target?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
+      promptIndex = request.promptIndex ?? 0;
+      if (!target.parsed?.prompts[promptIndex]) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
+    } else {
+      messageId = randomUUID();
+      // 四视图框里显示的是**真发出去的那句**：主指令是固定的（作者那份一字不改），程序接在最前面；
+      // 别的功能框里就是用户写的那句
+      const body = fn.id === 'fourview' ? fourViewPrompt(settings.text) : settings.text.trim();
+      const text = `<prompt label="${fn.name}">\n${body}\n</prompt>`;
+      const prompt = await snapshotPrompt(at.work, node.systemPromptName);
+      const message: Message = {
+        id: messageId, parentId: activePath(node).at(-1)?.id ?? null, role: 'assistant', createdAt: new Date().toISOString(), text,
+        slotSnapshot: [...node.slots], duration: node.duration, aspectRatio: node.aspectRatio,
+        systemPromptName: node.systemPromptName, systemPromptHash: prompt.hash, handwritten: true, parsed: { prompts: parseReply(text).prompts },
+        // 这条框是照哪个功能、第几张图写的：框上的「用它」要能切回那一套，见 docs/dev-plan.md 5.39
+        edit: { fn: settings.fn, slot: settings.slot },
+      };
+      await updateNode(at.work, at.canvasId, at.nodeId, (current) => addMessage(current, message));
+    }
+    const notes: string[] = [];
+    const job = await create({ ...at, messageId }, promptIndex, { edit: request, notes });
+    return { node: await readNode(at.work, at.canvasId, at.nodeId), job, messageId, ...(notes.length && { note: notes.join('；') }) };
+  }
+
+  return { create, fourView, editJob, stop, removeImage, updateImage, subscribe, resume, close };
 }

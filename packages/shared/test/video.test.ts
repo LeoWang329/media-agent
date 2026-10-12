@@ -17,6 +17,8 @@ import {
   selfliftMergeGraph,
   selfliftOfSettings,
   selfliftPlan,
+  selfliftClips,
+  selfliftPromptNote,
   SELFLIFT_NODE,
   rerunFroms,
   rerunKeptText,
@@ -440,20 +442,29 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
   const params = videoParams(['第一段', '第二段', '第三段', '第四段'], 60, '16:9', selflift);
   const first = videoGraph(params, 123, { refs: [] }, 'job');
   const second = selfliftClipGraph(params, 123, { refs: [] }, 'job', 1, 'prev.mp4');
+  it('低清预览只挂第一次新出的片段：采样器和调度照旧，续写时剪掉起点上下文', () => {
+    const preview = selfliftClipGraph(params, 123, { refs: [] }, 'job', 0, 'lead.mp4', true);
+    expect(preview['22']).toMatchObject({ class_type: 'MediaAgentSelfLiftPreview', inputs: { transition_step: sel.transitionStep, trim_frames: 22, fps: 24 } });
+    expect(of(preview, 'SelfLiftH3Sampler')[0].inputs.model).toEqual(['22', 0]);
+    expect(preview['22'].inputs.model).toEqual(of(first, 'SelfLiftH3Sampler')[0].inputs.model);
+    expect(of(preview, 'SelfLiftH3Sampler')[0].inputs.sigmas).toEqual(of(first, 'SelfLiftH3Sampler')[0].inputs.sigmas);
+    expect(selfliftClipGraph(params, 123, { refs: [] }, 'job', 1, 'prev.mp4', true)['22']).toBeUndefined();
+  });
   const of = (graph: typeof first, type: string) => Object.values(graph).filter((node) => node.class_type === type);
   const nodes = (type: string) => of(first, type);
 
   it('一段一条片子：一段最长 15 秒、最短 22 帧，段数不够就把提示词那段拆成几条', () => {
-    // 60 秒 4 段：一段能新出 362 − 22 = 340 帧，光靠 4 段不够（要 5 条），每段 311 帧
-    expect(selfliftPlan(1440 / 24, 4, 22)).toMatchObject({ context: 22, lengths: [311, 311, 311, 311, 311], total: 1467 });
-    expect(selfliftPlan(1440 / 24, 4, 22).from).toEqual([0, 0, 1, 2, 3]);
-    expect(params.frames).toEqual({ total: 1467, chunk: 311, overlap: 22 });
+    // 前段用满，最后一条补余量，不再把整条平均成约 10 秒的片段。
+    expect(selfliftPlan(60, 4, 22)).toMatchObject({ context: 22, lengths: [362, 362, 362, 362, 90], total: 1450 });
+    expect(selfliftPlan(60, 4, 22).from).toEqual([0, 1, 2, 3, 3]);
+    expect(params.frames).toEqual({ total: 1450, chunk: 362, overlap: 22 });
     // 每段都是 17 的倍数加 5，加起来正是整条
     const plan = selfliftPlan(60, 4, 22);
     expect(plan.lengths.every((n) => n % 17 === 5)).toBe(true);
     expect(plan.total).toBe(plan.lengths.reduce((sum, n) => sum + n, 0) - (plan.lengths.length - 1) * 22);
     // 一段 15 秒要 379 帧、超过一段最长的 362，就自己拆成 3 条
-    expect(selfliftPlan(30, 2, 22)).toMatchObject({ lengths: [260, 260, 260], from: [0, 0, 1], total: 736 });
+    expect(selfliftPlan(20, 2, 22)).toMatchObject({ lengths: [362, 141], from: [0, 1], total: 481 });
+    expect(selfliftPlan(30, 2, 22)).toMatchObject({ lengths: [362, 362, 56], from: [0, 1, 1], total: 736 });
     // 只有一段的短视频
     expect(selfliftPlan(5, 1, 22)).toMatchObject({ lengths: [124], from: [0], total: 124 });
     // 上下文越长，一段能新出的越少，但每段会被夹到最长 362 帧，条数不一定更多
@@ -462,7 +473,7 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
   });
 
   it('第 1 段：编码提示词直接当正面（有首帧图就钉在第 0 帧），没有上下文、不剪、不对齐颜色', () => {
-    expect(nodes('MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ width: 1728, height: 960, length: 311, ref_image_size: 'match', prompt: '第一段' });
+    expect(nodes('MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ width: 1728, height: 960, length: 362, ref_image_size: 'match', prompt: '第一段' });
     expect(of(first, 'LoadVideo')).toHaveLength(0);
     expect(of(first, 'MiniMaxH3AddGuide')).toHaveLength(0);
     expect(of(first, 'VideoTemporalCrop')).toHaveLength(0);
@@ -474,6 +485,36 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
     const [negative] = sampler.inputs.negative as [string, number];
     expect(first[negative].class_type).toBe('ConditioningZeroOut');
     expect(first[negative].inputs.conditioning).toEqual(['8', 0]);
+  });
+
+  it('冻结新任务的分段，历史任务继续按原均分计划；续写的时长包含扣掉首段上下文后的新画面', () => {
+    expect(selfliftClips(params).lengths).toEqual([362, 362, 362, 362, 90]);
+    const { clipPlan: _plan, ...old } = params;
+    expect(selfliftClips(old).lengths).toEqual([311, 311, 311, 311, 311]);
+    const continued = videoParams(['第一段', '第二段'], 20, '16:9', { ...selflift, selflift: { ...sel, lead: { kind: 'lead', leadId: 'source' } } });
+    const plan = selfliftClips(continued);
+    expect(plan.lengths).toEqual([362, 175]);
+    expect(plan.total).toBe(493);
+    expect(continued.frames.total).toBe(plan.total);
+    expect(selfliftPromptNote(20, selflift)).toContain('写 2 段提示词，各段约 15.1 / 5.0 秒');
+  });
+
+  it('很短的视频写太多段、每段短于要接的上下文时，生成前提醒减少段数或上下文', () => {
+    expect(lengthProblem(4, 4, { contextFrames: 90, lead: null })).toContain('短于 90 帧上下文');
+    expect(lengthProblem(20, 2, { contextFrames: 90, lead: null })).toBeNull();
+  });
+
+  it('4 到 60 秒、三档上下文、含续写起点：每段非空、帧数合法、总长最多多一个 17 帧网格', () => {
+    for (let seconds = 4; seconds <= 60; seconds += 1) {
+      for (const context of [22, 39, 90]) for (const lead of [false, true]) {
+        const plan = selfliftPlan(seconds, segmentCount(seconds), context, lead);
+        expect(plan.lengths.every(n => n <= 362 && (n - 5) % 17 === 0)).toBe(true);
+        expect(plan.lengths.every((n, i) => n - (i || lead ? context : 0) > 0)).toBe(true);
+        expect(plan.total).toBeGreaterThanOrEqual(seconds * 24);
+        expect(plan.total - seconds * 24).toBeLessThan(17);
+        expect(new Set(plan.from).size).toBe(segmentCount(seconds));
+      }
+    }
   });
 
   it('第 2 段起：读上一段 → 取最后 22 帧 → 前 21 帧加 0.1 的噪、最后一帧不加 → 钉在这一段第 0 帧上，声音也接着上一段', () => {
@@ -527,7 +568,7 @@ describe('SelfLift 接续那套（照 U37 那份）', () => {
 
   it('每段用自己那段提示词（一条提示词拆成几段的就重复用），种子每段加一', () => {
     const prompts = [0, 1, 2, 3, 4].map((clip) => (selfliftClipGraph(params, 100, { refs: [] }, 'job', clip, clip ? 'prev.mp4' : undefined)['8'].inputs.prompt));
-    expect(prompts).toEqual(['第一段', '第一段', '第二段', '第三段', '第四段']);
+    expect(prompts).toEqual(['第一段', '第二段', '第三段', '第四段', '第四段']);
     const seeds = [0, 1, 2, 3, 4].map((clip) => of(selfliftClipGraph(params, 100, { refs: [] }, 'job', clip, clip ? 'prev.mp4' : undefined), 'SelfLiftH3Sampler')[0].inputs.seed);
     expect(seeds).toEqual([100, 101, 102, 103, 104]);
   });

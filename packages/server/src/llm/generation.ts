@@ -3,6 +3,7 @@ import {
   ancestorsOf,
   composeMessages,
   effectiveTurnLimit,
+  editSettingsOf,
   parsePromptMeta,
   parseReply,
   recentTurns,
@@ -10,6 +11,8 @@ import {
   thinkingOn,
   thinkingRequest,
   titleAfterReply,
+  selfliftPromptNote,
+  videoSettingsOf,
   type ChatNode,
   type Message,
   type StreamEvent,
@@ -61,6 +64,8 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       const prepared = prepare(current);
       userMessage = prepared.userMessage;
       const { replyTo } = prepared;
+      // 图像编辑节点：这条回复是给哪个功能、看着第几张图写的，框上的「用它」照它切回编辑栏，见 docs/dev-plan.md 5.39
+      const edit = current.kind === 'edit' ? editSettingsOf(current.edit, current.slots.length) : null;
       assistant = {
         id: randomUUID(),
         parentId: replyTo.id,
@@ -73,6 +78,7 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
         aspectRatio: replyTo.aspectRatio,
         modelConfigId: current.modelConfigId,
         systemPromptName: current.systemPromptName,
+        ...(edit && { edit: { fn: edit.fn, slot: edit.slot } }),
       };
       return addMessage(prepared.node, assistant);
     });
@@ -112,6 +118,9 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       // 设了只带最近几轮的，更前面的不发，见 docs/dev-plan.md 5.4
       const { path, kept, dropped } = recentTurns(ancestorsOf(node, assistant.parentId!), effectiveTurnLimit(node, settings), node.kind);
       const messages = composeMessages(path, node.messages, meta.body, await readFormatRequirement(node.kind, meta.family), await llmImageUrls(work, canvasId, path));
+      if (node.kind === 'video' && node.video?.workflow === 'selflift' && messages[0].role === 'system') {
+        messages[0].content += `\n\n${selfliftPromptNote(node.duration, videoSettingsOf(node.video))}`;
+      }
       const level = thinkingLevelFor(settings.thinking, 'chat');
       assistant = {
         ...assistant,

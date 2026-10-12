@@ -3,6 +3,7 @@ import {
   addMessage,
   FAMILY_DEFAULTS,
   defaultImageSettings,
+  editSettingsOf,
   hiddenNodeIds,
   imageSettingsOf,
   isSupportedImageName,
@@ -21,6 +22,7 @@ import {
   type CanvasNodeLayout,
   type ChatNode,
   type Config,
+  type EditSettings,
   type Family,
   type FamilyDefaults,
   type ImageRecord,
@@ -56,6 +58,7 @@ const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text
 // image、video 只带要改的几项，服务端按节点原来的（没改过的按默认值）补全
 type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit'>> & {
   image?: Partial<ImageSettings>;
+  edit?: Partial<EditSettings>; // 图像编辑节点：功能、用哪张图、那句话，见 docs/dev-plan.md 5.39
   video?: Partial<VideoSettings>;
 };
 
@@ -163,19 +166,32 @@ export function switchChangesSettings(node: ChatNode, messageId: string): SlotSe
 
 const failed = (err: unknown) => toast((err as Error).message, { tone: 'danger', ms: 4500 });
 
+// 节点读取或编辑请求的旧响应可能晚于视频完成推送回来；按任务版本保留较新的状态和预览。
+function keepLatestVideos(messages: ChatNode['messages'], known?: ChatNode['messages']): ChatNode['messages'] {
+  if (!known) return messages;
+  return Object.fromEntries(Object.entries(messages).map(([id, message]) => {
+    if (!message.videos?.length) return [id, message];
+    const videos = message.videos.map((job) => {
+      const newer = known[id]?.videos?.find((one) => one.id === job.id);
+      return (newer?.rev ?? 0) > (job.rev ?? 0) ? newer! : job;
+    });
+    return [id, { ...message, videos }];
+  }));
+}
+
 export const useCanvasStore = create<CanvasState>((set, get) => {
   const canvasUrl = () => `/canvases/${get().canvasId}`;
   const nodeUrl = (nodeId: string) => `${canvasUrl()}/nodes/${nodeId}`;
   const write = <T>(path: string, method: string, body?: unknown) => trackWrite(api<T>(path, { method, body }));
 
-  const setNode = (node: ChatNode) => set((s) => ({ nodes: { ...s.nodes, [node.id]: node } }));
+  const setNode = (node: ChatNode) => set((s) => ({ nodes: { ...s.nodes, [node.id]: { ...node, messages: keepLatestVideos(node.messages, s.nodes[node.id]?.messages) } } }));
   const changeNode = (nodeId: string, change: (node: ChatNode) => ChatNode) =>
     set((s) => (s.nodes[nodeId] ? { nodes: { ...s.nodes, [nodeId]: change(s.nodes[nodeId]) } } : {}));
   // 服务端回来的节点只取这次改的字段：生成中的回复在本地更新得比服务端快，整个换掉会退回去
   const mergeFields = (nodeId: string, server: ChatNode, keys: string[]) =>
     changeNode(nodeId, (node) => ({
       ...node,
-      ...Object.fromEntries(keys.map((key) => [key, server[key as keyof ChatNode]])),
+      ...Object.fromEntries(keys.map((key) => [key, key === 'messages' ? keepLatestVideos(server.messages, node.messages) : server[key as keyof ChatNode]])),
       titleIsManual: server.titleIsManual,
     }));
   const imageName = (imageId: string) => get().detail?.images[imageId]?.originalName ?? '这张图';
@@ -265,14 +281,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   // 改节点字段排队发，前一个回来再发下一个，服务端收到的顺序和点的顺序一致。失败时抛出去
   let patchQueue: Promise<unknown> = Promise.resolve();
+  // 服务端回来的节点取哪几个字段：这次改的那些（后面还有改动在排队的先不盖）。
+  // 图像编辑节点换了功能，服务端会把系统提示词换成那个功能那一份（面板顶栏「模型提示词」跟着变），
+  // 这个字段一起取回来，见 docs/dev-plan.md 5.39
+  const mergeKeys = (nodeId: string, patch: NodePatch, keys: string[]) => {
+    const merged = keys.filter((key) => !queued.has(`${nodeId}:${key}`));
+    if (patch.edit !== undefined && !merged.includes('systemPromptName') && !queued.has(`${nodeId}:systemPromptName`)) merged.push('systemPromptName');
+    return merged;
+  };
   const applyPatch = (nodeId: string, patch: NodePatch): Promise<void> => {
     const keys = Object.keys(patch);
     keys.forEach((key) => countQueued(`${nodeId}:${key}`, 1));
-    const { image, video, ...fields } = patch;
+    const { image, edit, video, ...fields } = patch;
     changeNode(nodeId, (node) => ({
       ...node,
       ...fields,
       ...(image && { image: { ...nodeImageSettings(node), ...image } }),
+      ...(edit && { edit: { ...editSettingsOf(node.edit, node.slots.length), ...edit } }),
       ...(video && { video: { ...videoSettingsOf(node.video), ...video } }),
     }));
     const run = patchQueue.then(async () => {
@@ -282,7 +307,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       } finally {
         keys.forEach((key) => countQueued(`${nodeId}:${key}`, -1));
       }
-      mergeFields(nodeId, server, keys.filter((key) => !queued.has(`${nodeId}:${key}`)));
+      mergeFields(nodeId, server, mergeKeys(nodeId, patch, keys));
       if (CARD_FIELDS.some((key) => key in patch)) await refreshCanvas();
     });
     patchQueue = run.catch(() => undefined);

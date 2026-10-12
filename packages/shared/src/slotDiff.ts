@@ -1,5 +1,5 @@
 import { mediaNote, sameMedia } from './media';
-import type { AspectRatio, Attachment, ChatNode, FrameAttachment, MediaSlot, Message, PromptMeta } from './types';
+import type { AspectRatio, Attachment, ChatNode, EditSettings, FrameAttachment, MediaSlot, Message, PromptMeta } from './types';
 import { activePath } from './versionTree';
 import { segmentCount, segmentSeconds } from './video';
 
@@ -79,6 +79,15 @@ export function slotDiff(
 }
 
 type NodeSettings = Pick<ChatNode, 'messages' | 'rootIds' | 'activeChildOf' | 'slots' | 'duration' | 'aspectRatio' | 'media'>;
+
+// 图像编辑节点这次发给模型的图：**只有选中的那一张** —— 模型要看着它写「要改什么」，
+// 别的槽位里的图跟这次改哪张没关系，见 docs/dev-plan.md 5.39。
+// 每轮都重发一次：只带最近几轮时，前面那轮的图可能已经不在了
+export function editDiff(slots: readonly string[], edit: Pick<EditSettings, 'slot'>): SlotDiff {
+  const imageId = slots[edit.slot];
+  if (!imageId) return { systemNote: '还没有选要改的图。', attachments: [] };
+  return { systemNote: `要改的是第 ${edit.slot + 1} 张参考图。`, attachments: [{ picture: edit.slot + 1, imageId }] };
+}
 
 // 当前路径最后一条消息记下的槽位、时长、比例、视频和音频；还没有消息时为 null
 export function pathSnapshot(node: NodeSettings): SlotSettings | null {

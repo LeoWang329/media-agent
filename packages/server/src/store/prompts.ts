@@ -6,18 +6,27 @@ import { fileURLToPath } from 'node:url';
 import { HttpError } from '../httpError';
 import { readJson, trashName, writeFileAtomic, writeJsonAtomic } from './jsonFile';
 
-// 程序固定用的说明只维护 docs/prompts/ 里这几份：接在系统提示词后面的格式要求（视频、IL/Pony 标签、Krea2 段落）、翻译提示词框和中文转标签时的说明
+// 程序固定用的说明只维护 docs/prompts/ 里这几份：接在系统提示词后面的格式要求（视频、IL/Pony 标签、Krea2 段落、图像编辑）、翻译提示词框和中文转标签时的说明
 const doc = (name: string) => fileURLToPath(new URL(`../../../../docs/prompts/${name}.md`, import.meta.url));
-const FORMAT_REQUIREMENT_DOCS: Record<PromptMeta['use'], string> = { video: doc('format-requirement'), image: doc('format-requirement-image') };
+const FORMAT_REQUIREMENT_DOCS: Record<PromptMeta['use'], string> = {
+  video: doc('format-requirement'),
+  image: doc('format-requirement-image'),
+  edit: doc('format-requirement-edit'),
+};
 const TRANSLATE_DOC = doc('translate');
 const TO_TAGS_DOC = doc('to-tags');
 
 // 文件名能用的名字：不以点或空格开头结尾，不含 Windows 文件名不允许的字符
 const PROMPT_NAME = /^(?![.\s])[^\\/:*?"<>|\r\n]{1,80}(?<![.\s])$/;
 
-// 自带的八套提示词，列表里按这个顺序排在前面：视频的五套（参考模式、图当首帧、纯文字、首尾帧、尾帧图），生图的三套（IL、Pony、Krea2）。
-// 第一套是新建节点的默认。原文只维护 docs/prompts/ 里同名的那几份
-export const BUILTIN_PROMPTS = ['ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'il', 'pony', 'krea2'];
+// 自带的提示词，列表里按这个顺序排在前面：视频的五套（参考模式、图当首帧、纯文字、首尾帧、尾帧图），
+// 生图的三套（IL、Pony、Krea2），图像编辑节点的七套（指令编辑、换装、局部重绘、转真人、深度迁移、风格 Remix、
+// 四视图，一套一个功能；放大 / 高清整条路不看提示词，所以没有它那份）。第一套是新建节点的默认。
+// 原文只维护 docs/prompts/ 里同名的那几份
+export const BUILTIN_PROMPTS = [
+  'ref2va', 'i2v', 't2v', 'fl2va', 'l2va', 'il', 'pony', 'krea2',
+  'edit', 'edit-outfit', 'edit-inpaint', 'edit-real', 'edit-depth', 'edit-remix', 'edit-fourview',
+];
 export const DEFAULT_PROMPT = BUILTIN_PROMPTS[0];
 
 const promptsDir = (work: string) => path.join(work, 'prompts');
@@ -69,20 +78,21 @@ export async function readPrompt(work: string, name: string): Promise<string> {
   }
 }
 
-// 列表里每套标出是视频用的还是生图用的、哪个系列
+// 列表里每套标出是视频用的、生图用的还是图像编辑用的；生图带系列，编辑带功能名
 export async function listPromptInfos(work: string): Promise<PromptInfo[]> {
   return Promise.all(
     (await listPrompts(work)).map(async (name) => {
-      const { use, family } = parsePromptMeta(await readPrompt(work, name));
-      return { name, use, family };
+      const { use, family, fn } = parsePromptMeta(await readPrompt(work, name));
+      return { name, use, family, fn };
     }),
   );
 }
 
-// 新建节点用哪套：视频节点用 ref2va，生图节点用 il；不在了用排在最前的同一种，一套都没有是 null，见 docs/dev-plan.md 5.23
+// 新建节点用哪套：视频节点用 ref2va，生图节点用 il，图像编辑节点用 edit（指令编辑那套）；
+// 不在了用排在最前的同一种，一套都没有是 null，见 docs/dev-plan.md 5.23、5.39
 export async function defaultPromptFor(work: string, kind: NodeKind): Promise<string | null> {
   const mine = (await listPromptInfos(work)).filter((info) => info.use === kind);
-  const preferred = kind === 'image' ? 'il' : DEFAULT_PROMPT;
+  const preferred = kind === 'image' ? 'il' : kind === 'edit' ? 'edit' : DEFAULT_PROMPT;
   return (mine.find((info) => info.name === preferred) ?? mine[0])?.name ?? null;
 }
 
@@ -162,6 +172,7 @@ export const readFormatRequirements = async (): Promise<FormatRequirements> => (
   video: await readFormatRequirement('video'),
   image: await readFormatRequirement('image'),
   krea2: await readFormatRequirement('image', 'Krea2'),
+  edit: await readFormatRequirement('edit'),
 });
 export const readTranslateInstructions = () => textBelowRule(TRANSLATE_DOC);
 export const readToTagsInstructions = () => textBelowRule(TO_TAGS_DOC);

@@ -1,5 +1,7 @@
 # Krea2 图转真人 · 用法与实现规格
 
+> **2026-10-12 当前实现**：以用户提供的 `Krea2转真人-全开关（反推+单双图+手输）.json` 为准。底模为 `krea2/Krea2-Moody-Mix-premium_int8_convrot.safetensors`，CLIP 为 `qwen3vl_4b_fp8_scaled.safetensors`；默认 V3 与 `k2_nice_body` 各强度 1，同时作用于 model 和 clip。反推读未经降饱和或缩放的原图，反推种子独立；使用 SaveImage 和 ShowText。旧 `uncensored` 字段仅兼容保存数据。附件不含 WorkflowNotes 的备注正文，沿用本项目已记录的单图 / 双图反推指令。详情及本轮验证见 [标准工作流修复报告](reports/krea2-real-standard-20261012.md)。下文中的旧实例和旧模型组合为历史记录。
+
 > 把动漫 / 插画 / 2D 图转成**真人照片**，人物的长相、构图、场景尽量保住。
 > 作者原件：[Krea2_Anything2RealCharacters-V3-Workflows](https://civitai.com/models/2881049)（`krea2_v10.json`）。
 > 已在 AutoDL 实例 `pro-79110c14fb03`（ComfyUI 0.37.0）上装好、跑通、逐项验过。
@@ -18,6 +20,10 @@ ComfyUI → 左边「工作流」列表：
 | Krea2转真人-作者原版-双图 | 手写提示词、双图 |
 | Krea2转真人-无审查 | 同「作者原版」，但底模 / 文字理解换成去审查那套（见第 7 节） |
 | Krea2转真人-反推一体（读备注） | 反推 + 单图，无反推开关（image2 物理上没接） |
+| Krea2转真人-反推一体-双图（读备注） | 反推 + 双图，**image2 固定接图 2**；反推模型是 **Qwen3-VL-8B-abliterated Q8**（不是 35B MoE）；提示词里写死双图触发词 |
+| Krea2转真人-反推一体-动态（读备注） | 反推 + 「**有第二张人物参考吗**」自动切：切反推指令（单图 / 双图两套备注）和人物参考那张；反推模型是 35B MoE |
+
+> 2026-10-11 从实例上 `ls /root/ComfyUI/user/default/workflows/` 核对过：上面 7 份都在（后两份是这份文档写完之后加的）。
 
 ## 2. 双图怎么用
 

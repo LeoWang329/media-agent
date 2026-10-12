@@ -9,6 +9,8 @@ import {
   LATENT_SAVE,
   selfliftClipGraph,
   selfliftClips,
+  selfliftOf,
+  VIDEO_FPS,
   selfliftMergeGraph,
   stepsOf,
   reshootGraph,
@@ -319,9 +321,9 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
       if (!segments.length) throw new HttpError(400, '这个框是空的');
       if (segments.length > MAX_SEGMENTS) throw new HttpError(400, `这个框分了 ${segments.length} 段，最多 ${MAX_SEGMENTS} 段`);
       // 段数写少了出来的片子会比要的短，这里拦下来，别白跑一趟，见 docs/dev-plan.md 5.24
-      const length = lengthProblem(node.duration, segments.length);
-      if (length) throw new HttpError(400, length);
       const video = videoSettingsOf(node.video);
+      const length = lengthProblem(node.duration, segments.length, workflowOf(video) === 'selflift' ? selfliftOf(video) : undefined);
+      if (length) throw new HttpError(400, length);
       const images = await imagesOf(place, message.slotSnapshot, use);
       const media = await mediaOf(place, message.mediaSnapshot ?? [], use, images.refs.length);
       // 时长按节点现在的（面板上那个），不按写这条回复时记的：写完之后把时长拨大了再生成，出的就是拨大的那个，见 docs/dev-plan.md 5.24
@@ -445,11 +447,13 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
         if (!base?.latents) throw new comfy.ComfyError('要重拍的那一版删掉了');
         await requireLatents(base.latents);
       }
+      // 单独查这个可选出口：安装扩展并重启 ComfyUI 后，不能一直沿用旧的节点列表缓存。
+      const lowresPreview = first.chain && Boolean((await comfy.nodeInfo(address, 'MediaAgentSelfLiftPreview').catch(() => null))?.MediaAgentSelfLiftPreview);
       const graphOf = (job: VideoJob, files: VideoFiles) => {
         if (job.reshoot && base?.latents) return reshootGraph(job.params, job.seed, files, job.id, reshootPlan(job.params, job.reshoot.from, job.reshoot.to), base.latents);
         // 接力那套从「已经出完几段」那里接着跑：新的一条是第 0 段，「从第 N 段起重出」的那条前面几段是照旧留着的；
         // 有前一段视频的，新出的第 1 段接的是它
-        if (job.chain) return selfliftClipGraph(job.params, job.seed, files, job.id, job.chain.clips.length, job.chain.clips.at(-1)?.name ?? job.chain.lead?.name);
+        if (job.chain) return selfliftClipGraph(job.params, job.seed, files, job.id, job.chain.clips.length, job.chain.clips.at(-1)?.name ?? job.chain.lead?.name, lowresPreview);
         return videoGraph(job.params, job.seed, files, job.id);
       };
       // 查缺不缺节点时 LoadImage 填什么都行，先拿图的 id 顶上。接力那套还要查最后把几段拼起来那条图里的节点
@@ -483,6 +487,10 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
                 }
               : current,
           );
+          const context = selfliftOf(job.params).contextFrames;
+          if (clip.seconds !== undefined && Math.floor(clip.seconds * VIDEO_FPS) < context) {
+            throw new HttpError(400, `续写起点只有 ${clip.seconds.toFixed(1)} 秒，不够提供 ${context} 帧上下文（至少 ${(context / VIDEO_FPS).toFixed(2)} 秒）。减少「接几帧」或换更长的起点`);
+          }
         }
         const ready = await readJob(place, jobId);
         const promptId = await comfy.queuePrompt(address, graphOf(ready, files), id);
@@ -736,7 +744,7 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     t.previewing = true;
     try {
       const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target), new Date(), '-preview');
-      await changeTracked(t, { preview: file });
+      await changeTracked(t, { preview: file, ...(t.chain && { previewKind: 'lowres' as const }) });
     } catch (err) {
       // 取不到预览不算这条失败：二采照样在跑，最后成片还是照常取回来
       console.error('取一采的预览失败', err);
@@ -868,7 +876,7 @@ export function createVideoJobs(configDir: string, autodl: Autodl) {
     t.previewing = true;
     try {
       const file = await saveVideoTemp(t.work, t.seed, (target) => comfy.saveView(t.url, ref, target), new Date(), '-preview');
-      await changeTracked(t, { preview: file });
+      await changeTracked(t, { preview: file, previewKind: 'clip' });
     } catch (err) {
       // 取不到预览不算这条失败
       console.error('取第 1 段的预览失败', err);

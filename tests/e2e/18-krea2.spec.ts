@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { MOCK_COMFY_PORT } from './env';
 import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
-import { assetsDialog, assetTile, cards, lastReply, newCanvasWithNode, panel, send, setupWorkFolder, slotMenu } from './helpers';
+import { assetsDialog, assetTile, cards, lastReply, newCanvasWithNode, panel, send, setupWorkFolder, slotMenu, toasts } from './helpers';
 
 const COMFY_URL = `http://127.0.0.1:${MOCK_COMFY_PORT}`;
 const box = (page: Page) => lastReply(page).getByTestId('prompt-box');
@@ -102,6 +102,129 @@ test('四视图模式的框文字追加到固定指令；参考图、相似度�
   expect(nodeOf(graph, 'Krea2EditModelPatch').inputs.target_latent).toEqual(nodeOf(graph, 'KSampler').inputs.latent_image);
   const presets = await (await page.request.get('/api/image-presets')).json();
   expect(presets.find((p: { name: string }) => p.name === 'Krea2 四视图测试')).toMatchObject({ family: 'Krea2', settings: { krea: { reference: null } } });
+});
+
+test('编辑档：放一张参考图写一句话就重画（走作者那套 Ostris）；没选参考图拦住；大图参数写着从哪来', async ({ page }) => {
+  await kreaNode(page, 'Krea2 编辑');
+  await reference(page);
+  await panel(page).locator('#btnGenCfg').click();
+  await settings(page).getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(settings(page)).toContainText('不用涂');
+  await expect(settings(page)).toContainText('长边缩到 2048');
+  await expect(settings(page).locator('#gcSteps')).toHaveValue('10');
+  await expect(settings(page).locator('#gcCkpt')).toHaveText('krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors');
+  await expect(settings(page).locator('#gcTextEncoder')).toHaveValue('qwen3vl_4b_uncensored_int8_convrot.safetensors');
+  await expect(settings(page).locator('.gc-loras .gc-lora-name').first()).toHaveText('krea2/Krea2_Anything2RealCharacters-V3.safetensors');
+  await settings(page).getByRole('button', { name: '关闭', exact: true }).click();
+  await send(page, '写一个');
+  // 还没选参考图：点生图拦住，一张都不发
+  await box(page).locator('[data-act="generate"]').click();
+  await expect(toasts(page).filter({ hasText: '编辑还没选参考图' })).toBeVisible();
+  await panel(page).locator('#btnGenCfg').click();
+  await settings(page).getByRole('button', { name: '参考图', exact: true }).click();
+  await page.getByRole('button', { name: '槽位 1 号', exact: true }).click();
+  await settings(page).getByRole('button', { name: '关闭', exact: true }).click();
+  await box(page).locator('[data-act="generate"]').click();
+  await expect(box(page).locator('.ig-cell.is-done img')).toHaveCount(1);
+  const graph = await graphOf(page);
+  // 触发词 + 框里那句话都进正面词，不追加四视图的固定指令
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).toContain('transform the image to realistic photograph');
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).toContain('An adult woman');
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).not.toContain('Character Sheet');
+  expect(nodeOf(graph, 'LoraLoaderModelOnly').inputs.lora_name).toBe('krea2/Krea2_Anything2RealCharacters-V3.safetensors');
+  expect(nodeOf(graph, 'Krea2OstrisEditModelPatch').inputs.kv_cache).toBe(true);
+  // 尺寸不面板说了算：参考图按比例缩到长边 2048，潜变量接它的宽高
+  expect(nodeOf(graph, 'LayerUtility: ImageScaleByAspectRatio V2').inputs).toMatchObject({ scale_to_side: 'longest', scale_to_length: 2048, round_to_multiple: '16' });
+  expect(nodeOf(graph, 'Krea2EditModelPatch')).toBeUndefined();
+  expect(nodeOf(graph, 'LoadImage').inputs.image).toBeTruthy();
+  await box(page).locator('.ig-cell.is-done').click();
+  const viewer = page.getByRole('dialog', { name: '看大图和参数' });
+  await expect(viewer).toContainText('编辑 · 相似度 1');
+  await expect(box(page)).toContainText('编辑');
+});
+
+test('编辑方案：默认「动漫转真人 V3」，换成 V1 会连 LoRA 和步数一起换；手动改 LoRA 就不算方案了', async ({ page }, testInfo) => {
+  await kreaNode(page, 'Krea2 编辑方案');
+  await reference(page);
+  await panel(page).locator('#btnGenCfg').click();
+  await settings(page).getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(settings(page).locator('#gcEditPreset')).toHaveValue('real-v3');
+  await expect(settings(page)).toContainText('真机验过');
+  await settings(page).locator('#gcEditPreset').selectOption({ label: '动漫转真人 V1' });
+  await expect(settings(page).locator('.gc-loras .gc-lora-name').first()).toHaveText('krea2/Krea2_Anything2RealCharacters-V1.safetensors');
+  await expect(settings(page).locator('#gcSteps')).toHaveValue('10');
+  // 手动改 LoRA 就不再算这个方案了
+  await settings(page).locator('.gc-loras .gc-lora-name').first().click();
+  const picker = page.getByRole('dialog', { name: '选 LoRA' });
+  await picker.getByRole('textbox', { name: '搜 LoRA' }).fill('darkbrush');
+  await picker.getByRole('option').first().click();
+  await expect(settings(page).locator('#gcEditPreset')).toHaveValue('');
+  // 换回默认那个方案，选上参考图再出图
+  await settings(page).locator('#gcEditPreset').selectOption({ label: '动漫转真人 V3（默认）' });
+  await expect(settings(page).locator('.gc-loras .gc-lora-name').first()).toHaveText('krea2/Krea2_Anything2RealCharacters-V3.safetensors');
+  await settings(page).getByRole('button', { name: '参考图', exact: true }).click();
+  await page.getByRole('button', { name: '槽位 1 号', exact: true }).click();
+  await settings(page).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('edit-preset.png') });
+  await send(page, '写一个');
+  await box(page).locator('[data-act="generate"]').click();
+  await expect(box(page).locator('.ig-cell.is-done img')).toHaveCount(1);
+  const graph = await graphOf(page);
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).toContain('transform the image to realistic photograph');
+  expect(nodeOf(graph, 'LoraLoaderModelOnly').inputs.lora_name).toBe('krea2/Krea2_Anything2RealCharacters-V3.safetensors');
+});
+
+// 再往槽位里放一张（资产库那个文件夹前面已经注册过了）
+async function reference2(page: Page) {
+  await panel(page).locator('#slotAssets').click();
+  await assetsDialog(page).locator('.as-folder').filter({ hasText: FIXTURES_DIR }).first().click();
+  await assetTile(page, FIXTURES.second).click();
+  await assetsDialog(page).getByRole('button', { name: '放进槽位（1）' }).click();
+  await expect(panel(page).locator('#slots .slot.is-filled')).toHaveCount(2);
+}
+
+test('双图：图 1 场景 + 图 2 人物，选第二张才出第二个相似度；mock 收到两张图、编码节点两路都接', async ({ page }, testInfo) => {
+  await kreaNode(page, 'Krea2 双图');
+  await reference(page);
+  await reference2(page);
+  await panel(page).locator('#btnGenCfg').click();
+  await settings(page).getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(settings(page)).toContainText('图 1 · 场景');
+  await expect(settings(page)).toContainText('图 2 · 人物');
+  await settings(page).getByRole('button', { name: '参考图', exact: true }).click();
+  await page.getByRole('button', { name: '槽位 1 号', exact: true }).click();
+  // 还没选第二张：单图，只有一个相似度
+  await expect(settings(page).locator('#gcRefBoostA')).toHaveCount(0);
+  await settings(page).getByRole('button', { name: '第二张参考图', exact: true }).click();
+  await page.getByRole('button', { name: '槽位 2 号', exact: true }).click();
+  await expect(settings(page).locator('#gcRefBoostA')).toHaveValue('1');
+  await settings(page).locator('#gcRefBoostA').fill('1.5');
+  await settings(page).locator('#gcRefBoostA').press('Enter');
+  await settings(page).locator('#gcRefBoost').fill('2');
+  await settings(page).locator('#gcRefBoost').press('Enter');
+  await settings(page).getByRole('button', { name: '关闭', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('edit-dual.png') });
+
+  await send(page, '写一个');
+  await box(page).locator('[data-act="generate"]').click();
+  await expect(box(page).locator('.ig-cell.is-done img')).toHaveCount(1);
+  const graph = await graphOf(page);
+  const loads = Object.values(graph)
+    .filter((n) => n.class_type === 'LoadImage')
+    .map((n) => n.inputs.image);
+  expect(loads).toHaveLength(2);
+  expect(loads[0]).not.toBe(loads[1]);
+  expect(nodeOf(graph, 'Krea2OstrisEditModelPatch')).toBeTruthy();
+  for (const node of Object.values(graph).filter((n) => n.class_type === 'TextEncodeKrea2OstrisEdit')) {
+    expect(node.inputs.image1).toBeTruthy();
+    expect(node.inputs.image2).toBeTruthy();
+  }
+  // 两张都传上去了（mock 的 _uploads 是跨用例累积的，只认这两张在不在里面）
+  const uploaded = ((await (await page.request.get(`${COMFY_URL}/_uploads`)).json()) as { name: string }[]).map((u) => u.name);
+  for (const name of loads) expect(uploaded).toContain(name);
+  // 大图参数里写着双图
+  await box(page).locator('.ig-cell.is-done').first().click();
+  await expect(page.getByRole('dialog', { name: '看大图和参数' })).toContainText('编辑（双图）· 场景 1.5 / 人物 2');
 });
 
 test('IL 槽位不问模型就能做四视图，新建四视图框；图上的入口把结果挂回原框，刷新后还在', async ({ page }) => {

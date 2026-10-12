@@ -17,7 +17,7 @@ import { SysPromptDialog } from '../canvas/SysPromptDialog';
 import { TranslateDialog } from '../canvas/TranslateDialog';
 import { BoxTagEditor, WriteTagsEditor } from '../canvas/BoxTagEditor';
 import { UploadDialog } from '../canvas/UploadDialog';
-import { onVideoEvent, showVideo } from '../canvas/videoActions';
+import { onVideoEvent, showVideo, syncVideoJobs } from '../canvas/videoActions';
 import { VideoGenDialog } from '../canvas/VideoGenDialog';
 import { VideoTasksButton } from '../canvas/VideoTasks';
 import { ZoomDialog } from '../canvas/ZoomDialog';
@@ -34,10 +34,11 @@ import { SaveState } from '../ui/saveState';
 import { ThemeToggle, toggleTheme } from '../ui/theme';
 
 // 画布工作台：节点图铺满整个窗口，工具浮在四角，右边滑出节点对话面板
-// 新建节点先选是视频节点还是生图节点，建好就不能换，见 docs/dev-plan.md 5.23
+// 新建节点先选是视频节点、生图节点还是图像编辑节点，建好就不能换，见 docs/dev-plan.md 5.23、5.39
 const NEW_NODE_MENU: MenuItem[] = [
   { label: '视频节点', icon: 'film', onClick: () => void addRootNode('video') },
   { label: '生图节点', icon: 'sparkles', onClick: () => void addRootNode('image') },
+  { label: '图像编辑节点', icon: 'wand', onClick: () => void addRootNode('edit') },
 ];
 
 export function Canvas() {
@@ -70,7 +71,7 @@ export function Canvas() {
 
   // 出图、生成视频的变化：框下面的图和视频、卡片上的进度跟着变
   useEffect(() => watchImageJobs(onImageEvent), []);
-  useEffect(() => watchVideoJobs(onVideoEvent), []);
+  useEffect(() => watchVideoJobs(onVideoEvent, () => void syncVideoJobs()), []);
 
   useEffect(() => {
     document.body.classList.toggle('drawer-open', Boolean(selectedId));

@@ -1,0 +1,480 @@
+{
+  "215": {
+    "inputs": {
+      "unet_name": "krea2/Krea2-Moody-Mix-premium_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "216": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "217": {
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "220",
+        0
+      ]
+    },
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "_meta": {
+      "title": "FluxKontext多参考潜在方法"
+    }
+  },
+  "218": {
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "220",
+        1
+      ]
+    },
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "_meta": {
+      "title": "FluxKontext多参考潜在方法"
+    }
+  },
+  "219": {
+    "inputs": {
+      "kv_cache": true,
+      "model": [
+        "236",
+        0
+      ]
+    },
+    "class_type": "Krea2OstrisEditModelPatch",
+    "_meta": {
+      "title": "Krea 2 Ostris Edit Model Patch"
+    }
+  },
+  "220": {
+    "inputs": {
+      "auto_resize": "crop",
+      "vl_size": 384,
+      "prompt": [
+        "347",
+        0
+      ],
+      "system_prompt": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.",
+      "image1_strength": 1,
+      "image2_strength": 1,
+      "image3_strength": 1,
+      "clip": [
+        "236",
+        1
+      ],
+      "vae": [
+        "222",
+        0
+      ],
+      "image1": [
+        "225",
+        0
+      ],
+      "image2": [
+        "349",
+        0
+      ],
+      "latent_image": [
+        "225",
+        0
+      ]
+    },
+    "class_type": "Easy_QwenEdit2509",
+    "_meta": {
+      "title": "Easy_QwenEdit2509"
+    }
+  },
+  "221": {
+    "inputs": {
+      "seed": 122668227639236,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta57",
+      "denoise": 1,
+      "model": [
+        "219",
+        0
+      ],
+      "positive": [
+        "217",
+        0
+      ],
+      "negative": [
+        "218",
+        0
+      ],
+      "latent_image": [
+        "220",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "222": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "224": {
+    "inputs": {
+      "samples": [
+        "221",
+        0
+      ],
+      "vae": [
+        "222",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "225": {
+    "inputs": {
+      "aspect_ratio": "original",
+      "proportional_width": 1,
+      "proportional_height": 1,
+      "fit": "crop",
+      "method": "lanczos",
+      "round_to_multiple": "None",
+      "scale_to_side": "longest",
+      "scale_to_length": 1536,
+      "background_color": "#000000",
+      "image": [
+        "237",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
+    "_meta": {
+      "title": "图层工具：按宽高比缩放 V2"
+    }
+  },
+  "227": {
+    "inputs": {
+      "image": "scene.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "图 1 · 场景姿势（要转的那张）"
+    }
+  },
+  "228": {
+    "inputs": {
+      "filename_prefix": "Krea2转真人-全开关（反推+单双图+手输）",
+      "images": [
+        "224",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
+  },
+  "236": {
+    "inputs": {
+      "lora_01": "krea2/Krea2_Anything2RealCharacters-V3.safetensors",
+      "strength_01": 1,
+      "lora_02": "krea2/k2_nice_body.safetensors",
+      "strength_02": 1,
+      "lora_03": "None",
+      "strength_03": 0.8,
+      "lora_04": "None",
+      "strength_04": 1,
+      "model": [
+        "215",
+        0
+      ],
+      "clip": [
+        "216",
+        0
+      ]
+    },
+    "class_type": "Lora Loader Stack (rgthree)",
+    "_meta": {
+      "title": "Lora Loader Stack (rgthree)"
+    }
+  },
+  "237": {
+    "inputs": {
+      "temperature": 0,
+      "hue": 0,
+      "brightness": 0,
+      "contrast": 0,
+      "saturation": -20,
+      "gamma": 1,
+      "image": [
+        "227",
+        0
+      ]
+    },
+    "class_type": "ColorCorrect",
+    "_meta": {
+      "title": "Color Correct"
+    }
+  },
+  "238": {
+    "inputs": {
+      "image": "identity.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "图 2 · 人物（真人参考）"
+    }
+  },
+  "239": {
+    "inputs": {
+      "temperature": 0,
+      "hue": 0,
+      "brightness": 0,
+      "contrast": 0,
+      "saturation": -20,
+      "gamma": 1,
+      "image": [
+        "238",
+        0
+      ]
+    },
+    "class_type": "ColorCorrect",
+    "_meta": {
+      "title": "Color Correct"
+    }
+  },
+  "240": {
+    "inputs": {
+      "aspect_ratio": "original",
+      "proportional_width": 1,
+      "proportional_height": 1,
+      "fit": "crop",
+      "method": "lanczos",
+      "round_to_multiple": "None",
+      "scale_to_side": "longest",
+      "scale_to_length": 1536,
+      "background_color": "#000000",
+      "image": [
+        "239",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
+    "_meta": {
+      "title": "图层工具：按宽高比缩放 V2"
+    }
+  },
+  "342": {
+    "inputs": {
+      "only_title_starts_with": "反推-单图",
+      "join_with": "空行分隔",
+      "with_title": false,
+      "fallback": ""
+    },
+    "class_type": "WorkflowNotes",
+    "_meta": {
+      "title": "读备注：反推-单图"
+    }
+  },
+  "343": {
+    "inputs": {
+      "only_title_starts_with": "反推-双图",
+      "join_with": "空行分隔",
+      "with_title": false,
+      "fallback": ""
+    },
+    "class_type": "WorkflowNotes",
+    "_meta": {
+      "title": "读备注：反推-双图"
+    }
+  },
+  "344": {
+    "inputs": {
+      "bool_value": true
+    },
+    "class_type": "LayerUtility: Boolean",
+    "_meta": {
+      "title": "① 用反推吗"
+    }
+  },
+  "345": {
+    "inputs": {
+      "bool_value": false
+    },
+    "class_type": "LayerUtility: Boolean",
+    "_meta": {
+      "title": "② 双图吗"
+    }
+  },
+  "346": {
+    "inputs": {
+      "value": "transform the image to realistic photograph, an adult woman standing beside a park bench in daylight"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "手输提示词（①关掉时用它）"
+    }
+  },
+  "347": {
+    "inputs": {
+      "switch": [
+        "344",
+        0
+      ],
+      "on_false": [
+        "346",
+        0
+      ],
+      "on_true": [
+        "352",
+        0
+      ]
+    },
+    "class_type": "LazySwitchKJ",
+    "_meta": {
+      "title": "提示词取哪边（真·惰性）"
+    }
+  },
+  "348": {
+    "inputs": {
+      "switch": [
+        "345",
+        0
+      ],
+      "on_false": [
+        "342",
+        0
+      ],
+      "on_true": [
+        "343",
+        0
+      ]
+    },
+    "class_type": "LazySwitchKJ",
+    "_meta": {
+      "title": "反推用哪套指令"
+    }
+  },
+  "349": {
+    "inputs": {
+      "switch": [
+        "345",
+        0
+      ],
+      "on_false": [
+        "225",
+        0
+      ],
+      "on_true": [
+        "240",
+        0
+      ]
+    },
+    "class_type": "LazySwitchKJ",
+    "_meta": {
+      "title": "人物参考取哪张"
+    }
+  },
+  "350": {
+    "inputs": {
+      "model": "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf",
+      "mmproj": "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+      "chat_handler": "Qwen3.6",
+      "n_ctx": 8192,
+      "vram_limit": -1,
+      "image_min_tokens": 0,
+      "image_max_tokens": 0,
+      "load_mtp": false
+    },
+    "class_type": "llama_cpp_model_loader",
+    "_meta": {
+      "title": "反推模型（35B MoE 去审查）"
+    }
+  },
+  "351": {
+    "inputs": {
+      "max_tokens": 512,
+      "top_k": 40,
+      "top_p": 0.95,
+      "min_p": 0.05,
+      "typical_p": 1,
+      "temperature": 0.6,
+      "repeat_penalty": 1.1,
+      "frequency_penalty": 0,
+      "present_penalty": 0,
+      "mirostat_mode": 0,
+      "mirostat_eta": 0.1,
+      "mirostat_tau": 5,
+      "state_uid": -1
+    },
+    "class_type": "llama_cpp_parameters",
+    "_meta": {
+      "title": "Llama-cpp Parameters"
+    }
+  },
+  "352": {
+    "inputs": {
+      "preset_prompt": "Empty - Nothing",
+      "custom_prompt": "Look at the FIRST image and follow the system instructions exactly.",
+      "system_prompt": [
+        "348",
+        0
+      ],
+      "inference_mode": "one by one",
+      "max_frames": 2,
+      "max_size": 1536,
+      "seed": 556050744171086,
+      "force_offload": false,
+      "save_states": false,
+      "llama_model": [
+        "350",
+        0
+      ],
+      "parameters": [
+        "351",
+        0
+      ],
+      "images": [
+        "227",
+        0
+      ]
+    },
+    "class_type": "llama_cpp_instruct_adv",
+    "_meta": {
+      "title": "反推（按备注写）"
+    }
+  },
+  "353": {
+    "inputs": {
+      "text": [
+        "347",
+        0
+      ]
+    },
+    "class_type": "ShowText|pysssss",
+    "_meta": {
+      "title": "实际用到的提示词"
+    }
+  }
+}

@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { MOCK_AUTODL_TOKEN, MOCK_AUTODL_UUID, MOCK_AUTODL_VIDEO_UUID } from '../../tools/mock-comfyui/src/autodl';
-import { E2E_ROOT, E2E_WORK_FOLDER, MOCK_COMFY_PORT } from './env';
+import { E2E_APP_PORT, E2E_ROOT, E2E_WORK_FOLDER, MOCK_COMFY_PORT } from './env';
 import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
 import { assetsDialog, assetTile, filledSlots, lastReply, newCanvasWithNode, panel, send, setupWorkFolder, toasts } from './helpers';
 
@@ -84,6 +84,8 @@ async function genVideo(page: Page) {
   await genDialog(page).locator('#vgGo').click();
   await expect(genDialog(page)).toHaveCount(0);
 }
+
+
 
 test('10.4 第 1 条：设置里选生成视频用的实例，出图那台不能选；选好后顶上多出视频那台的状态，写着已关机', async ({ page }) => {
   expect((await page.request.put('/api/config', { data: { autodlToken: MOCK_AUTODL_TOKEN } })).ok()).toBe(true);
@@ -599,6 +601,9 @@ test('生成设置里能选 SelfLift 接续那套：二采重画多少、总步�
   const merge = [...prompts].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
   const clip = [...prompts].reverse().find((graph) => graphNodes(graph, 'MiniMaxH3AddGuide').length > 0)!;
   const loads = graphNodes(merge, 'LoadVideo');
+  const jobId = String(loads[0].inputs.file).match(/^media_agent_(.*)_s0\.mp4$/)![1];
+  const currentClips = prompts.filter(graph => graphNodes(graph, 'SaveVideo').some(node => String(node.inputs.filename_prefix).startsWith(`media-agent/selflift_${jobId}_s`)));
+  expect(currentClips.map(graph => graphNodes(graph, 'MiniMaxH3ReferenceToVideo')[0].inputs.length)).toEqual([362, 362, 90]);
   expect(loads.length).toBeGreaterThanOrEqual(2);
   expect(loads.map((node) => node.inputs.file)).toEqual(loads.map((_, i) => expect.stringContaining(`_s${i}.mp4`)));
   expect(graphNodes(merge, 'ConcatenateVideo')[0].inputs['videos.video0']).toEqual(['400', 0]);
@@ -953,4 +958,121 @@ test('SelfLift 加「续写起点」：传一段前一段视频，出来的整�
   const picked = (await comfyPrompts(page)).map((one) => one.prompt);
   const mediaMerge = [...picked].reverse().find((graph) => graphNodes(graph, 'ConcatenateVideo').length > 0)!;
   expect(graphNodes(mediaMerge, 'LoadVideo')).toHaveLength(2);
+});
+
+test('SelfLift：断线期间后端完成，页面重连后补回完成状态和成片', async ({ page }) => {
+  test.setTimeout(90_000);
+  // 精确模拟断线期间漏掉的 SSE 消息；Chromium 的 offline 不会可靠断开已有的长连接。
+  await page.addInitScript(() => {
+    const NativeSource = EventSource;
+    const control = { disconnected: false, source: null as EventSource | null };
+    (window as unknown as { videoConnection: typeof control }).videoConnection = control;
+    window.EventSource = class extends NativeSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url).includes('/video-jobs/events')) {
+          control.source = this;
+          this.addEventListener('message', (event) => {
+            if (control.disconnected) event.stopImmediatePropagation();
+          });
+        }
+      }
+    };
+  });
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, 'SelfLift 重连');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#btnVideoCfg').click();
+  await page.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 接续' }).click();
+  await page.keyboard.press('Escape');
+  await send(page, '写一个');
+  await editBox(page, '慢慢地走');
+  await genVideo(page);
+  const video = videos(page).first();
+  await expect(video.locator('[data-stage]')).toBeVisible({ timeout: 30_000 });
+  const canvasId = new URL(page.url()).pathname.split('/').at(-1)!;
+  const jobId = await video.getAttribute('data-video');
+  const boardUrl = `http://127.0.0.1:${E2E_APP_PORT}/api/video-jobs`;
+  await page.evaluate(() => { (window as unknown as { videoConnection: { disconnected: boolean } }).videoConnection.disconnected = true; });
+  await expect.poll(async () => {
+    const board = await (await fetch(boardUrl)).json();
+    return board.done.find((item: { canvasId: string; job: { id: string } }) => item.canvasId === canvasId && item.job.id === jobId)?.job.status;
+  }, { timeout: 45_000 }).toBe('done');
+  await expect(video.locator('.ig-state')).toHaveAttribute('data-vstate', 'running');
+  await page.evaluate(() => {
+    const control = (window as unknown as { videoConnection: { disconnected: boolean; source: EventSource } }).videoConnection;
+    control.disconnected = false;
+    control.source.dispatchEvent(new Event('open'));
+  });
+  await expect(video.locator('.ig-state')).toHaveAttribute('data-vstate', 'done', { timeout: 15_000 });
+  await expect(finished(page)).toHaveCount(1);
+  await expect(video.locator('[data-vact="stop"]')).toHaveCount(0);
+});
+
+test('SelfLift：单段低清预览先播放，高清未完成；完成后正常显示最终版本', async ({ page }) => {
+  test.setTimeout(90_000);
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, 'SelfLift 低清预览');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#btnVideoCfg').click();
+  await page.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 接续' }).click();
+  await page.keyboard.press('Escape');
+  await send(page, '写一个');
+  await editBox(page, '慢慢地走');
+  await genVideo(page);
+  const job = videos(page).first();
+  const preview = job.locator('[data-od-id="video-preview"]');
+  await expect(preview).toContainText('第 1 段的一采（低清）画面预览', { timeout: 30_000 });
+  await expect(job.locator('.ig-state')).toHaveAttribute('data-vstate', 'running');
+  await expect(finished(page)).toHaveCount(0);
+  await expect.poll(() => preview.locator('video').evaluate((player: HTMLVideoElement) => player.readyState)).toBeGreaterThan(0);
+  // 预览到达时第一段还没完成，验证真实的早到时机，不拿完整第一段冒充一采。
+  const canvasId = new URL(page.url()).pathname.split('/').at(-1)!;
+  const jobId = await job.getAttribute('data-video');
+  const board = await (await page.request.get('/api/video-jobs')).json();
+  const live = board.live.find((item: { canvasId: string; job: { id: string } }) => item.canvasId === canvasId && item.job.id === jobId);
+  expect(live.job.chain.clips).toHaveLength(0);
+  await expect(finished(page)).toHaveCount(1, { timeout: 30_000 });
+  await expect(job.locator('.ig-state')).toHaveAttribute('data-vstate', 'done');
+  await expect(preview).toHaveCount(0);
+  await expect(job.locator('video')).toHaveCount(1);
+});
+
+test('SelfLift：节点旧响应晚于完成推送返回，不能把已完成的视频改回生成中', async ({ page }) => {
+  test.setTimeout(90_000);
+  await useVideoAutodl(page);
+  await newCanvasWithNode(page, 'SelfLift 状态回退');
+  await panel(page).locator('#cfgSys').selectOption('t2v');
+  await panel(page).locator('#btnVideoCfg').click();
+  await page.locator('#vcWorkflow').getByRole('button', { name: 'SelfLift 接续' }).click();
+  await page.keyboard.press('Escape');
+  await send(page, '写一个');
+  await editBox(page, '慢慢地走');
+  await genVideo(page);
+  const jobId = await videos(page).first().getAttribute('data-video');
+  const job = page.locator(`[data-video="${jobId}"]`);
+  await expect(job.locator('.ig-state')).toHaveAttribute('data-vstate', 'running', { timeout: 30_000 });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  await page.route(/\/api\/canvases\/[^/]+\/nodes\/[^/]+$/, async (route) => {
+    if (route.request().method() !== 'GET' || held) return route.continue();
+    const response = await route.fetch();
+    const node = await response.json();
+    held = true;
+    node.title = '旧响应已到';
+    await gate;
+    await route.fulfill({ response, json: node });
+  });
+  try {
+    // 另发一句，回复结束会读取节点；故意让这个仍带 running 的响应晚回来。
+    await send(page, '继续写');
+    await expect.poll(() => held).toBe(true);
+    await expect(job.locator('.ig-state')).toHaveAttribute('data-vstate', 'done', { timeout: 30_000 });
+  } finally {
+    release();
+  }
+  await expect(panel(page).locator('#drTitle')).toHaveText('旧响应已到');
+  await expect(job.locator('.ig-state')).toHaveAttribute('data-vstate', 'done');
+  await expect(job.locator('.vj-info')).toHaveCount(1);
 });

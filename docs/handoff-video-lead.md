@@ -1,5 +1,9 @@
 # 交接：生成视频配置弹窗 + SelfLift 续写起点（2026-10-12）
 
+同日后续补充：[SelfLift 完成状态回退和一采低清预览修复](reports/selflift-status-preview-20261012.md)。以下是此前一轮的历史快照；后续分支整合状态见 `docs/reports/branch-integration-20261012.md`。
+
+最新分段策略、历史任务兼容和真机验证见 [SelfLift 长视频修复](reports/selflift-duration-20261012.md)；转真人当前标准见 [Krea2 标准工作流修复](reports/krea2-real-standard-20261012.md)。本轮用户已授权完成后提交并推送 `main`。
+
 这份是给接手的 agent 看的。这轮做完了用户要的三件事，**代码还没提交**（用户没说「提交」，照 `AGENTS.md` 的约定别自己提）。
 先看第 1 节（现状）、第 4 节（怎么验）、第 5 节（坑），细节都在 `docs/dev-plan.md` 5.35、5.36 和 `docs/reports/selflift-u37.md` 里。
 

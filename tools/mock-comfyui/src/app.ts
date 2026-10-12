@@ -31,6 +31,11 @@ export type MockComfy = { server: http.Server; autodl: MockAutodl; ssh: MockSsh;
 
 const STEPS = 5;
 
+// 假的反推输出：真那台上是 35B MoE 看图现写，假的这边按反推系统提示词要求的格式给一句固定的
+// （触发词在最前面、后面接画面描述），见 docs/krea2-real-usage.md 第 4 节
+const REVERSE_TEXT =
+  'transform the image to realistic photograph, a young woman in a dark coat stands on a rainy platform at night, looking at camera, half body shot, backlight, photorealistic, highly detailed';
+
 // 生成视频那台上存一采、二采结果的文件夹
 const LATENT_DIR = '/root/ComfyUI/output/MiniMaxH3/latent_checkpoints';
 // 传上去的图、视频落在哪（和真的一样）：接力那套读的上一段、续写起点量的那段都在这里
@@ -46,7 +51,39 @@ const MODELS = {
   unet: ['minimax/DasiwaMinimaxH3_dasiwaHybridTurboV2_int8.safetensors', 'minimax/DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors', 'minimax/minimax_h3_ref2va_int8_convrot.safetensors'],
   textEncoder: ['qwen3vl_32b_minimax_h3_int8_convrot.safetensors', 'qwen3vl_4b_uncensored_int8_convrot.safetensors', 'qwen3vl_4b_fp8_scaled.safetensors'],
   latentUpscale: ['minimax_h3_latent_upscaler_3d_bf16.safetensors'],
-  loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors'],
+  loras: [
+    'detail-test.safetensors',
+    'IL/anime-style-test.safetensors',
+    'IL/detail-tweaker-test.safetensors',
+    'krea2/krea2_4panel.safetensors',
+    // 编辑档那几个方案用的，见 docs/dev-plan.md 5.37
+    'krea2/krea2_identity_edit_v1_1.safetensors',
+    'krea2/krea2_identity_edit_v1_2.safetensors',
+    'krea2/krea_outfittransfer.safetensors',
+    'krea2/Krea2_Anything2RealCharacters-V1.safetensors',
+    'krea2/Krea2_Anything2RealCharacters-V3.safetensors',
+    'krea2/k2_nice_body.safetensors',
+    'krea2/krea2_darkbrush.safetensors',
+    'krea2/DynamicCharacterSheet_krea2_v1.safetensors',
+    // 转真人那一档的两组 LoRA，见 docs/krea2-real-usage.md 第 6 节：转真人 V3/V1 在上面，
+    // 下面是人物向的那几个（界面上「人物 LoRA」下拉里的候选）
+    'krea2/Krea2_DreamCos_Realism.safetensors',
+    'krea2/Krea2-realism-V2.safetensors',
+    'krea2/krea2-Cc风情万种-人像.safetensors',
+    'krea2/krea2-Cc风情万种-风格.safetensors',
+    'krea2/krea2-Cc-天魔-身材.safetensors',
+    'krea2/Nick_baotunqun_Krea2.safetensors',
+    'krea2/Nick_leggings_Krea2.safetensors',
+    'krea2/krea2_reid_rank32.safetensors',
+    // 深度迁移和风格 Remix 那两档（图像编辑节点第五、六个功能），名字照真机的 object_info
+    'krea2/Krea2-depth-control-lora.safetensors',
+    'krea2/Krea2_Remix_RealCosplay_rank64_v1.safetensors',
+  ],
+  // Krea2ControlLoRALoader 的下拉：控制类 LoRA 只有深度那一条（那台上 373 项里没有 pose 的），
+  // 见 outputs/devcheck/w3-findings.md 第 2 节
+  controlLoras: ['krea2/Krea2-depth-control-lora.safetensors'],
+  // DepthAnythingV2Preprocessor 的 ckpt_name 下拉（comfyui_controlnet_aux）
+  depthCkpt: ['depth_anything_v2_vitg.pth', 'depth_anything_v2_vitl.pth', 'depth_anything_v2_vitb.pth', 'depth_anything_v2_vits.pth'],
   // 生成视频那台的加速 LoRA（照 U37 那份工作流的双 LoRA），只挂在 LoraLoaderModelOnly 的下拉上，出图那边还是上面那一串。
   // 别的 LoRA 由测试自己通过接口传上去，扫描 /root/autodl-tmp/models/loras 加进来
   videoLoras: [
@@ -54,7 +91,11 @@ const MODELS = {
     'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors',
   ],
   samplers: ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde'],
-  schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple'],
+  // beta57 是转真人那一档的调度器（不是习惯上的 simple），见 docs/krea2-real-usage.md 第 5 节
+  schedulers: ['normal', 'karras', 'exponential', 'sgm_uniform', 'simple', 'beta57'],
+  // 反推那两个模型文件（llama.cpp 那台插件用的），照那台上的名字
+  reverseModel: ['Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf'],
+  reverseMmproj: ['mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf'],
   upscale: ['4x-test.pth'],
   controlnet: ['openpose-test.safetensors', 'depth-test.safetensors', 'union-test.safetensors'],
   // ControlNet 的提取方式，真的 AIO_Preprocessor 列得更多，第一个是 none
@@ -146,6 +187,10 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
     false,
     { target_index: ['INT', {}] },
   ),
+  MediaAgentSelfLiftPreview: node(
+    { model: ['MODEL'], vae: ['VAE'], transition_step: ['INT', {}], fps: ['FLOAT', {}], trim_frames: ['INT', {}], filename_prefix: ['STRING', {}] },
+    ['MODEL'],
+  ),
   SelfLiftH3Sampler: node(
     {
       model: ['MODEL'],
@@ -187,9 +232,147 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
     },
     ['CONDITIONING'],
   ),
-  Krea2EditModelPatch: node({ model: ['MODEL'], source_latent: ['LATENT'] }, ['MODEL'], false, { target_latent: ['LATENT'], source_image: ['IMAGE'], vae: ['VAE'], ref_boost: ['FLOAT', {}], ref_boost_a: ['FLOAT', {}], fit_mode: combo(['fit', 'crop (legacy)']) }),
-  Krea2EditGroundedEncode: node({ clip: ['CLIP'], prompt: ['STRING', { multiline: true }] }, ['CONDITIONING'], false, { image: ['IMAGE'], grounding_px: ['INT', {}], system_prompt: ['STRING', {}] }),
+  // 编辑档的双图（T07 名字里的那个）：`_b` 那一路是第二张参考图（主体），见 docs/dev-plan.md 5.37
+  Krea2EditModelPatch: node({ model: ['MODEL'], source_latent: ['LATENT'] }, ['MODEL'], false, {
+    target_latent: ['LATENT'],
+    source_latent_b: ['LATENT'],
+    source_image: ['IMAGE'],
+    source_image_b: ['IMAGE'],
+    vae: ['VAE'],
+    ref_boost: ['FLOAT', {}],
+    ref_boost_a: ['FLOAT', {}],
+    fit_mode: combo(['fit', 'crop (legacy)']),
+  }),
+  Krea2EditGroundedEncode: node({ clip: ['CLIP'], prompt: ['STRING', { multiline: true }] }, ['CONDITIONING'], false, {
+    image: ['IMAGE'],
+    image_b: ['IMAGE'],
+    grounding_px: ['INT', {}],
+    system_prompt: ['STRING', {}],
+  }),
   ImageResizeKJv2: node({ image: ['IMAGE'], width: ['INT', {}], height: ['INT', {}], upscale_method: combo(['lanczos']), keep_proportion: combo(['resize']), pad_color: ['STRING', {}], crop_position: combo(['center']), divisible_by: ['INT', {}] }, ['IMAGE'], false, { device: combo(['cpu', 'gpu']) }),
+  // 编辑档走的那套（作者 Ostris 的），见 docs/dev-plan.md 5.37
+  Krea2OstrisEditModelPatch: node({ model: ['MODEL'], kv_cache: ['BOOLEAN', {}] }, ['MODEL']),
+  TextEncodeKrea2OstrisEdit: node({ clip: ['CLIP'], prompt: ['STRING', { multiline: true }] }, ['CONDITIONING'], false, {
+    vae: ['VAE'],
+    image1: ['IMAGE'],
+    image2: ['IMAGE'],
+    image3: ['IMAGE'],
+  }),
+  // ── 转真人那一档（图像编辑节点的「转真人」功能），见 docs/krea2-real-usage.md ──
+  // 主图那个编码节点（cardenluo/easy_qwenEdit_2509）：出 正面 / 空负面 / 潜变量 三个。
+  // image2 和三个强度是选填的（作者那份单图 JSON 里就没有），双图时才有 image2
+  Easy_QwenEdit2509: node(
+    {
+      clip: ['CLIP'],
+      vae: ['VAE'],
+      image1: ['IMAGE'],
+      latent_image: ['IMAGE'],
+      auto_resize: combo(['crop', 'stretch', 'pad']),
+      vl_size: ['INT', {}],
+      prompt: ['STRING', { multiline: true }],
+      system_prompt: ['STRING', { multiline: true }],
+    },
+    ['CONDITIONING', 'CONDITIONING', 'LATENT'],
+    false,
+    { image2: ['IMAGE'], image3: ['IMAGE'], image1_strength: ['FLOAT', {}], image2_strength: ['FLOAT', {}], image3_strength: ['FLOAT', {}] },
+  ),
+  // 参考潜变量的接法（ComfyUI 本体自带）：正面、负面各接一个，不是 ConditioningZeroOut
+  FluxKontextMultiReferenceLatentMethod: node({ conditioning: ['CONDITIONING'], reference_latents_method: combo(['offset', 'index', 'index_timestep_zero']) }, ['CONDITIONING']),
+  // 图 1 / 图 2 各先过它（作者实测饱和度 −20 出图更像照片）再缩放
+  ColorCorrect: node(
+    { image: ['IMAGE'], temperature: ['FLOAT', {}], hue: ['FLOAT', {}], brightness: ['FLOAT', {}], contrast: ['FLOAT', {}], saturation: ['FLOAT', {}], gamma: ['FLOAT', {}] },
+    ['IMAGE'],
+  ),
+  // 反推那三个（lihaoyun6/ComfyUI-llama-cpp_vlm）：35B MoE 去审查 VLM 看图写词，
+  // STRING 输出直接接 Easy_QwenEdit2509.prompt；反推关着时这张图里一个都不生成
+  llama_cpp_model_loader: node({ model: combo(MODELS.reverseModel), mmproj: combo(MODELS.reverseMmproj), chat_handler: combo(['Qwen3.6', 'Qwen3-VL', 'Qwen2.5-VL']) }, ['LLAMA_MODEL'], false, {
+    n_ctx: ['INT', {}],
+    vram_limit: ['FLOAT', {}],
+    image_min_tokens: ['INT', {}],
+    image_max_tokens: ['INT', {}],
+    load_mtp: ['BOOLEAN', {}],
+  }),
+  llama_cpp_parameters: node(
+    {
+      max_tokens: ['INT', {}],
+      top_k: ['INT', {}],
+      top_p: ['FLOAT', {}],
+      min_p: ['FLOAT', {}],
+      typical_p: ['FLOAT', {}],
+      temperature: ['FLOAT', {}],
+      repeat_penalty: ['FLOAT', {}],
+      frequency_penalty: ['FLOAT', {}],
+      present_penalty: ['FLOAT', {}],
+      mirostat_mode: ['INT', {}],
+      mirostat_eta: ['FLOAT', {}],
+      mirostat_tau: ['FLOAT', {}],
+      state_uid: ['INT', {}],
+    },
+    ['LLAMA_PARAMETERS'],
+  ),
+  llama_cpp_instruct_adv: node(
+    {
+      llama_model: ['LLAMA_MODEL'],
+      parameters: ['LLAMA_PARAMETERS'],
+      images: ['IMAGE'],
+      system_prompt: ['STRING', { multiline: true }],
+      preset_prompt: combo(['Empty - Nothing']),
+      custom_prompt: ['STRING', { multiline: true }],
+      inference_mode: combo(['one by one', 'images', 'video']),
+      max_frames: ['INT', {}],
+      max_size: ['INT', {}],
+      seed: ['INT', {}],
+      force_offload: ['BOOLEAN', {}],
+      save_states: ['BOOLEAN', {}],
+    },
+    ['STRING'],
+  ),
+  // 按宽高比缩放（ComfyUI_LayerStyle）：出 IMAGE/MASK/BOX/宽/高
+  'LayerUtility: ImageScaleByAspectRatio V2': node(
+    {
+      aspect_ratio: combo(['original', 'custom', '1:1', '3:2', '4:3', '16:9', '2:3', '3:4', '9:16']),
+      proportional_width: ['INT', {}],
+      proportional_height: ['INT', {}],
+      fit: combo(['letterbox', 'crop', 'fill']),
+      method: combo(['lanczos', 'bicubic', 'hamming', 'bilinear', 'box', 'nearest']),
+      round_to_multiple: combo(['8', '16', '32', '64', '128', '256', '512', 'None']),
+      scale_to_side: combo(['None', 'longest', 'shortest', 'width', 'height', 'total_pixel(kilo pixel)']),
+      scale_to_length: ['INT', {}],
+      background_color: ['STRING', {}],
+    },
+    ['IMAGE', 'MASK', 'BOX', 'INT', 'INT'],
+    false,
+    { image: ['IMAGE'], mask: ['MASK'] },
+  ),
+  GetImageSize: node({ image: ['IMAGE'] }, ['INT', 'INT']),
+  // ── 深度迁移那一档（图像编辑节点的「深度迁移」功能），见 docs/dev-plan.md 5.39、packages/shared/src/krea2Depth.ts ──
+  // 控制类三节点一组（facok/comfyui-krea2-controlnet）：LoRA 加载器 → (Apply 的 control_latent) → Apply → KSampler.model。
+  // 输入口照那台实机的 object_info（outputs/devcheck/nodeinfo.json）；Krea2ControlImageEncode 的 latent 在真的那台上是选填的
+  Krea2ControlLoRALoader: node({ model: ['MODEL'], lora_name: combo(MODELS.controlLoras), strength: ['FLOAT', { default: 1 }] }, ['MODEL']),
+  Krea2ControlImageEncode: node(
+    {
+      control_image: ['IMAGE'],
+      vae: ['VAE'],
+      resize: combo(['keep_control_image_size', 'match_latent_size']),
+      upscale_method: combo(['lanczos', 'bicubic', 'bilinear', 'area', 'nearest-exact']),
+      crop: combo(['center', 'disabled']),
+      channel_mode: combo(['rgb', 'grayscale']),
+      normalize: combo(['none', 'per_image_minmax']),
+      invert: ['BOOLEAN', { default: false }],
+      batch_mode: combo(['independent_images', 'video_frames']),
+    },
+    ['LATENT', 'IMAGE'],
+    false,
+    { latent: ['LATENT'] },
+  ),
+  Krea2ControlApply: node({ model: ['MODEL'], control_latent: ['LATENT'] }, ['MODEL']),
+  // 深度提取（comfyui_controlnet_aux）：ckpt_name 和 resolution 在真的那台上是选填的，默认 vitl / 512
+  DepthAnythingV2Preprocessor: node({ image: ['IMAGE'] }, ['IMAGE'], false, { ckpt_name: combo(MODELS.depthCkpt), resolution: ['INT', { default: 512 }] }),
+  // 风格 Remix / 换人那条用的（ComfyUI 本体，comfy_extras）：参考图按总像素缩到 384×384 那个预算
+  ImageScaleToTotalPixels: node(
+    { image: ['IMAGE'], upscale_method: combo(['nearest-exact', 'bilinear', 'area', 'bicubic', 'lanczos']), megapixels: ['FLOAT', { default: 1 }], resolution_steps: ['INT', { default: 1 }] },
+    ['IMAGE'],
+  ),
   KSampler: node(
     {
       model: ['MODEL'],
@@ -209,8 +392,48 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   VAEDecode: node({ samples: ['LATENT'], vae: ['VAE'] }, ['IMAGE']),
   VAEEncode: node({}, ['LATENT']),
   PreviewImage: node({ images: ['IMAGE'] }, [], true),
-  SaveImage: node({ images: ['IMAGE'] }, [], true),
+  SaveImage: node({ images: ['IMAGE'] }, [], true, { filename_prefix: ['STRING', {}] }),
+  'ShowText|pysssss': node({ text: ['STRING', {}] }, ['STRING'], true),
   LoadImage: node({}, ['IMAGE', 'MASK']),
+  // 局部重绘，见 docs/dev-plan.md 5.38：底图和掩码是同一张 PNG，LoadImage 的第二个输出就是它的 alpha 通道。
+  // 参数照真的那台（ComfyUI-Inpaint-CropAndStitch）
+  InpaintCropImproved: node(
+    {
+      image: ['IMAGE'],
+      downscale_algorithm: combo(['nearest', 'bilinear', 'bicubic', 'lanczos', 'box', 'hamming']),
+      upscale_algorithm: combo(['nearest', 'bilinear', 'bicubic', 'lanczos', 'box', 'hamming']),
+      preresize: ['BOOLEAN', {}],
+      preresize_mode: combo(['ensure minimum resolution', 'ensure maximum resolution', 'ensure minimum and maximum resolution']),
+      preresize_min_width: ['INT', {}],
+      preresize_min_height: ['INT', {}],
+      preresize_max_width: ['INT', {}],
+      preresize_max_height: ['INT', {}],
+      mask_fill_holes: ['BOOLEAN', {}],
+      mask_expand_pixels: ['INT', {}],
+      mask_invert: ['BOOLEAN', {}],
+      mask_blend_pixels: ['INT', {}],
+      mask_hipass_filter: ['FLOAT', {}],
+      extend_for_outpainting: ['BOOLEAN', {}],
+      extend_up_factor: ['FLOAT', {}],
+      extend_down_factor: ['FLOAT', {}],
+      extend_left_factor: ['FLOAT', {}],
+      extend_right_factor: ['FLOAT', {}],
+      context_from_mask_extend_factor: ['FLOAT', {}],
+      output_resize_to_target_size: ['BOOLEAN', {}],
+      output_target_width: ['INT', {}],
+      output_target_height: ['INT', {}],
+      output_padding: combo(['0', '8', '16', '32', '64', '128', '256', '512']),
+      device_mode: combo(['cpu (compatible)', 'gpu (much faster)']),
+    },
+    ['STITCHER', 'IMAGE', 'MASK'],
+    false,
+    { mask: ['MASK'], optional_context_mask: ['MASK'] },
+  ),
+  InpaintModelConditioning: node(
+    { positive: ['CONDITIONING'], negative: ['CONDITIONING'], vae: ['VAE'], pixels: ['IMAGE'], mask: ['MASK'], noise_mask: ['BOOLEAN', {}] },
+    ['CONDITIONING', 'CONDITIONING', 'LATENT'],
+  ),
+  InpaintStitchImproved: node({ stitcher: ['STITCHER'], inpainted_image: ['IMAGE'] }, ['IMAGE']),
   UpscaleModelLoader: node({ model_name: combo(MODELS.upscale) }, ['UPSCALE_MODEL']),
   ImageUpscaleWithModel: node({}, ['IMAGE']),
   ImageScale: node({}, ['IMAGE']),
@@ -227,7 +450,7 @@ const OBJECT_INFO: Record<string, ReturnType<typeof node>> = {
   DWPreprocessor: node({}, ['IMAGE']),
   'WD14Tagger|pysssss': node({ model: combo(MODELS.tagger) }, ['STRING'], true),
   // 长视频流程用的，下拉项照 H3 那台
-  UNETLoader: node({ unet_name: combo([...MODELS.unet, 'krea2/darkBeastINT8Convrot2_krea211INT8Convrot.safetensors', 'krea/krea2_turbo_int8_convrot.safetensors']), weight_dtype: combo(['default', 'fp8_e4m3fn', 'fp8_e4m3fn_fast', 'fp8_e5m2']) }, ['MODEL']),
+  UNETLoader: node({ unet_name: combo([...MODELS.unet, 'krea2/darkBeastINT8Convrot2_krea211INT8Convrot.safetensors', 'krea/krea2_turbo_int8_convrot.safetensors', 'krea2/krea2_turbo_int8_convrot.safetensors', 'krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors', 'krea2/krea2_turbo_fp8_scaled.safetensors', 'krea2/Krea2-Moody-Mix-premium_int8_convrot.safetensors']), weight_dtype: combo(['default', 'fp8_e4m3fn', 'fp8_e4m3fn_fast', 'fp8_e5m2']) }, ['MODEL']),
   ModelAttentionBackend: node({ model: ['MODEL'], attention: comboV3(['pytorch attention', 'comfy kitchen attention']) }, ['MODEL']),
   MiniMaxLowVRAMAttention: node({ model: ['MODEL'], head_chunks: ['INT', {}] }, ['MODEL']),
   MiniMaxChunkFeedForward: node({ model: ['MODEL'], chunks: ['INT', {}], seq_threshold: ['INT', {}] }, ['MODEL']),
@@ -499,7 +722,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       const ref = { filename: `ComfyUI_${saveId ? '' : 'temp_'}${randomUUID().slice(0, 5)}_00001_.png`, subfolder: '', type: saveId ? 'output' : 'temp' };
       images.set(ref.filename, data);
       const success = { prompt_id: task.id, timestamp: Date.now() };
-      record(task, { [outputId]: { images: [ref] } }, true, [...run.started, ['execution_success', success]]);
+      // 转真人开着反推时，反推那个节点的 STRING 输出也记进历史（真的那台上是模型现写的那句提示词）
+      const instruct = findNode(graph, 'llama_cpp_instruct_adv');
+      const outputs: HistoryEntry['outputs'] = { [outputId]: { images: [ref] }, ...(instruct && { [instruct]: { text: [REVERSE_TEXT] } }) };
+      record(task, outputs, true, [...run.started, ['execution_success', success]]);
       current = null;
       sendTo(task.clientId, 'executing', { node: outputId, display_node: outputId, prompt_id: task.id });
       sendTo(task.clientId, 'executed', { node: outputId, display_node: outputId, output: { images: [ref] }, prompt_id: task.id });
@@ -663,6 +889,8 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
           : null;
     const failureWhere = wholeRefs ? { node: encodeId, type: 'MiniMaxH3ReferenceToVideo' } : null;
     const sampler = of('SelfLiftH3Sampler')[0];
+    const previewId = of('MediaAgentSelfLiftPreview')[0];
+    const transition = Number(graph[sampler]?.inputs.transition_step ?? 4);
     const steps = Number(linked(graph, graph[sampler]?.inputs.sigmas)?.inputs.steps ?? 8);
     // 拼起来那一条：把各段的名字写进历史，测试能看出拼的是哪几段
     const loads = of('LoadVideo');
@@ -706,6 +934,10 @@ export function createMockComfy({ stepMs = 300, slowStepMs = 1200, videoStepMs =
       if (current !== run) return;
       const [type, data] = events[sent];
       sent += 1;
+      if (previewId && type === 'progress' && data.value === transition) {
+        const ref = refOf(prefixOf(previewId));
+        sendTo(task.clientId, 'executed', { node: previewId, display_node: previewId, output: { images: [ref], animated: [true] }, prompt_id: task.id });
+      }
       sendTo(task.clientId, type, data);
       if (failure && (failureWhere || sampler) && type === 'progress' && data.value === 2) {
         const error = {

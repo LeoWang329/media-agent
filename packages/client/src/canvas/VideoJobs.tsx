@@ -8,6 +8,7 @@ import {
   splitSegments,
   VIDEO_FPS,
   videoFrames,
+  videoParams,
   videoSecondsText,
   videoImageUse,
   videoSettingsOf,
@@ -74,7 +75,7 @@ export function VideoJobs({ node, message, promptIndex, text, ro }: Props) {
       <div className="ig-empty meta" data-od-id="video-empty">
         还没生成过视频。点「生成视频」按节点的生成设置生成{carriesText(use, message.slotSnapshot.length, message.mediaSnapshot ?? [])}
         {segments > 1 ? `，分 ${segments} 段` : ''}，约{' '}
-        <span className="mono">{videoSecondsText(videoFrames(node.duration, segments).total)}</span>，出片{' '}
+        <span className="mono">{videoSecondsText(videoParams(Array(segments).fill(''), node.duration, message.aspectRatio, settings).frames.total)}</span>，出片{' '}
         <span className="mono">
           {finalWidth}×{finalHeight}
         </span>
@@ -262,7 +263,9 @@ function Video({ node, message, root, versions, jobs, text, ro }: { node: ChatNo
           <p className="hint">
             <Icon name="info" className="icon-sm" />
             {params.workflow === 'selflift'
-              ? '这是第 1 段出的（后面的段还在跑、整条还没接起来）。看着不行就现在叫停：已经出的几段会接起来留一份，能播能下载'
+              ? job.previewKind === 'lowres'
+                ? '这是第 1 段的一采（低清）画面预览，高清采样还在跑，声音和最终画面以成片为准。看着不行可以现在叫停'
+                : '这是第 1 段出的（后面的段还在跑、整条还没接起来）。看着不行就现在叫停：已经出的几段会接起来留一份，能播能下载'
               : '这是一采（低清）出的整条，二采还在跑。看着不行就现在叫停，这一版归你，能播能下载'}
           </p>
         </div>
@@ -288,7 +291,11 @@ function Video({ node, message, root, versions, jobs, text, ro }: { node: ChatNo
       {partial && problem !== 'gone' && (
         <p className="vj-partial hint">
           <Icon name="info" className="icon-sm" />
-          {params.workflow === 'selflift' ? '这是叫停时把已经出的几段接起来留下的，后面的段没跑。想要整条，同样参数再来一遍' : '这是叫停时留下的一采低清版，二采没跑完。想要高清的，同样参数再来一遍'}
+          {params.workflow === 'selflift'
+            ? job.previewKind === 'lowres' && job.file === job.preview
+              ? '这是叫停时留下的第 1 段低清画面预览，高清和整条还没完成。想要成片，同样参数再来一遍'
+              : '这是叫停时把已经出的几段接起来留下的，后面的段没跑。想要整条，同样参数再来一遍'
+            : '这是叫停时留下的一采低清版，二采没跑完。想要高清的，同样参数再来一遍'}
         </p>
       )}
       {!ro && job.status === 'done' && job.latents && problem !== 'gone' && <VideoReshoot key={`reshoot-${job.id}`} place={place} job={job} seek={seek} onStart={() => setPicked(null)} />}

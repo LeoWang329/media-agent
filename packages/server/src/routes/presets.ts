@@ -8,7 +8,7 @@ import * as v from './validate';
 // 预设存张数、种子以外的全部出图设置，ControlNet 的参考图也不存，见 docs/dev-plan.md 5.21。按出图设置的规矩校验，没带的项用 base 的
 function presetSettings(value: unknown, base: PresetSettings): PresetSettings {
   const { count: _count, seed: _seed, ...settings } = v.imageSettings(value, { ...base, count: 1, seed: null } satisfies ImageSettings);
-  return { ...settings, controls: settings.controls.map((control) => ({ ...control, image: null })), ...(settings.krea && { krea: { ...settings.krea, reference: null } }) };
+  return { ...settings, controls: settings.controls.map((control) => ({ ...control, image: null })), ...(settings.krea && { krea: { ...settings.krea, reference: null, referenceB: null } }) };
 }
 
 function family(value: unknown): Family {

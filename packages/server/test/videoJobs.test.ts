@@ -616,8 +616,26 @@ describe('生成视频任务', () => {
       'IL/anime-style-test.safetensors',
       'IL/detail-tweaker-test.safetensors',
       'krea2/krea2_4panel.safetensors',
+      'krea2/krea2_identity_edit_v1_1.safetensors',
+      'krea2/krea2_identity_edit_v1_2.safetensors',
+      'krea2/krea_outfittransfer.safetensors',
+      'krea2/Krea2_Anything2RealCharacters-V1.safetensors',
+      'krea2/Krea2_Anything2RealCharacters-V3.safetensors',
+      'krea2/k2_nice_body.safetensors',
       'krea2/krea2_darkbrush.safetensors',
       'krea2/DynamicCharacterSheet_krea2_v1.safetensors',
+      // 转真人那一档的人物 LoRA（图像编辑节点用的），跟真的那台一样放在同一个 LoRA 文件夹里
+      'krea2/Krea2_DreamCos_Realism.safetensors',
+      'krea2/Krea2-realism-V2.safetensors',
+      'krea2/krea2-Cc风情万种-人像.safetensors',
+      'krea2/krea2-Cc风情万种-风格.safetensors',
+      'krea2/krea2-Cc-天魔-身材.safetensors',
+      'krea2/Nick_baotunqun_Krea2.safetensors',
+      'krea2/Nick_leggings_Krea2.safetensors',
+      'krea2/krea2_reid_rank32.safetensors',
+      // 深度迁移和风格 Remix 那两档（图像编辑节点的第五、六个功能）用的，也在同一个 LoRA 文件夹里
+      'krea2/Krea2-depth-control-lora.safetensors',
+      'krea2/Krea2_Remix_RealCosplay_rank64_v1.safetensors',
       // 生成视频那台的加速 LoRA（双 LoRA 双采用的那两个，照 U37）
       'minimax/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors',
       'minimax/minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors',
@@ -696,6 +714,50 @@ describe('生成视频任务', () => {
     await settledJob(after.id, reply);
   });
 
+  it('SelfLift 单段：低清采样后先出现预览，第一段未完成；高清出完后完成状态和最终文件保留', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const reply = await edited('慢慢地走');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const preview = (await until(() => readJob(job.id, reply), (value) => Boolean(value?.preview)))!;
+    expect(preview).toMatchObject({ status: 'running', previewKind: 'lowres', chain: { clips: [] } });
+    expect(preview.file).toBeUndefined();
+    expect((await fetch(`${t.base}${videosUrl(reply)}/${job.id}/preview`)).ok).toBe(true);
+    const done = await settledJob(job.id, reply);
+    expect(done).toMatchObject({ status: 'done', preview: preview.preview, previewKind: 'lowres' });
+    expect(done.file).toBeTruthy();
+    expect(done.file).not.toBe(done.preview);
+    expect(done.chain!.clips).toHaveLength(1);
+  });
+
+  it('SelfLift 低清预览出现时叫停：未出完第一段也留下可播放的预览', async () => {
+    await useVideoAutodl();
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const reply = await edited('慢慢地走');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    await until(() => readJob(job.id, reply), (value) => Boolean(value?.preview));
+    await t.ok('POST', `${videosUrl(reply)}/${job.id}/stop`);
+    const stopped = await settledJob(job.id, reply);
+    expect(stopped).toMatchObject({ status: 'stopped', partial: true, previewKind: 'lowres', chain: { clips: [] } });
+    expect(stopped.file).toBe(stopped.preview);
+  });
+
+  it('SelfLift 未安装预览扩展时仍能生成，安装后不受旧节点缓存影响', async () => {
+    await useVideoAutodl();
+    await fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types: ['MediaAgentSelfLiftPreview'] }) });
+    await t.ok('PATCH', nodeUrl(), { duration: 8, video: { workflow: 'selflift' } });
+    const reply = await edited('慢慢地走');
+    const job = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const done = await settledJob(job.id, reply);
+    expect(done).toMatchObject({ status: 'done', previewKind: 'clip' });
+    expect(done.preview).toBeTruthy();
+    await fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types: [] }) });
+    const next = await t.ok<VideoJob>('POST', videosUrl(reply), { again: { jobId: job.id, sameSeed: true } });
+    const preview = (await until(() => readJob(next.id, reply), (value) => Boolean(value?.preview)))!;
+    expect(preview).toMatchObject({ status: 'running', previewKind: 'lowres' });
+    expect((await settledJob(next.id, reply)).status).toBe('done');
+  });
+
   it('走哪套流程能自己选：SelfLift 接续那套一段一条片子接力、出完自己拼起来；二采重画多少放开能改；这套不能重拍一截', async () => {
     await useVideoAutodl();
     // 校验：流程只认那两套；denoise 有范围；接续那几项也都有范围
@@ -742,7 +804,7 @@ describe('生成视频任务', () => {
     expect(done.file).toBeTruthy();
     // 每段都记着在那台上的文件名，和拷进 input 目录以后的名字；最后那一条是拼起来的
     expect(done.chain!.clips.map((clip) => clip.name)).toEqual([0, 1, 2].map((i) => `media_agent_${job.id}_s${i}.mp4`));
-    expect(done.chain!.clips.map((clip) => clip.frames)).toEqual([260, 260, 260]);
+    expect(done.chain!.clips.map((clip) => clip.frames)).toEqual([362, 362, 56]);
     expect(chunks.filter((chunk, i) => chunk !== chunks[i - 1])).toEqual([1, 2, 3]);
 
     // 发出去的是 3 条片子 + 1 条拼接：第 1 条没有上下文，第 2 条起读上一段、取 22 帧尾巴、剪掉 22 帧、颜色对齐
@@ -763,7 +825,9 @@ describe('生成视频任务', () => {
         { model: ['4', 0], lora_name: mine.lowresLora.name, strength_model: 0.75 },
         { model: ['4', 0], lora_name: mine.hiresLora.name, strength_model: 0.7 },
       ]);
-      expect(ofType(graph, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ model: ['75', 0], model_hires: ['76', 0] });
+      const preview = ofType(graph, 'MediaAgentSelfLiftPreview')[0];
+      if (preview) expect(preview.inputs.model).toEqual(['75', 0]);
+      expect(ofType(graph, 'SelfLiftH3Sampler')[0].inputs).toMatchObject({ model: [preview ? '22' : '75', 0], model_hires: ['76', 0] });
     }
     // 接缝声音羽化：第 1 条没有上下文不接，第 2 条起在 AddGuide 后面过一道，刻度照填的 8
     expect(ofType(clips[0], 'MiniMaxH3AudioGuideFeather')).toEqual([]);
@@ -779,7 +843,7 @@ describe('生成视频任务', () => {
     // 每段的采样参数照 U37；这一段一条片子用的是 H3 官方的编码节点，不是多段提示词那个
     const [first] = ofType(clips[0], 'SelfLiftH3Sampler');
     expect(first.inputs).toMatchObject({ cfg: 1, transition_step: 4, lowres_scale: 0.65, rho: 0.6, w_min: 1, w_max: 1, upscaler_model: 'none' });
-    expect(ofType(clips[0], 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ prompt: '第一段：女孩站在窗边，慢慢转过头来', length: 260 });
+    expect(ofType(clips[0], 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ prompt: '第一段：女孩站在窗边，慢慢转过头来', length: 362 });
     // 各段是拷进那台 input 目录的（这版 ComfyUI 的「文件名[output]」写法是坏的）
     expect(mock.ssh.commands.filter((command) => command.startsWith('cp ') && command.includes(`media_agent_${job.id}`))).toHaveLength(3);
 
@@ -810,8 +874,8 @@ describe('生成视频任务', () => {
     const done = await settledJob(job.id, reply, 20000);
     expect(done).toMatchObject({ status: 'done' });
     expect(done.chain!.clips.map((clip) => [clip.frames, clip.name])).toEqual([
-      [260, `media_agent_${job.id}_s0.mp4`],
-      [260, `media_agent_${job.id}_s1.mp4`],
+      [362, `media_agent_${job.id}_s0.mp4`],
+      [141, `media_agent_${job.id}_s1.mp4`],
     ]);
 
     // 校验：只能从第 2 段起；段数变了不行
@@ -828,11 +892,11 @@ describe('生成视频任务', () => {
     // 留着的那一段还是原来那一段（同一个文件），只是换成新这条的名字
     expect(moved.chain!.clips).toHaveLength(1);
     expect(moved.chain!.clips[0].filename).toBe(done.chain!.clips[0].filename);
-    expect(moved.chain!.clips[0].frames).toBe(260);
+    expect(moved.chain!.clips[0].frames).toBe(362);
     expect(moved.chain!.clips[0].name).toBe(`media_agent_${moved.id}_s0.mp4`);
     const after = await settledJob(moved.id, reply, 20000);
     expect(after).toMatchObject({ status: 'done' });
-    expect(after.chain!.clips.map((clip) => clip.frames)).toEqual([260, 260]);
+    expect(after.chain!.clips.map((clip) => clip.frames)).toEqual([362, 141]);
     expect(after.chain!.clips[1].name).toBe(`media_agent_${moved.id}_s1.mp4`);
     // 以前那一段拷进了 input（用新这条的名字）；这一条只发了 1 段 + 1 条拼接
     expect(mock.ssh.commands.filter((command) => command.startsWith('cp ') && command.includes(`media_agent_${moved.id}_s0.mp4`))).toHaveLength(1);
@@ -897,7 +961,7 @@ describe('生成视频任务', () => {
     expect(ofType(clip, 'VideoFrameSample')[0].inputs).toMatchObject({ num_frames: 22, strategy: 'tail' });
     expect(ofType(clip, 'VideoTemporalCrop')[0].inputs).toMatchObject({ start_frame: 22 });
     expect(ofType(clip, 'ColorTransfer')).toHaveLength(1);
-    expect(ofType(clip, 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ length: 192 });
+    expect(ofType(clip, 'MiniMaxH3ReferenceToVideo')[0].inputs).toMatchObject({ length: 226 });
     expect(ofType(merge, 'LoadVideo').map((node) => node.inputs.file)).toEqual([uploaded, `media_agent_${job.id}_s0.mp4`]);
     expect(ofType(merge, 'ConcatenateVideo')[0].inputs).toMatchObject({ 'videos.video0': ['400', 0], 'videos.video1': ['401', 0] });
 
@@ -912,6 +976,12 @@ describe('生成视频任务', () => {
       `media_agent_${again.id}_lead.mp4`,
       `media_agent_${again.id}_s0.mp4`,
     ]);
+    // 3 秒起点只有 72 帧，不能提供 90 帧上下文，不能等 GetImageRange 在那台报错。
+    await t.ok('PATCH', nodeUrl(), { video: { selflift: { ...DEFAULT_SELFLIFT, contextFrames: 90, lead: { kind: 'lead', leadId: lead.id } } } });
+    const tooShort = await t.ok<VideoJob>('POST', videosUrl(reply), { promptIndex: 0 });
+    const rejected = await settledJob(tooShort.id, reply);
+    expect(rejected.status).toBe('failed');
+    expect(rejected.error).toContain('不够提供 90 帧上下文');
   }, 30_000);
 
   it('续写起点：规格跟出片对不上就先规整一份（缩到出片大小、24 帧、补静音），再接进去', async () => {

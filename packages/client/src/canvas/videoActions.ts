@@ -1,7 +1,7 @@
-import { isLiveVideo, type VideoJob, type VideoJobEvent } from '@media-agent/shared';
+import { isLiveVideo, type ChatNode, type VideoJob, type VideoJobEvent } from '@media-agent/shared';
 import { api } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
-import { useVideoStore } from '../store/videoStore';
+import { applyVideoEvent, useVideoStore } from '../store/videoStore';
 import { trackWrite } from '../ui/saveState';
 import { toast } from '../ui/toast';
 import { selectNode } from './nodeActions';
@@ -63,6 +63,24 @@ export function onVideoEvent(event: VideoJobEvent) {
   putVideo(event, event.job);
   if (isLiveVideo(event.job)) watching.add(event.job.id);
   else if (watching.delete(event.job.id)) finished(event.nodeId, event.job);
+}
+
+// 重连后只补当前画布里还显示生成中的任务，保留正在编辑的草稿和生成设置。
+export async function syncVideoJobs() {
+  const { canvasId, nodes } = useCanvasStore.getState();
+  if (!canvasId) return;
+  const liveNodes = Object.values(nodes).filter((node) => Object.values(node.messages).some((message) => message.videos?.some(isLiveVideo)));
+  await Promise.allSettled(liveNodes.map(async ({ id }) => {
+    const node = await api<ChatNode>(`/canvases/${canvasId}/nodes/${id}`);
+    if (useCanvasStore.getState().canvasId !== canvasId) return;
+    for (const message of Object.values(node.messages)) for (const job of message.videos ?? []) {
+      const known = useCanvasStore.getState().nodes[id]?.messages[message.id]?.videos?.find((one) => one.id === job.id);
+      if (!known || (known.rev ?? 0) > (job.rev ?? 0)) continue;
+      const event: VideoJobEvent = { type: 'job', canvasId, nodeId: id, messageId: message.id, job };
+      applyVideoEvent(event);
+      onVideoEvent(event);
+    }
+  }));
 }
 
 // 发出去了返回 true

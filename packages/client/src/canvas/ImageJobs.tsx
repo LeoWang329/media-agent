@@ -28,9 +28,18 @@ export function ImageJobs({ node, message, promptIndex, ro }: Props) {
   const [all, setAll] = useState(false);
   const jobs = boxJobs(message, promptIndex);
   if (!jobs.length) {
+    // 编辑节点的框上挂的是「开始」出的那组（一次一张，按功能走），不是「生图」那一套，见 docs/dev-plan.md 5.39
     return ro ? null : (
       <div className="ig-empty meta">
-        还没出过图。点「生图」按节点的出图设置出 <span className="mono">{imageSize(node).count}</span> 张。
+        {node.kind === 'edit' ? (
+          <>
+            还没出过图。点框上的「开始」按这条框的功能出 <span className="mono">1</span> 张。
+          </>
+        ) : (
+          <>
+            还没出过图。点「生图」按节点的出图设置出 <span className="mono">{imageSize(node).count}</span> 张。
+          </>
+        )}
       </div>
     );
   }

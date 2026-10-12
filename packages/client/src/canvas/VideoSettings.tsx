@@ -134,7 +134,7 @@ export function VideoSettingsBody({ node, message }: { node: ChatNode; message?:
   const steps = stepsOfSettings(settings);
   // SelfLift 接续那套分几条接力：按节点现在的时长和「这长度该写几段」估，实际看框里写了几段
   const wantedSegments = segmentCount(node.duration);
-  const plan = selfliftPlan(node.duration, wantedSegments, selflift.contextFrames);
+  const plan = selfliftPlan(node.duration, wantedSegments, selflift.contextFrames, Boolean(selflift.lead));
   const sized = useVideoRatio(node.systemPromptName, node.aspectRatio, node.slots[0]);
   const ratioText = typeof sized !== 'string' ? '，比例自动的按当首帧的那张图' : node.aspectRatio === 'auto' ? '，比例自动的按 16:9' : `，现在是 ${videoAspect(node.aspectRatio)}`;
   const final = videoSizes(settings.megapixels, settings.upscale, sized);
@@ -453,8 +453,7 @@ export function VideoSettingsBody({ node, message }: { node: ChatNode; message?:
               </label>
             </div>
             <p className="hint" id="vcSelfPlan">
-              按 {node.duration} 秒、{wantedSegments} 段提示词算，会分 {plan.lengths.length} 条接力、每条 {plan.lengths[0]} 帧（约{' '}
-              {(plan.lengths[0] / 24).toFixed(1)} 秒），出来约 {videoSecondsText(plan.total)}（框里多写几段就更短更稳）。带几帧就是每条开头重复上一段的尾巴、出片时剪掉（照 U37 那三个档）；接缝加噪默认{' '}
+              按 {node.duration} 秒、{wantedSegments} 段提示词算，会分 {plan.lengths.length} 条接力；各条采样帧数 {plan.lengths.join(' / ')}，前段尽量跑满 15 秒、尾段补余量，{selflift.lead ? '新出' : '出来'}约 {videoSecondsText(plan.total)}。带几帧就是每条开头重复上一段的尾巴、出片时剪掉（照 U37 那三个档）；接缝加噪默认{' '}
               {0.1}，只给前几帧加、最后一帧不加；偏色对齐 0 到 1，把每条的颜色对到上一段的最后一帧上，0 是不对齐。
             </p>
             <p className="hint">

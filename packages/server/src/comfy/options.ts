@@ -54,6 +54,9 @@ function comboOptions(info: ObjectInfo, nodeType: string, input: string): string
 // 这台 ComfyUI 上的底模文件名
 export const comfyCheckpoints = (info: ObjectInfo) => comboOptions(info, 'CheckpointLoaderSimple', 'ckpt_name');
 
+// 这台 ComfyUI 上的放大模型文件名：编辑节点的「放大 / 高清」没选时按这个列表取第一个
+export const comfyUpscaleModels = (info: ObjectInfo) => comboOptions(info, 'UpscaleModelLoader', 'model_name');
+
 // 生成视频那台：主模型只列 minimax/ 下的 H3 模型，LoRA 列 LoraLoaderModelOnly 能选的，
 // SelfLift 能用的放大器列 SelfLiftH3Sampler 那个下拉（没装这套节点时是空的），见 docs/dev-plan.md 5.32
 export const videoOptions = (info: ObjectInfo): VideoOptions => ({
@@ -71,7 +74,7 @@ export function comfyOptions(info: ObjectInfo, marked: Record<string, Family | n
     loras: comboOptions(info, 'LoraLoader', 'lora_name'),
     samplers: comboOptions(info, 'KSampler', 'sampler_name'),
     schedulers: comboOptions(info, 'KSampler', 'scheduler'),
-    upscaleModels: comboOptions(info, 'UpscaleModelLoader', 'model_name'),
+    upscaleModels: comfyUpscaleModels(info),
     // 检测模型的文件夹里还放着 SAM 这类别的模型，只列 YOLO 的 .pt
     detectors: comboOptions(info, 'UltralyticsDetectorProvider', 'model_name').filter((name) => name.endsWith('.pt')),
     sams: comboOptions(info, 'SAMLoader', 'model_name'),

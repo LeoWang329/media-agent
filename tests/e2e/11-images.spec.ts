@@ -351,7 +351,7 @@ test('出图设置：LoRA 点开能按名字搜，空格隔开的几个词都对
   await field.click();
   const picker = page.getByRole('dialog', { name: '选 LoRA' });
   const options = picker.getByRole('option');
-  await expect(options).toHaveText(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors']);
+  await expect(options).toHaveText(['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_identity_edit_v1_1.safetensors', 'krea2/krea2_identity_edit_v1_2.safetensors', 'krea2/krea_outfittransfer.safetensors', 'krea2/Krea2_Anything2RealCharacters-V1.safetensors', 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', 'krea2/k2_nice_body.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors', 'krea2/Krea2_DreamCos_Realism.safetensors', 'krea2/Krea2-realism-V2.safetensors', 'krea2/krea2-Cc风情万种-人像.safetensors', 'krea2/krea2-Cc风情万种-风格.safetensors', 'krea2/krea2-Cc-天魔-身材.safetensors', 'krea2/Nick_baotunqun_Krea2.safetensors', 'krea2/Nick_leggings_Krea2.safetensors', 'krea2/krea2_reid_rank32.safetensors', 'krea2/Krea2-depth-control-lora.safetensors', 'krea2/Krea2_Remix_RealCosplay_rank64_v1.safetensors']);
   const search = picker.getByRole('textbox', { name: '搜 LoRA' });
   await expect(search).toBeFocused();
   await search.fill('il ANIME');

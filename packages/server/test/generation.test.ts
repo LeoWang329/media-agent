@@ -2,7 +2,7 @@ import { activePath, directionDraft, type ChatNode, type HomeData, type Message,
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sleep, startTestApp, type TestApp } from './helpers';
 
 let t: TestApp;
@@ -31,6 +31,23 @@ async function send(text: string, parentId: string | null = null, url = nodeUrl)
 }
 
 describe('发送消息', () => {
+  it('SelfLift 写词按前段 15 秒、尾段补余量，仍保留用户本次输入', async () => {
+    await t.ok('PATCH', nodeUrl, { duration: 20, video: { workflow: 'selflift' } });
+    const original = globalThis.fetch;
+    let sent: { role: string; content: unknown }[] = [];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      if (String(input).endsWith('/chat/completions')) sent = JSON.parse(String(init?.body)).messages;
+      return original(input, init);
+    });
+    try {
+      const { reply } = await send('写一个');
+      expect(reply.error).toBeUndefined();
+      expect(sent[0]).toMatchObject({ role: 'system' });
+      expect(sent[0].content).toContain('各段约 15.1 / 5.0 秒');
+      expect(JSON.stringify(sent.at(-1)?.content)).toContain('写一个');
+    } finally { spy.mockRestore(); }
+  });
+
   it('SSE 事件顺序、消息落盘、解析结果、标题写进节点、记下模型和系统提示词版本', async () => {
     const { events, reply } = await send('写一个');
     const types = events.map((e) => e.type);

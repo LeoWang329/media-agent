@@ -11,6 +11,7 @@ import { Icon } from '../ui/Icon';
 import { again, imageSrc, imageUrl, jobLabel, refine, removeImage, revealImage, shortError, starImage, type ImageAt } from './imageActions';
 import { boxJobs, cellOrder } from './ImageJobs';
 import { shortCheckpoint } from './imageNode';
+import { EMPTY_MASK, InpaintForm, MaskEditor, type MaskShapes } from './MaskEditor';
 import { useOverlays, type ImageTarget } from './overlays';
 import { DetailPassList, UpscaleFields } from './StageFields';
 
@@ -61,6 +62,9 @@ function Viewer({ target }: { target: ImageTarget }) {
   const status = useComfyStore((s) => s.status);
   const autodlName = useComfyStore((s) => s.autodl?.instance?.name ?? null);
   const [where, setWhere] = useState<ImageWhere | null>(null);
+  // 局部重绘：掩码编辑器开着时，大图那一块换成画布；掩码存在这儿，表单和大图两头都用它
+  const [masking, setMasking] = useState(false);
+  const [mask, setMask] = useState<MaskShapes>(EMPTY_MASK);
 
   // 这个框出过的图，按框下面显示的顺序；还在出的不算
   const jobs = message && job ? boxJobs(message, job.promptIndex) : [];
@@ -68,6 +72,7 @@ function Viewer({ target }: { target: ImageTarget }) {
   const at = list.findIndex((item) => item.job.id === target.jobId && item.index === target.index);
   const image = job?.images[target.index];
   const done = image?.status === 'done';
+  const gone = done && where && !where.temp && !where.saved;
 
   useEffect(() => {
     setWhere(null);
@@ -86,6 +91,12 @@ function Viewer({ target }: { target: ImageTarget }) {
     if (at < 0) close();
   }, [at]);
 
+  // 换一张图就把掩码清掉，免得把上一张涂的带到这一张上
+  useEffect(() => {
+    setMasking(false);
+    setMask(EMPTY_MASK);
+  }, [target.jobId, target.index]);
+
   if (!job || !image || at < 0) return null;
 
   const go = (step: number) => {
@@ -100,12 +111,13 @@ function Viewer({ target }: { target: ImageTarget }) {
         className="ib-body"
         onKeyDown={(e) => {
           if ((e.target as Element).closest('input')) return;
+          if (masking) return;
           if (e.key === 'ArrowLeft') go(-1);
           if (e.key === 'ArrowRight') go(1);
         }}
       >
         <div className="ib-stage">
-          <Stage at={target} job={job} where={where} />
+          {masking && done && !gone ? <MaskEditor src={imageSrc(target, image.seed, 'file')} value={mask} onChange={setMask} /> : <Stage at={target} job={job} where={where} />}
           <button type="button" className="ib-nav is-prev" aria-label="上一张" disabled={at === 0} onClick={() => go(-1)}>
             <Icon name="chev-left" />
           </button>
@@ -116,7 +128,21 @@ function Viewer({ target }: { target: ImageTarget }) {
             {at + 1} / {list.length}
           </span>
         </div>
-        <Side target={target} job={job} jobs={jobs} where={where} title={node.title} label={box?.label} family={family} lanUrl={status?.url ?? null} autodlName={autodlName} />
+        <Side
+          target={target}
+          job={job}
+          jobs={jobs}
+          where={where}
+          title={node.title}
+          label={box?.label}
+          boxText={box?.text ?? ''}
+          family={family}
+          lanUrl={status?.url ?? null}
+          autodlName={autodlName}
+          masking={masking}
+          mask={mask}
+          onMasking={setMasking}
+        />
       </div>
     </Dialog>
   );
@@ -158,12 +184,16 @@ type SideProps = {
   where: ImageWhere | null;
   title: string;
   label?: string;
+  boxText: string;
   family: Family;
   lanUrl: string | null;
   autodlName: string | null;
+  masking: boolean;
+  mask: MaskShapes;
+  onMasking: (on: boolean) => void;
 };
 
-function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlName }: SideProps) {
+function Side({ target, job, jobs, where, title, label, boxText, family, lanUrl, autodlName, masking, mask, onMasking }: SideProps) {
   const defaults = useCanvasStore((s) => s.defaults[family]);
   const image = job.images[target.index];
   const { params } = job;
@@ -259,15 +289,48 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
             id="ibRefine"
             disabled={Boolean(gone)}
             title={gone ? '这张没下载过，临时文件清掉了，没法补做' : undefined}
-            onClick={() => setRefining((on) => !on)}
+            onClick={() => {
+              setRefining((on) => !on);
+              onMasking(false);
+            }}
           >
             <Icon name="wand" />
             放大和重绘
           </button>
         )}
+        {done && family !== 'Krea2' && (
+          <button
+            type="button"
+            className={`btn btn-secondary btn-sm${masking ? ' is-on' : ''}`}
+            id="ibInpaint"
+            disabled={Boolean(gone)}
+            title={gone ? '这张没下载过，临时文件清掉了，没法重绘' : '拖个框或者涂一块，只改这一块'}
+            onClick={() => {
+              onMasking(!masking);
+              setRefining(false);
+            }}
+          >
+            <Icon name="edit" />
+            局部重绘
+          </button>
+        )}
         {done && <button type="button" className="btn btn-secondary btn-sm" disabled={Boolean(gone)} onClick={() => useOverlays.setState({ fourView: { nodeId: target.nodeId, reference: { kind: 'generated', messageId: target.messageId, jobId: target.jobId, seed: image.seed } } })}><Icon name="image" />做四视图</button>}
       </div>
       {refining && done && !gone && <RefineForm key={`${target.jobId}:${target.index}`} target={target} family={family} size={{ width: image.width ?? params.width, height: image.height ?? params.height }} />}
+      {masking && done && !gone && (
+        <InpaintForm
+          key={`${target.jobId}:${target.index}`}
+          at={target}
+          src={imageSrc(target, image.seed, 'file')}
+          mask={mask}
+          text={boxText}
+          onCancel={() => onMasking(false)}
+          onSent={() => {
+            onMasking(false);
+            close();
+          }}
+        />
+      )}
       <div className="ib-params" data-od-id="image-params">
         <div className="ib-prompt">
           <span className="k">正面提示词</span>
@@ -310,7 +373,17 @@ function Side({ target, job, jobs, where, title, label, family, lanUrl, autodlNa
               <span className="mono">{shortCheckpoint(params.checkpoint ?? '')}</span> <span className="tag">{family}</span>
             </Kv>
             {params.textEncoder && <Kv k="文字理解模型"><span className="mono">{shortCheckpoint(params.textEncoder)}</span></Kv>}
-            {params.krea && <Kv k="起图">{params.krea.mode === 'four-view' ? `四视图 · 相似度 ${params.krea.refBoost}` : '文生图'}</Kv>}
+            {params.krea && (
+              <Kv k="起图">
+                {params.krea.mode === 'four-view'
+                  ? `四视图 · 相似度 ${params.krea.refBoost}`
+                  : params.krea.mode === 'edit'
+                    ? params.krea.referenceB
+                      ? `编辑（双图）· 场景 ${params.krea.refBoostA ?? 1} / 人物 ${params.krea.refBoost}`
+                      : `编辑 · 相似度 ${params.krea.refBoost}`
+                    : '文生图'}
+              </Kv>
+            )}
             {params.vae && (
               <Kv k="VAE">
                 <span className="mono">{shortCheckpoint(params.vae)}</span>

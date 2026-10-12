@@ -22,3 +22,7 @@ export * from './remoteModels';
 export * from './video';
 export * from './media';
 export * from './krea2';
+export * from './krea2Real';
+export * from './krea2Depth';
+export * from './krea2Remix';
+export * from './edit';

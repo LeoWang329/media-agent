@@ -35,6 +35,9 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   // 拿提示词的措辞来认会一改就崩——Krea2 认「框里只放一段英文自然语言描述」，IL/Pony 认「框里只放英文标签」
   const krea = system.includes('框里只放一段英文自然语言描述');
   const image = krea || system.includes('框里只放英文标签');
+  // 图像编辑节点：四套编辑提示词共用一份固定格式要求，认「一个字都不会被程序改动」。
+  // 哪个功能看提示词标题里的「（指令编辑）」这类；认不出按指令编辑算
+  const edit = system.includes('一个字都不会被程序改动') ? editFnOf(system) : '';
 
   const pictureLabels: string[] = [];
   let imageCount = 0;
@@ -56,10 +59,18 @@ export function planReply(messages: ChatMessage[]): MockPlan {
   ];
   if (!userText.includes('只回答')) {
     const segments = segmentCount(messages);
-    const box = krea ? (_summary: string, label?: string) => [label ? `<prompt label="${label}">` : '<prompt>', 'An adult woman stands by a sunlit window. Warm light reveals the woven texture of her jacket, with a quiet street visible behind her.', '</prompt>'].join('\n') : image ? tagBox : (summary: string, label?: string) => promptBox(summary, label, segments);
+    const box = edit
+      ? (_summary: string, label?: string) => editBox(edit, label)
+      : krea
+        ? (_summary: string, label?: string) => [label ? `<prompt label="${label}">` : '<prompt>', 'An adult woman stands by a sunlit window. Warm light reveals the woven texture of her jacket, with a quiet street visible behind her.', '</prompt>'].join('\n')
+        : image
+          ? tagBox
+          : (summary: string, label?: string) => promptBox(summary, label, segments);
     const boxes = userText.includes('三个方向')
       ? ['一', '二', '三'].map((n) => box(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
-      : [box('测试概述')];
+      : userText.includes('几个方向')
+        ? ['一', '二'].map((n) => box(`测试概述（方向${n}）`, `方向${n}：测试方向${n}`))
+        : [box('测试概述')];
     for (const box of boxes) lines.push('', box);
   }
 
@@ -105,4 +116,23 @@ function promptBox(summary: string, label?: string, segments = 1): string {
 
 function tagBox(_summary: string, label?: string): string {
   return [label ? `<prompt label="${label}">` : '<prompt>', '1girl, solo, long hair, blond hair, goldish hair, smile, hatsune miku', '</prompt>'].join('\n');
+}
+
+// 系统提示词标题里的功能名：编辑节点每个功能一套提示词，回复内容按功能各不相同，测试靠这个断言换功能真的换了
+const EDIT_FNS = ['指令编辑', '换装', '局部重绘', '转真人'] as const;
+type EditFn = (typeof EDIT_FNS)[number];
+
+function editFnOf(system: string): EditFn {
+  return EDIT_FNS.find((name) => system.includes(`（${name}）`)) ?? '指令编辑';
+}
+
+// 编辑节点的框：框里就是直接发给 ComfyUI 的那句话，四个功能各写一句不一样的
+function editBox(fn: EditFn, label?: string): string {
+  const body: Record<EditFn, string> = {
+    指令编辑: 'Change her coat into a black studded leather biker jacket, keep her face, hair and the background exactly the same.',
+    换装: 'Dress her in a red silk evening gown, keep her face, hair and pose exactly the same.',
+    局部重绘: 'a white ceramic coffee cup on the wooden table',
+    转真人: 'natural skin texture, film photograph, soft window light',
+  };
+  return [label ? `<prompt label="${label}">` : '<prompt>', body[fn], '</prompt>'].join('\n');
 }

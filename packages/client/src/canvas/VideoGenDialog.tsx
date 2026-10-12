@@ -1,4 +1,4 @@
-import { lengthProblem, splitSegments, videoFrames, videoSecondsText, videoSettingsOf, videoSizes, workflowOfSettings, selfliftClips, type ChatNode, type Message } from '@media-agent/shared';
+import { lengthProblem, splitSegments, videoFrames, videoSecondsText, videoSettingsOf, videoSizes, workflowOfSettings, selfliftPlan, selfliftOfSettings, type ChatNode, type Message } from '@media-agent/shared';
 import { useCanvasStore } from '../store/canvasStore';
 import { Dialog } from '../ui/Dialog';
 import { Icon } from '../ui/Icon';
@@ -24,14 +24,14 @@ function VideoGenBody({ node, message, promptIndex }: { node: ChatNode; message:
   const sized = useVideoRatio(message.systemPromptName, message.aspectRatio, message.slotSnapshot[0]);
   const { finalWidth, finalHeight } = videoSizes(settings.megapixels, settings.upscale, sized);
   // 框里写的段数不够，出来的片子会比时长短：先说清楚，按住「开始生成」，见 docs/dev-plan.md 5.24
-  const tooShort = lengthProblem(node.duration, segments);
+  const tooShort = lengthProblem(node.duration, segments, workflow === 'selflift' ? selfliftOfSettings(settings) : undefined);
   // SelfLift 那套是一段一条片子接力，报的是自己那套的分段和整条时长；两遍生成就是一个任务里跑完
-  const plan = workflow === 'selflift' ? selfliftClips({ seconds: node.duration, segments: Array(segments).fill(''), selflift: settings.selflift }) : null;
+  const plan = workflow === 'selflift' ? selfliftPlan(node.duration, segments, settings.selflift?.contextFrames ?? 22, Boolean(settings.selflift?.lead)) : null;
   const total = plan ? plan.total : videoFrames(node.duration, segments).total;
   // 续写起点只有 SelfLift 那套认（切到两遍生成时它留在设置里，但不生效）
   const lead = workflow === 'selflift' ? (settings.selflift?.lead ?? null) : null;
-  // 有起点时，这次新出的第 1 段开头那几帧是它（起点）的尾巴，出片时会剪掉，所以真正新出的少这几帧
-  const fresh = lead && plan ? plan.total - plan.context : total;
+  // 分段计划已扣掉上下文，并补足节点要求的新画面时长。
+  const fresh = total;
   const media = message.mediaSnapshot ?? [];
   const refs = message.slotSnapshot.length;
 

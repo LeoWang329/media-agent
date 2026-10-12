@@ -101,7 +101,7 @@ function applyAutodl(state: AutodlState) {
 }
 
 // 进度和排第几：出完、叫停、失败了、删掉了就不用再记
-function applyEvent(event: VideoJobEvent) {
+export function applyVideoEvent(event: VideoJobEvent) {
   if (event.type === 'progress') {
     const { type: _, jobId, ...progress } = event;
     useVideoStore.setState((s) => {
@@ -128,20 +128,25 @@ function applyEvent(event: VideoJobEvent) {
 }
 
 // 收生成视频的变化；返回断开用的函数。几处一起收时共用一个连接，EventSource 断了会自己重连
-const listeners = new Set<(event: VideoJobEvent) => void>();
+const listeners = new Map<(event: VideoJobEvent) => void, (() => void) | undefined>();
 let source: EventSource | null = null;
 
-export function watchVideoJobs(onEvent?: (event: VideoJobEvent) => void): () => void {
+export function watchVideoJobs(onEvent?: (event: VideoJobEvent) => void, onConnected?: () => void): () => void {
   const listener = (event: VideoJobEvent) => onEvent?.(event);
-  listeners.add(listener);
+  listeners.set(listener, onConnected);
   if (!source) {
     source = new EventSource('/api/video-jobs/events');
+    // SSE 不会补发断线期间的 job 事件；重连时补读状态，不能只靠新进度判断完成。
+    source.onopen = () => {
+      if (useVideoStore.getState().board) void useVideoStore.getState().loadBoard();
+      listeners.forEach((connected) => connected?.());
+    };
     source.onmessage = (e) => {
       const event = JSON.parse(e.data) as VideoJobEvent;
-      applyEvent(event);
-      listeners.forEach((one) => one(event));
+      applyVideoEvent(event);
+      listeners.forEach((_, one) => one(event));
     };
-  }
+  } else if (source.readyState === EventSource.OPEN) onConnected?.();
   return () => {
     listeners.delete(listener);
     if (listeners.size) return;

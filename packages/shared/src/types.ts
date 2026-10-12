@@ -42,17 +42,64 @@ export type SharedSettings = {
   defaults: Record<Family, FamilyDefaults>;
 };
 
-// 系统提示词开头说明段里写的用途和底模系列；body 是去掉说明段的部分，见 docs/dev-plan.md 5.14
-export type PromptMeta = { use: 'video' | 'image'; family: Family | null; body: string };
+// 系统提示词开头说明段里写的用途和底模系列；fn 是图像编辑节点的功能名（指令编辑 / 换装 / 局部重绘 / 转真人 /
+// 深度迁移 / 风格 Remix），别的用途没有这个字段；body 是去掉说明段的部分，见 docs/dev-plan.md 5.14、5.39
+export type PromptMeta = { use: 'video' | 'image' | 'edit'; family: Family | null; fn: string | null; body: string };
 
 // GET /api/prompts 列表里的一项
-export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family | null };
+export type PromptInfo = { name: string; use: PromptMeta['use']; family: Family | null; fn: string | null };
 
-// 节点是视频节点还是生图节点，和系统提示词的两种用途对应，见 docs/dev-plan.md 5.23
-export type NodeKind = PromptMeta['use'];
+// 节点是视频节点、生图节点还是图像编辑节点。以前直接等于 PromptMeta['use']，加了编辑节点之后独立出来，见 docs/dev-plan.md 5.39
+export type NodeKind = 'video' | 'image' | 'edit';
 
-// 两份固定格式要求：视频节点的、生图节点的
-export type FormatRequirements = { video: string; image: string; krea2: string };
+// 图像编辑节点的八种功能，见 docs/dev-plan.md 5.39。名字跟系统提示词说明段里的「功能:」一一对应。
+// depth（深度迁移）和 remix（风格 Remix / 换人）是第七批加的，接线照真机摸出来的 w3-depth.json / w3-reid2.json；
+// upscale（放大 / 高清）和 fourview（四视图）是第 2 批那两个：放大走生图节点那条内置放大路（不用写提示词）、
+// 四视图跟生图节点那个「做四视图」是同一条路（krea2_4panel），见 docs/plan-image-edit-node.md 第 3 节
+export type EditFnId = 'edit' | 'real' | 'outfit' | 'inpaint' | 'depth' | 'remix' | 'upscale' | 'fourview';
+
+// 转真人那一套的参数，照那台上现成的「Krea2转真人-全开关（反推+单双图+手输）」工作流，见 docs/krea2-real-usage.md。
+// 反推 / 双图两个开关就是那份工作流的「① 用反推吗」「② 双图吗」；我们按选项现生成图，不用 LazySwitchKJ
+export type EditRealSettings = {
+  reverse: boolean; // 开：提示词取反推模型写的；关：取手输那句话（text）
+  dual: boolean; // 开：图 2 决定长相（换脸）；关：只用图 1
+  image2Strength: number; // 像图 2 多少，0–10，默认 1
+  lora: { name: string; strength: number }; // 转真人 LoRA，默认 V3，强度可调
+  people: { name: string; strength: number }[]; // 人物 LoRA，可以挂好几个，默认不加
+  uncensored: boolean; // 兼容旧保存字段；转真人的新任务按标准工作流选模型，不再据此切换
+};
+
+// 深度迁移（depth）那一套：控制强度就是 Krea2ControlLoRALoader 的 strength。
+// 照 w3-depth.json 那次运行，1 是官方推荐值；0 不行（loader 不注册 wrapper，Apply 会直接抛错）
+export type EditDepthSettings = { strength: number };
+
+// 风格 Remix / 换人（remix）那一套：挂哪条 LoRA + 强度。两个候选同一条接线，只换 lora_name，
+// 照 w3-reid2.json 和 w3-remix2.json；名字必须带 krea2/ 前缀
+export type EditRemixSettings = { lora: { name: string; strength: number } };
+
+// 放大 / 高清（upscale）那一套：倍数（1.5 或 2，跟生图节点的放大一个档）、放大模型（UpscaleModelLoader 的列表，
+// 空着是用这台 ComfyUI 上第一个）、面部修复用的检测模型（空着是不开）。
+// 走生图节点那条内置放大路（UpscaleModelLoader + ImageUpscaleWithModel + 可选的面部重绘），
+// 重绘强度固定 0（只放大不重画），见 docs/plan-image-edit-node.md 第 3 节
+export type EditUpscaleSettings = { scale: number; model: string; face: string };
+
+// 编辑节点记住的东西：用哪个功能、图 1 拿第几张（槽位序号）、图 2 拿第几张、那句话、相似度、
+// 转真人 / 局部重绘 / 深度迁移 / 风格 Remix / 放大各自那一套
+export type EditSettings = {
+  fn: EditFnId;
+  slot: number; // 图 1：要改的那张 / 要转的动漫图 / 要放大的图
+  slotB: number; // 图 2：换脸时的真人参考，只有转真人的「双图」用得上
+  text: string;
+  refBoost: number;
+  real: EditRealSettings;
+  inpaint: { denoise: number }; // 局部重绘的重绘强度
+  depth: EditDepthSettings;
+  remix: EditRemixSettings;
+  upscale: EditUpscaleSettings;
+};
+
+// 三份固定格式要求：视频节点的、生图节点的、图像编辑节点的
+export type FormatRequirements = { video: string; image: string; krea2: string; edit: string };
 
 // 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18。
 // 用哪个放大、检测模型不在这里，由预设管
@@ -174,7 +221,20 @@ export type DetailPass = {
 // preprocessor 是 AIO_Preprocessor 列表里的提取方式，none 是不提取、直接用这张；model 是 ControlNetLoader 的文件名，空着是还没选
 export type ControlType = 'pose' | 'depth' | 'lineart' | 'edge' | 'other';
 export type RefImage = { kind: 'slot'; imageId: string } | { kind: 'generated'; messageId: string; jobId: string; seed: number };
-export type KreaSettings = { mode: 'text' | 'four-view'; reference: RefImage | null; refBoost: number; extra: string };
+// mode 是「起图」那一排：文生图、四视图、编辑；编辑和四视图都要选 reference，见 docs/plan-image-edit.md。
+// 编辑档能再给第二张：reference 是图 1（场景）、referenceB 是图 2（主体，可不选），顺序是训练时定的（scene first, subject second），见 5.37。
+// refBoost 管最后一张参考图（双图时是图 2/主体，单图时就是唯一那张）；refBoostA 管第一张（双图时是图 1/场景，单图时不起作用）。
+// real 是转真人那条（图像编辑节点的「转真人」功能专用，不是这一排能选的档）：走 krea2Real.ts 那张图，参数在 ImageJobParams.real 里；
+// depth / remix 同理，走 krea2Depth.ts / krea2Remix.ts，参数在 ImageJobParams.remix 里（深度那条要看控制强度，也在那儿）。
+// 后三个 mode 都只有编辑节点会给出，生图节点那排下拉里选不到
+export type KreaSettings = {
+  mode: 'text' | 'four-view' | 'edit' | 'real' | 'depth' | 'remix';
+  reference: RefImage | null;
+  referenceB?: RefImage | null;
+  refBoost: number;
+  refBoostA?: number;
+  extra: string;
+};
 export type ControlSettings = {
   on: boolean;
   type: ControlType;
@@ -211,10 +271,26 @@ export type ImportedWorkflow = {
 // 发给 ComfyUI 的全部参数，「同样参数再来」照这个发；positive、negative 是最终发出去的，含固定开头和默认负面词。
 // 用导入的工作流时没有底模到 clip skip 这几项，照工作流里原来的。
 // 出完的图上补做的，宽高是原图的。放大、部位重绘、ControlNet 开着的才记；部位重绘的 positive、negative 是拼好的，空着是和原图一样。
-// VAE、权重算法、LoRA 作用在哪不是默认的才记
+// VAE、权重算法、LoRA 作用在哪不是默认的才记。
+// inpaint 是局部重绘：mask 是临时文件夹里那张抠过透明的 PNG（相对工作文件夹、用 / 隔开），denoise 是重绘强度，见 docs/dev-plan.md 5.38。
+// real 是转真人那一档（krea2Real.ts 那张图用的）：反推 / 双图两个开关 + 像图 2 多少 + LoRA 两组 + 无审查，
+// 见 docs/krea2-real-usage.md。reverseInstruction 不填时按 dual 现挑（单图 / 双图两份系统提示词）。
+// remix 是深度迁移和风格 Remix 那一档用的（krea2Depth.ts / krea2Remix.ts 那两张图）：控制强度 + 风格 LoRA 一条，
+// 照真机摸出来的 w3-depth.json / w3-reid2.json / w3-remix2.json。
+// upscaleFrom 是编辑节点「放大 / 高清」的原图：槽位里的那张（不是这个节点出过的图），出图前照它上传，
+// 走 builtinGraph 那条内置放大路，见 docs/plan-image-edit-node.md 第 3 节
 export type ImageJobParams = {
   textEncoder?: string;
   krea?: KreaSettings;
+  real?: {
+    reverse: boolean;
+    dual: boolean;
+    image2Strength: number;
+    loras: { name: string; strength: number }[];
+    uncensored: boolean;
+    reverseInstruction?: string;
+  };
+  remix?: { controlStrength: number; lora: { name: string; strength: number } };
   family: Family;
   positive: string;
   negative: string;
@@ -234,6 +310,10 @@ export type ImageJobParams = {
   upscale?: UpscaleSettings;
   details?: DetailPass[];
   controls?: ControlSettings[];
+  // 局部重绘：mask 是「要重画处 alpha=0」那张 PNG 的落盘路径；image 是底图（有的话底图和掩码
+  // 分两张传上去，见 packages/shared/src/workflow.ts 的 inpaintGraph）
+  inpaint?: { mask: string; denoise: number; image?: RefImage };
+  upscaleFrom?: RefImage;
 };
 
 // 一组里的一张图，对应 ComfyUI 上的一个任务。file 是临时文件夹里的图，相对工作文件夹、用 / 隔开；ms 是出图用了多久；savedPath 是下载到哪
@@ -251,7 +331,7 @@ export type JobImage = {
 };
 
 // 点一次「生图」出的一组，挂在 assistant 消息的 images 里，见 docs/dev-plan.md 5.19。
-// kind 是 refine 的是出完的图上补做放大和部位重绘（5.21），source 是补做的那张。
+// kind 是 refine 的是出完的图上补做放大和部位重绘（5.21），source 是补做的那张；inpaint 是局部重绘（5.38），source 是照着重绘的那张。
 // 别的 source 是照着哪张图出的（「同样参数再来」「只换种子再来」）：那一组的 id 和那张的种子，种子一样就是同样参数再来。
 // rev 每改一次加一：推送和请求的回复谁先到不一定，前端拿它丢掉旧的
 export type ImageJob = {
@@ -259,7 +339,7 @@ export type ImageJob = {
   rev?: number;
   promptIndex: number;
   createdAt: string;
-  kind: 'txt2img' | 'refine' | 'four-view';
+  kind: 'txt2img' | 'refine' | 'four-view' | 'edit' | 'inpaint';
   source?: { kind: 'generated'; jobId: string; seed: number };
   target: ComfyTarget;
   params: ImageJobParams;
@@ -362,6 +442,8 @@ export type VideoJobParams = {
   segments: string[];
   seconds: number;
   frames: { total: number; chunk: number; overlap: number };
+  // 新任务冻结分段计划；没有这项的历史任务仍按原来的均分算法续跑、重出。
+  clipPlan?: { lengths: number[]; from: number[] };
   aspectRatio: Exclude<AspectRatio, 'auto'> | 'image';
   refs?: string[];
   firstFrame?: string;
@@ -454,6 +536,8 @@ export type VideoJob = {
   file?: string;
   // 一采出完先存的那一份低清预览，相对工作文件夹；二采跑着的时候就能看，叫停时它转正成 file，见 docs/dev-plan.md 5.27
   preview?: string;
+  // SelfLift 的低清采样预览，或第一段完整结果；旧任务没记时按第一段完整结果显示。
+  previewKind?: 'lowres' | 'clip';
   // 这条是叫停时留下的一采低清版，不是完整出完的
   partial?: boolean;
   bytes?: number;
@@ -636,6 +720,7 @@ export type Message = {
   translations?: PromptTranslation[];
   editedFromMessageId?: string;
   handwritten?: boolean; // 自己写的框（生图节点的「写标签」），没调模型
+  edit?: { fn: EditFnId; slot: number }; // 图像编辑节点：这条回复是给哪个功能、看着第几张图写的；框上的「用它」照它切回编辑栏
   videos?: VideoJob[]; // 视频节点生成的视频，按点生成的先后排
   usage?: { promptTokens: number; completionTokens: number; cachedTokens?: number };
   error?: string; // 生成失败时的错误，text 为空
@@ -667,6 +752,7 @@ export type ChatNode = {
   activeChildOf: Record<string, string>; // 键是父消息 id（顶层用 'root'），值是当前显示的版本
   draft: string;
   image?: ImageSettings; // 生图节点改过出图设置才有；没有时按系列的默认值
+  edit?: EditSettings; // 图像编辑节点改过编辑栏才有；没有时是「指令编辑 + 第 1 张图」，见 docs/dev-plan.md 5.39
   video?: VideoSettings; // 视频节点改过生成设置才有；没有时用默认值
   turnLimit?: TurnLimit | 'follow'; // 这个节点自己设的最多带几轮；没有或 follow 是跟设置
   createdAt: string;
@@ -734,6 +820,7 @@ export type HomeData = {
 };
 
 export type NodeSummary = CanvasNodeLayout & {
+  kind: NodeKind; // 画布上的卡片按它分颜色和那一行摘要，见 docs/dev-plan.md 5.39
   title: string;
   parentNodeId: string | null;
   slots: string[];

@@ -131,7 +131,7 @@ export function videoFrames(seconds: number, segments: number): VideoJobParams['
 
 // SelfLift 接续那套怎么分段，见 docs/dev-plan.md 5.32：一段一条片子，一段最长也是 362 帧（15 秒）、最短 22 帧。
 // 第 2 段起开头带 context 帧上一段的尾巴、出片时剪掉，所以一段真正新出的画面是「每段帧数 − context 帧」。
-// 先看要几段才够（框里那段提示词要出太多就把它拆成几条，用同一段提示词），再按 17 的倍数加 5 往上取每段帧数
+// 历史任务用均分计划；新任务前段跑满，最后一段补余量并把计划存进 params.clipPlan。
 export type SelfLiftPlan = {
   context: number; // 每段开头带几帧上一段的尾巴
   lengths: number[]; // 每段多少帧
@@ -139,7 +139,7 @@ export type SelfLiftPlan = {
   total: number; // 拼起来整条多少帧
 };
 
-export function selfliftPlan(seconds: number, segments: number, context: number): SelfLiftPlan {
+function legacySelfliftPlan(seconds: number, segments: number, context: number): SelfLiftPlan {
   const target = Math.round(seconds * VIDEO_FPS);
   const most = MAX_CHUNK - context;
   const count = Math.max(segments, Math.ceil(Math.max(0, target - context) / most));
@@ -152,9 +152,42 @@ export function selfliftPlan(seconds: number, segments: number, context: number)
   };
 }
 
+// 前段尽量用满 362 帧，尾段补余量；后续每段的上下文不计入新出的时长。
+export function selfliftPlan(seconds: number, segments: number, context: number, lead = false): SelfLiftPlan {
+  const target = Math.round(seconds * VIDEO_FPS);
+  const count = Math.max(segments, Math.ceil(Math.max(0, target - (lead ? 0 : context)) / (MAX_CHUNK - context)));
+  const lengths: number[] = [];
+  let remaining = target;
+  for (let i = 0; i < count; i += 1) {
+    const overlap = i || lead ? context : 0;
+    // 给后面每段留至少一个 17 帧的新画面，不能生成全是上下文的空段。
+    const available = Math.min(MAX_CHUNK, remaining - (count - i - 1) * 17 + overlap);
+    const length = i === count - 1 ? gridUp(available) : Math.floor((available - 5) / 17) * 17 + 5;
+    lengths.push(Math.min(MAX_CHUNK, Math.max(overlap + 17, MIN_CLIP, length)));
+    remaining -= lengths[i] - overlap;
+  }
+  return { context, lengths, from: lengths.map((_, i) => Math.min(segments - 1, i)), total: lengths.reduce((n, length, i) => n + length - (i || lead ? context : 0), 0) };
+}
+
 // 这条会分几段接力（界面上写「分 N 段跑」用）
-export const selfliftClips = (params: Pick<VideoJobParams, 'seconds' | 'segments' | 'selflift'>) =>
-  selfliftPlan(params.seconds, params.segments.length, selfliftOf(params).contextFrames);
+export function selfliftClips(params: Pick<VideoJobParams, 'seconds' | 'segments' | 'selflift' | 'clipPlan'>): SelfLiftPlan {
+  const context = selfliftOf(params).contextFrames;
+  if (!params.clipPlan) return legacySelfliftPlan(params.seconds, params.segments.length, context);
+  const { lengths, from } = params.clipPlan;
+  const lead = Boolean(params.selflift?.lead);
+  return { context, lengths, from, total: lengths.reduce((n, length, i) => n + length - (i || lead ? context : 0), 0) };
+}
+
+// 写提示词时也照同一份分段，覆盖两遍生成的均分时长说明。
+export function selfliftPromptNote(seconds: number, settings: VideoSettings): string {
+  const sl = selfliftOfSettings(settings);
+  const segments = segmentCount(seconds);
+  const lead = Boolean(sl.lead);
+  const plan = selfliftPlan(seconds, segments, sl.contextFrames, lead);
+  const durations = Array(segments).fill(0) as number[];
+  plan.lengths.forEach((length, i) => { durations[plan.from[i]] += (length - (i || lead ? plan.context : 0)) / VIDEO_FPS; });
+  return `当前使用 SelfLift 接续，以下时长替代历史消息里的均分说明：视频${lead ? '新生成部分' : ''}时长 ${seconds} 秒，写 ${segments} 段提示词，各段约 ${durations.map(n => n.toFixed(1)).join(' / ')} 秒。前段尽量跑满 15 秒，尾段补余量；多出的接续片段重复最后一段提示词。`;
+}
 
 // SelfLift 那套的整条帧数：chunk 是每段多少帧，overlap 是一段开头带几帧上一段的尾巴
 export function selfliftFrames(seconds: number, segments: number, context: number): VideoJobParams['frames'] {
@@ -168,9 +201,19 @@ export const segmentSeconds = (seconds: number) => Math.round(videoFrames(second
 // 时长要几段、框里写了几段：一段最长 15 秒（MAX_CHUNK），框里写少了出来的片子就比要的短
 // （写多了不要紧，帧数按段数摊，总长照样对得上）。对得上返回 null。
 // 服务端拿它拦下来，界面拿它提前说，两边同一句话，见 docs/dev-plan.md 5.24
-export function lengthProblem(seconds: number, written: number): string | null {
+export function lengthProblem(seconds: number, written: number, selflift?: Pick<VideoSelfLift, 'contextFrames' | 'lead'>): string | null {
   const wanted = segmentCount(seconds);
-  if (written >= wanted) return null;
+  if (written >= wanted) {
+    if (selflift) {
+      const context = selflift.contextFrames;
+      const lead = Boolean(selflift.lead);
+      const plan = selfliftPlan(seconds, written, context, lead);
+      if (plan.lengths.slice(0, -1).some((length, i) => length - (i || lead ? context : 0) < context)) {
+        return `分段后的片段短于 ${context} 帧上下文，下一段接不上。减少提示词段数或「接几帧」，或者增加视频时长`;
+      }
+    }
+    return null;
+  }
   const actual = videoFrames(seconds, written);
   return (
     `时长 ${seconds} 秒至少要分 ${wanted} 段（一段最长 ${SEGMENT_SECONDS} 秒），这个框里只写了 ${written} 段，这样出来只有 ${(actual.total / VIDEO_FPS).toFixed(1)} 秒。` +
@@ -238,11 +281,13 @@ export function videoParams(
   const sized = videoRatioOf(ratio, first ? 'first' : 'refs', first);
   const workflow = workflowOfSettings(settings);
   const selflift = selfliftOfSettings(settings);
+  const plan = workflow === 'selflift' ? selfliftPlan(seconds, segments.length, selflift.contextFrames, Boolean(selflift.lead)) : null;
   return {
     segments,
     seconds,
     // SelfLift 接续那套的帧数按它自己那套算：一段一条片子，第 2 段起开头带上一段的尾巴
-    frames: workflow === 'selflift' ? selfliftFrames(seconds, segments.length, selflift.contextFrames) : videoFrames(seconds, segments.length),
+    frames: plan ? { total: plan.total, chunk: plan.lengths[0], overlap: plan.context } : videoFrames(seconds, segments.length),
+    ...(plan && { clipPlan: { lengths: plan.lengths, from: plan.from } }),
     aspectRatio: typeof sized === 'string' ? videoAspect(sized) : 'image',
     ...(images.refs.length && { refs: images.refs }),
     ...(first && { firstFrame: first.id }),
@@ -648,6 +693,7 @@ export function selfliftClipGraph(
   jobId?: string,
   clip = 0,
   prev?: string,
+  lowresPreview = false,
 ): ComfyGraph {
   const link = (node: string, slot = 0) => [node, slot];
   const { nodes: images, loads, first } = refNodes(files, false);
@@ -786,6 +832,22 @@ export function selfliftClipGraph(
     },
     _meta: { title: `第 ${clip + 1} 段（SelfLift）` },
   };
+  // 可选扩展只读取最后一次低清预测并存预览，SelfLift 原采样器继续照 U37 跑。
+  if (lowresPreview && clip === 0) {
+    graph[NODE.preview] = {
+      class_type: 'MediaAgentSelfLiftPreview',
+      inputs: {
+        model: link(lowresModel),
+        vae: link(NODE.videoVae),
+        transition_step: sl.transitionStep,
+        fps: VIDEO_FPS,
+        trim_frames: context,
+        filename_prefix: jobId ? `media_agent_${jobId}_preview` : 'media-agent/preview',
+      },
+      _meta: { title: '低清采样结束先存预览' },
+    };
+    graph[NODE.pass1].inputs.model = link(NODE.preview);
+  }
   // 出片：带上下文的把开头那几个上下文帧剪掉（U37 的 VideoTemporalCrop），再把整段颜色对齐到上一段的最后一帧
   let out: string = SELFLIFT_NODE.video;
   if (context && prev) {
