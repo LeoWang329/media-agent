@@ -63,7 +63,7 @@ async function call<T>({ api, token }: AutodlAccess, method: 'GET' | 'POST', act
 function noFreeGpu(reply: Reply<unknown>): boolean {
   const said = `${reply.code ?? ''} ${reply.msg ?? ''}`;
   if (/余额|欠费|balance/i.test(said)) return false;
-  return /资源不足/.test(said) || (/GPU|显卡/i.test(said) && /不足|不够|占满|没有空闲|无空闲|售罄|insufficient|not enough|unavailable/i.test(said));
+  return /资源不足|算力规格暂无库存/.test(said) || (/GPU|显卡/i.test(said) && /不足|不够|占满|没有空闲|无空闲|售罄|insufficient|not enough|unavailable/i.test(said));
 }
 
 // 出错时 HTTP 也是 200，看 code：Token 不对是 AuthorizeFailed，实例不存在是 RecordNotFoundError；余额不够的 code 文档没写，按原话里有没有「余额」认

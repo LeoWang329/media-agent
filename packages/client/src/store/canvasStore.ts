@@ -569,15 +569,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       const usable = sources.filter((s) => isSupportedImageName(s.name)).slice(0, replacing ? 1 : undefined);
       // 资产库里已经在槽位里的图不占空位，剩下的按空位数放
       const inSlots = (s: ImageSource) => 'path' in s && slots.some((id) => get().detail?.images[id]?.originalPath === s.path);
-      let room = MAX_SLOTS - slots.length;
-      const accepted = replacing ? usable : usable.filter((s) => inSlots(s) || room-- > 0);
-      const thumbs = accepted.filter((s) => replacing || !inSlots(s)).map((s) => ('path' in s ? assetThumbUrl(s.path, s.mtime) : URL.createObjectURL(s.file)));
-      set({ placing: accepted.length ? { nodeId, replaceIndex: replacing ? replaceIndex! : null, thumbs } : null });
+      const room = MAX_SLOTS - slots.length;
+      const thumbs = usable.filter((s) => replacing || !inSlots(s)).slice(0, replacing ? 1 : room).map((s) => ('path' in s ? assetThumbUrl(s.path, s.mtime) : URL.createObjectURL(s.file)));
+      set({ placing: thumbs.length ? { nodeId, replaceIndex: replacing ? replaceIndex! : null, thumbs } : null });
       const placed: Placed[] = [];
       const added: CanvasImage[] = [];
       const duplicates: string[] = [];
+      let omitted = 0;
       try {
-        for (const source of accepted) {
+        for (const source of usable) {
+          // 文件要上传后才知道是否重复，只让确实新增的图占空位。
+          if (!replacing && added.length >= room && !inSlots(source)) {
+            omitted += 1;
+            continue;
+          }
           const image =
             'path' in source
               ? await write<ImageRecord>(`${canvasUrl()}/images`, 'POST', { path: source.path, nodeId })
@@ -606,8 +611,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         set({ placing: null });
       }
 
-      if (usable.length > accepted.length) {
-        toast(`槽位满了，只放进去 ${added.length} 张，另外 ${usable.length - accepted.length} 张没放`, { tone: 'warn', ms: 4000 });
+      if (omitted) {
+        toast(`槽位满了，只放进去 ${added.length} 张，另外 ${omitted} 张没放`, { tone: 'warn', ms: 4000 });
       }
       if (unsupported.length) {
         toast(`没放进去：${unsupported.map((s) => `${s.name}（${extensionOf(s.name)} 格式用不了）`).join('、')}`, { tone: 'danger', ms: 4500 });

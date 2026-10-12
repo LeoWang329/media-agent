@@ -477,6 +477,7 @@ it('局部重绘：原图是槽位里那张，掩码落盘后传上去，图里�
     params: {
       family: 'IL',
       positive: 'masterpiece, best quality, a red leather jacket collar',
+      clipSkip: FAMILY_DEFAULTS.IL.clipSkip,
       negative: FAMILY_DEFAULTS.IL.negative,
       width: 300,
       height: 300,

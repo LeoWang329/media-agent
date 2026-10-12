@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest';
 // 用户提供的标准 API 工作流，只替换了示例图名、手输示例，移除了 ShowText 的旧显示缓存。
 const STANDARD: ComfyGraph = JSON.parse(readFileSync(new URL('../../../tests/fixtures/workflows/krea2-real-standard.json', import.meta.url), 'utf8'));
 
+it('手工工作流的单图、双图反推指令分别对应各自触发词，双图不能复制单图指令', () => {
+  const workflow = JSON.parse(readFileSync(new URL('../../../docs/workflows/krea2-real-all-switches-uncensored.json', import.meta.url), 'utf8'));
+  expect(workflow.nodes.find((node: { id: number }) => node.id === 342).widgets_values[0]).toBe(REVERSE_PROMPT);
+  expect(workflow.nodes.find((node: { id: number }) => node.id === 343).widgets_values[0]).toBe(REVERSE_PROMPT_DUAL);
+});
+
 // 按 ComfyUI 的开关和 rgthree 的 LoRA 栈语义解析连线；忽略节点 id，比较实际执行链及每个输入。
 function resolved(graph: ComfyGraph, id: string, output = 0): unknown {
   const node = graph[id];

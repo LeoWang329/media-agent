@@ -1184,7 +1184,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
     - **框上直接「开始」**（布局稿第 4 节 ④）：框上多一个「开始」，用**这条框自己的**功能 / 图 / 那句话出图。`POST /edit` 多收 `messageId` + `promptIndex`：带上时**不新建回复**，出的那组挂在这条回复的那个框下面（`promptIndex` 就是框的序号），不带时照旧自己造一条回复；面板底部和框上共用这一条服务端路径。缺东西时给一句人话：功能还没做、这条框用的图不在槽位里了、局部重绘还没画掩码。
     - 顺手修的界面实话：深度迁移 / 风格 Remix 那两句「尺寸不用填，跟着这张图走」改成**出图固定 1024×1024**（照真机那几份 JSON，代码里的尺寸没动）；局部重绘那块加一句「这一块走 SDXL 那条重绘流程，底模按提示词上的系列走」。
     - 测试：单测 `packages/shared/test/edit.test.ts`（八个功能、`writes`、`editTextBlock`、放大默认值）、集成 `packages/server/test/editJobs.test.ts`（放大那条的内置流程和面部修复、四视图那条的接线和主指令拼接、框上「开始」不新建回复 + 两条人话）、e2e `tests/e2e/24-edit-upscale-fourview.spec.ts`。
-    - ⚠️ **局部重绘真机上是坏的**（2026-10-12 验的）：掩码对（单独跑探针确认过白框落在抠掉的位置）、尺寸跟原图一样、遮罩外没动，但**要重画那块是纯黑的**。查出来的两件事：① ComfyUI 的 `LoadImage` 会把 RGBA **按 alpha 合成到黑底**，所以「一张 PNG 同时当底图和掩码」那套下，要重画那块在底图里永远是黑的（把框里填中灰也一样黑）；② 改成 **底图和掩码分两张传**（`inpaintGraph` 现在生成两个 `LoadImage`，掩码取 MASK 口）**还是黑**，而且换 seed、denoise 0.85→1，出图**逐字节一样** —— 生成结果没落到那块上。**问题在 E05 这条流程本身**：`docs/reports/P24.md` 当时只验了「遮罩外 827927 个像素没动」，没验「遮罩里画成了什么」。**修好之前别拿局部重绘干活动**，下一步是查 `InpaintCropImproved` / `InpaintStitchImproved` 的出入参或者换一条 inpaint 流程，见 `docs/reports/P29.md`。
+    - ✅ **局部重绘黑块已修复**（2026-10-12 H3 回归）：编辑任务漏传 `clipSkip`，导致采样 NaN；补齐 IL/Pony 默认 2，并兼容旧任务。遮罩内 23,742/23,750 像素变化、黑色像素 0，遮罩与羽化区之外变化 0。此前 E05/透明 RGB 的根因判断已更正，见 `docs/reports/known-bugs-regression-20261012.md`。
 
 ## 6. 界面
 
@@ -1567,7 +1567,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 做：在出图那台真跑一次拖框重绘，确认遮罩外真的没动；顺带定 `output_target_width/height` 和 `mask_expand_pixels` 这两个数。
 
-完成标准：11.3 第 5 条里的局部重绘那部分。（**仅验过遮罩外不变**：832×1216、强度 0.85，遮罩外 827 927 个像素一个都没动、最大差 0，15 秒出完，见 `docs/reports/P24.md`。2026-10-12 的完整出片检查发现遮罩内是黑块，尚未达到局部重绘的验收标准，见 `docs/reports/P29.md`。）
+完成标准：11.3 第 5 条里的局部重绘那部分。2026-10-12 修复遗漏的 `clipSkip` 后，H3 真实遮罩内外像素检查通过，见 `docs/reports/known-bugs-regression-20261012.md`；P24/P29 为修复前的历史记录。
 
 ### P25 图像编辑节点（第六批，E1）
 
@@ -1591,7 +1591,7 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 
 做：5.39 里的转真人（照 `docs/krea2-real-usage.md` 那份「全开关」的接线和参数）+ 换装（编辑档换 LoRA）+ 面板上两个功能的参数区。
 
-完成标准：`tests/e2e/21-edit-real.spec.ts` 那 7 条；真机上跟作者那套同一张图对照过。报告 `docs/reports/P28.md`。局部重绘的界面和流程后来已实现，但真机遮罩内出黑块，尚未验收通过，见 5.38 和 `docs/reports/P29.md`。
+完成标准：`tests/e2e/21-edit-real.spec.ts` 那 7 条；真机上跟作者那套同一张图对照过。报告 `docs/reports/P28.md`。局部重绘的界面和流程后来已实现，2026-10-12 黑块已修复且 H3 回归通过，见 5.38 和 `docs/reports/known-bugs-regression-20261012.md`。
 
 ## 9. 测试
 

@@ -15,7 +15,7 @@ const RENAME_RETRIES = [20, 40, 60, 80, 100];
 const BUSY = ['EPERM', 'EACCES', 'EBUSY'];
 
 // Windows 上杀毒软件、搜索索引会短暂占住刚写好的文件，这时候改名会失败，等一下再试
-async function rename(tmp: string, file: string): Promise<void> {
+export async function renameFile(tmp: string, file: string): Promise<void> {
   for (let i = 0; ; i += 1) {
     try {
       return await fs.rename(tmp, file);
@@ -32,7 +32,7 @@ export async function writeFileAtomic(file: string, data: string | Uint8Array, c
   if (createDir) await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${randomUUID()}.tmp`;
   await fs.writeFile(tmp, data);
-  await rename(tmp, file);
+  await renameFile(tmp, file);
 }
 
 export function writeJsonAtomic(file: string, data: unknown, createDir = true): Promise<void> {

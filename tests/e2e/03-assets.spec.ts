@@ -363,3 +363,20 @@ test('从 Windows 文件夹直接把两张图拖进槽位，不用先导入文�
   await expect(slots(page).nth(3).locator('.proc')).toHaveText('尺寸不符');
   await expect(slots(page).nth(3)).toHaveAttribute('title', /尺寸不符：现在是 5760×192/);
 });
+
+test('只剩一个空位时，先上传的重复图片不挡住后面的新图片', async ({ page }) => {
+  await newCanvasWithNode(page, '重复图不占空位');
+  const files = await Promise.all(Array.from({ length: 9 }, async (_, i) => ({
+    name: `unique-${i}.png`,
+    mimeType: 'image/png',
+    buffer: await sharp({ create: { width: 300, height: 300, channels: 3, background: { r: 30 + i * 20, g: 90, b: 150 } } }).png().toBuffer(),
+  })));
+  await panel(page).locator('#localFile').setInputFiles(files.slice(0, 8));
+  await expect(filledSlots(page)).toHaveCount(8);
+  await panel(page).locator('#localFile').setInputFiles([files[0], files[8]]);
+  await expect(filledSlots(page)).toHaveCount(9);
+  await expect(slots(page).nth(8)).toHaveAttribute('title', slotTitle(8, files[8].name));
+  const canvasId = page.url().split('/').at(-1);
+  const { nodes } = await (await page.request.get(`/api/canvases/${canvasId}`)).json();
+  expect(new Set(nodes[0].slots).size).toBe(9);
+});

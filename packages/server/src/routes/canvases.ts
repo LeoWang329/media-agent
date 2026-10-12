@@ -25,7 +25,7 @@ import { readConfig, requireWorkFolder } from '../config';
 import { thumbnail } from '../assets/thumbs';
 import { imageFamily } from '../comfy/jobs';
 import { HttpError } from '../httpError';
-import { isGenerating, runGeneration, stopGeneration, stopGenerations } from '../llm/generation';
+import { isGenerating, runGeneration, stopGeneration, withStoppedGenerations } from '../llm/generation';
 import { imageLongSide } from '../llm/imageLongSide';
 import { translatePrompt } from '../llm/translate';
 import { revealInFolder } from '../native/reveal';
@@ -100,8 +100,8 @@ export function canvasRoutes(configDir: string): express.Router {
     const w = await work();
     const canvasId = v.uuid(req.params.canvasId);
     // 等生成收完尾再挪进回收站，不然收尾时写的节点文件会在原处重新建出这个画布的文件夹
-    await stopGenerations((await readCanvas(w, canvasId)).nodes.map((layout) => layout.id));
-    res.json({ trash: await trashCanvas(w, canvasId) });
+    const nodeIds = (await readCanvas(w, canvasId)).nodes.map((layout) => layout.id);
+    res.json({ trash: await withStoppedGenerations([`canvas:${canvasId}`], nodeIds, () => trashCanvas(w, canvasId)) });
   });
 
   // 新建空节点：视频节点、生图节点或图像编辑节点，不说是视频节点；模型配置取第一个，系统提示词取这种节点默认的那套
@@ -163,8 +163,8 @@ export function canvasRoutes(configDir: string): express.Router {
     const { canvasId, nodeId } = ids(req);
     const w = await work();
     // 和删画布一样先等生成收完尾，撤销回来的回复才完整、带着「已叫停」
-    await stopGenerations([nodeId, ...descendantIds(await listNodes(w, canvasId), nodeId)]);
-    res.json(await trashNodes(w, canvasId, nodeId));
+    const nodeIds = [nodeId, ...descendantIds(await listNodes(w, canvasId), nodeId)];
+    res.json(await withStoppedGenerations(nodeIds.map((id) => `node:${id}`), nodeIds, () => trashNodes(w, canvasId, nodeId)));
   });
 
   // 撤销删除节点：trash 是删的时候返回的那个文件夹名

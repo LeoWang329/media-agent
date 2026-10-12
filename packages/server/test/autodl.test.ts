@@ -324,6 +324,11 @@ describe('AutoDL', () => {
     );
     expect(imageErrorKind(failed.images[0].error!)).toBe('boot');
 
+    mock.autodl.fail.power_on = { code: 'InternalError', msg: '当前算力规格暂无库存, 请修改配置或稍等再试' };
+    const unavailable = await settledJob((await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 })).id);
+    expect(unavailable.images[0].error).toContain('这台所在的主机没有空闲的显卡');
+    expect(unavailable.images[0].error).toContain('当前算力规格暂无库存');
+
     mock.autodl.fail.power_on = { code: 'Failed', msg: '账户余额不足，无法开启GPU实例' };
     const poor = await settledJob((await t.ok<ImageJob>('POST', imagesUrl(), { promptIndex: 0 })).id);
     expect(poor.images[0].error).toContain('余额不够，开不了机');

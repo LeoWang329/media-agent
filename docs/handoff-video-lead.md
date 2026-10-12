@@ -1,5 +1,7 @@
 # 交接：生成视频配置弹窗 + SelfLift 续写起点（2026-10-12）
 
+最新修复及合并功能回归见 [已知问题回归](reports/known-bugs-regression-20261012.md)：局部重绘黑块、删除失败与竞态、重复图片槽位、手工双图指令、AutoDL 缺货识别；应用内 12 组图像、4 组 SelfLift 视频真机完成，历史手工 JSON 的额外 GPU 验证受库存阻塞。以下交接为此前的历史快照。
+
 同日后续补充：[SelfLift 完成状态回退和一采低清预览修复](reports/selflift-status-preview-20261012.md)。以下是此前一轮的历史快照；后续分支整合状态见 `docs/reports/branch-integration-20261012.md`。
 
 最新分段策略、历史任务兼容和真机验证见 [SelfLift 长视频修复](reports/selflift-duration-20261012.md)；转真人当前标准见 [Krea2 标准工作流修复](reports/krea2-real-standard-20261012.md)。本轮用户已授权完成后提交并推送 `main`。

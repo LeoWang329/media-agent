@@ -247,7 +247,7 @@ async function inpaintParams(
   const defaults = settings.defaults[family];
   const current = imageSettingsOf(node.image, defaults, family);
   const model = !from
-    ? { ...defaultImageSettings(defaults, family), ...e02Params(current), loras: current.loras }
+    ? { ...defaultImageSettings(defaults, family), ...e02Params(current), loras: current.loras, clipSkip: defaults.clipSkip }
     : from.workflow.id
       ? { checkpoint: current.checkpoint, loras: current.loras, steps: current.steps, cfg: current.cfg, sampler: current.sampler, scheduler: current.scheduler, clipSkip: defaults.clipSkip, ...e02Params(current) }
       : { checkpoint: from.checkpoint, loras: from.loras, steps: from.steps, cfg: from.cfg, sampler: from.sampler, scheduler: from.scheduler, clipSkip: from.clipSkip, ...e02Params(from) };
@@ -296,6 +296,7 @@ async function upscaleParams(
     ...defaultImageSettings(defaults, family),
     ...e02Params(current),
     loras: current.loras,
+    clipSkip: defaults.clipSkip,
     family,
     positive: positivePrompt(defaults, current.rating, ''),
     negative: negativePrompt(defaults, ''),

@@ -1,5 +1,7 @@
 # ComfyUI 工作流（手工用）
 
+> 同日修复：343 节点曾误用单图反推正文，现改为双图指令和标题，并加入全文比对测试。应用内标准流程四种组合已在 H3 通过；此历史手工模型组合的额外四组真机执行因 AutoDL 缺货尚未完成，见 [回归记录](../reports/known-bugs-regression-20261012.md)。
+
 > 2026-10-12 后续说明：下面的 `uncensored` JSON 保留为手工使用的历史变体。**当前程序内置的转真人以用户本轮提供的标准 JSON 为准**，使用 Moody Mix premium + FP8 CLIP、V3 + k2_nice_body；不是这个文件的旧 3JAV 模型组合。参数和实测见 [标准工作流报告](../reports/krea2-real-standard-20261012.md)。程序不读取此手工 JSON。
 
 这里的 JSON 是**能直接在 ComfyUI 里打开**的工作流，跟我们程序里那套内置流程一一对应。

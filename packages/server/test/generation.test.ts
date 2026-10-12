@@ -195,6 +195,61 @@ describe('fork', () => {
 });
 
 describe('画布和节点的增删改查', () => {
+  it('删除子节点文件失败：已经移动的父节点回原处，画布和内容都保留', async () => {
+    const { reply } = await send('写一个');
+    const child: ChatNode = await t.ok('POST', `${nodeUrl}/fork`, { messageId: reply.id });
+    const original = fs.rename;
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (String(from).endsWith(`${child.id}.json`) && String(to).includes(`${path.sep}.trash${path.sep}`)) throw Object.assign(new Error('disk failure'), { code: 'EIO' });
+      return original(from, to);
+    });
+    try {
+      expect((await t.call('DELETE', nodeUrl)).status).toBe(500);
+      expect((await t.ok('GET', `/canvases/${canvasId}`)).nodes.map((n: NodeSummary) => n.id).sort()).toEqual([nodeId, child.id].sort());
+      expect((await getNode()).messages[reply.id].text).toBe(reply.text);
+      expect((await getNode(child.id)).messages[reply.id].text).toBe(reply.text);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('Windows 短暂占住节点文件：重试后删除并可撤销，回复保持完整', async () => {
+    const { reply } = await send('写一个');
+    const original = fs.rename;
+    let busy = 0;
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (String(from).endsWith(`${nodeId}.json`) && String(to).includes(`${path.sep}.trash${path.sep}`) && busy++ < 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+      return original(from, to);
+    });
+    try {
+      const { trash } = await t.ok('DELETE', nodeUrl);
+      expect(busy).toBe(3);
+      await t.ok('POST', `/canvases/${canvasId}/nodes/restore`, { trash });
+      expect((await getNode()).messages[reply.id].text).toBe(reply.text);
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each(['canvas', 'node'])('删除 %s 的文件仍在移动时，另一页面不能启动生成；撤销后可生成', async (kind) => {
+    const original = fs.rename;
+    let moved!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { moved = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const source = kind === 'canvas' ? path.join(t.work, 'canvases', canvasId) : path.join(t.work, 'canvases', canvasId, 'nodes', `${nodeId}.json`);
+    const spy = vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (String(from) === source && String(to).includes(`${path.sep}.trash${path.sep}`)) { moved(); await hold; }
+      return original(from, to);
+    });
+    const deleting = t.ok('DELETE', kind === 'canvas' ? `/canvases/${canvasId}` : nodeUrl);
+    try {
+      await started;
+      const response = await fetch(`${t.base}${nodeUrl}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '写一个', parentId: null }) });
+      expect(response.status).toBe(409);
+      expect(await response.text()).toContain('正在删除');
+    } finally { release(); spy.mockRestore(); }
+    const { trash } = await deleting;
+    await t.ok('POST', kind === 'canvas' ? '/canvases/restore' : `/canvases/${canvasId}/nodes/restore`, { trash });
+    expect((await send('写一个')).reply.error).toBeUndefined();
+  });
+
   it('首页的画布带封面和生成数、改名、删除进 .trash、撤销删除', async () => {
     const canvases = async () => (await t.ok('GET', '/home')).canvases;
     await t.ok('PATCH', `/canvases/${canvasId}`, { title: '改过的画布' });

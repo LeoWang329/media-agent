@@ -324,6 +324,11 @@ describe('inpaintGraph', () => {
     inpaint: { mask: 'image-temp/2026-02-18/101112-mask.png', denoise: 0.8 },
   };
 
+  it('历史编辑任务没存 clipSkip：按 IL/Pony 默认第 2 层，不退到第 1 层', () => {
+    const graph = inpaintGraph({ ...params, clipSkip: undefined }, 7, { image: 'original.png', mask: 'mask.png' });
+    expect(Object.values(graph).find((node) => node.class_type === 'CLIPSetLastLayer')?.inputs.stop_at_clip_layer).toBe(-2);
+  });
+
   it('照 E05：底图和掩码同一张 PNG（alpha 通道），裁一块 → 条件 → 采样 → 解码 → 拼回原图 → 预览', () => {
     expect(inpaintGraph(params, 7, { mask: 'media-agent-mask.png' })).toEqual({
       '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'il-test.safetensors' } },

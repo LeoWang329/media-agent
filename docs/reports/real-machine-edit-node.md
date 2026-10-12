@@ -1,5 +1,7 @@
 # 真机验证：图像编辑节点走的那条路（2026-10-11）
 
+> 后续说明（2026-10-12）：本报告是旧实例的历史记录。局部重绘黑块的旧诊断已更正，当前 H3 上的修复及 12 组图像回归见 [已知问题回归](known-bugs-regression-20261012.md)。
+
 拿 AutoDL 实例 `pro-79110c14fb03` 验的。这一轮要回答的是「E2 那条指令编辑到底能不能用」——计划里写着身份编辑 v1.1 配 Ostris 这条**没在真机上验过**（`packages/shared/src/krea2.ts` 的 `kreaEditSetup`、`docs/plan-image-edit-node.md`）。
 
 ## 机器和接法

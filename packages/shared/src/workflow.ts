@@ -198,12 +198,8 @@ export const INPAINT_CROP = {
   device_mode: 'cpu (compatible)',
 };
 
-// 局部重绘，见 docs/dev-plan.md 5.38：底图和掩码是同一张 PNG，掩码走它的 alpha 通道（只改了透明度，颜色照留）。
-// 照 E05：只裁遮罩附近一块重画，再拼回原图 —— 「遮罩外一个像素不动」是这个算法保证的。
-// uploaded.mask 是那张抠过透明的 PNG 在 ComfyUI 上的名字；denoise 是重绘强度（默认 1，调到 0.5 到 0.8 保留原来的轮廓）
-// 局部重绘，见 docs/dev-plan.md 5.38。**底图和掩码分成两张传**（image 就是原图、mask 是
-// 「要重画处 alpha=0」的那张 PNG）：ComfyUI 的 LoadImage 会把 RGBA 按 alpha 合成到黑底上，
-// 所以「一张 PNG 同时当底图和掩码」时，要重画那块在底图里永远是黑的（2026-10-12 真机上验的）。
+// 局部重绘，见 docs/dev-plan.md 5.38。底图和掩码分成两张传：image 是完整原图，
+// mask 是「要重画处 alpha=0」的 PNG。浏览器擦除掩码区域时可能同时清零 RGB，所以不用它当底图。
 // 只给了掩码、没给底图时还照老路走（那时候底图就是那张掩码 PNG 本身）。
 export function inpaintGraph(params: ImageJobParams, seed: number, uploaded: { mask?: string; image?: string } = {}): ComfyGraph {
   const graph: ComfyGraph = {};
@@ -213,7 +209,8 @@ export function inpaintGraph(params: ImageJobParams, seed: number, uploaded: { m
     return [id, 0];
   };
   const out = ([id]: Link, index: number): Link => [id, index];
-  const { model, clip: skip, vae, positive, negative } = encodeHead(add, out, params);
+  // 旧编辑任务漏存了 clipSkip；IL/Pony 的默认层数是 2，退到 1 会让部分输入采样出 NaN 和黑块。
+  const { model, clip: skip, vae, positive, negative } = encodeHead(add, out, { ...params, clipSkip: params.clipSkip ?? 2 });
   const loaded = add('LoadImage', { image: uploaded.image ?? uploaded.mask ?? '' });
   // 分两张时：掩码那张 PNG 的 alpha 就是掩码，LoadImage 的 MASK 输出正好是「1 − alpha」——
   // 要重画的地方（alpha=0）是 1，正是 InpaintCropImproved 要的。IMAGE 输出只有三通道，取不了 alpha

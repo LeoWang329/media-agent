@@ -22,7 +22,7 @@ import { HttpError } from '../httpError';
 import { readImages } from './images';
 import { readLeadRecords } from './leads';
 import { readMediaRecords } from './media';
-import { readJson, trashName, writeJsonAtomic } from './jsonFile';
+import { readJson, renameFile, trashName, writeJsonAtomic } from './jsonFile';
 import { withLock } from './locks';
 import { promptMetaReader, readPromptMeta } from './prompts';
 
@@ -128,7 +128,7 @@ export async function canvasDetail(work: string, canvasId: string, isGenerating:
 export async function trashCanvas(work: string, canvasId: string): Promise<string> {
   await readCanvas(work, canvasId);
   const trash = trashName('canvas', canvasId);
-  await withLock(`canvas:${canvasId}`, () => fs.rename(canvasDir(work, canvasId), path.join(work, '.trash', trash)));
+  await withLock(`canvas:${canvasId}`, () => renameFile(canvasDir(work, canvasId), path.join(work, '.trash', trash)));
   return trash;
 }
 
@@ -138,7 +138,7 @@ export async function restoreCanvas(work: string, trash: string): Promise<string
   const canvas = await readJson<Canvas>(path.join(dir, 'canvas.json'));
   if (!canvas || !trash.endsWith(`-canvas-${canvas.id}`)) throw new HttpError(404, '回收站里找不到要恢复的画布');
   if (await exists(canvasDir(work, canvas.id))) throw new HttpError(409, '这个画布已经在了');
-  await withLock(`canvas:${canvas.id}`, () => fs.rename(dir, canvasDir(work, canvas.id)));
+  await withLock(`canvas:${canvas.id}`, () => renameFile(dir, canvasDir(work, canvas.id)));
   return canvas.id;
 }
 
@@ -247,15 +247,24 @@ export async function trashNodes(work: string, canvasId: string, nodeId: string)
   const target = path.join(work, '.trash', trash);
   await fs.mkdir(path.join(target, 'nodes'), { recursive: true });
 
-  let layouts: CanvasNodeLayout[] = [];
-  await updateCanvas(work, canvasId, (canvas) => {
-    layouts = canvas.nodes.filter((layout) => ids.includes(layout.id));
-    canvas.nodes = canvas.nodes.filter((layout) => !ids.includes(layout.id));
-  });
-  for (const id of ids) {
-    await withLock(`node:${id}`, () => fs.rename(nodeFile(work, canvasId, id), path.join(target, 'nodes', `${id}.json`)));
-  }
+  const layouts = (await readCanvas(work, canvasId)).nodes.filter((layout) => ids.includes(layout.id));
   await writeJsonAtomic(path.join(target, 'manifest.json'), { canvasId, deletedAt: now(), layouts } satisfies NodeTrash);
+  const moved: string[] = [];
+  try {
+    for (const id of ids) {
+      await withLock(`node:${id}`, () => renameFile(nodeFile(work, canvasId, id), path.join(target, 'nodes', `${id}.json`)));
+      moved.push(id);
+    }
+    // 文件全部移好才隐藏节点；失败时原画布和已移走的文件一起恢复。
+    await updateCanvas(work, canvasId, (canvas) => {
+      canvas.nodes = canvas.nodes.filter((layout) => !ids.includes(layout.id));
+    });
+  } catch (err) {
+    for (const id of moved.reverse()) {
+      await withLock(`node:${id}`, () => renameFile(path.join(target, 'nodes', `${id}.json`), nodeFile(work, canvasId, id)));
+    }
+    throw err;
+  }
   return { deleted: ids, trash };
 }
 
@@ -267,7 +276,7 @@ export async function restoreNodes(work: string, canvasId: string, trash: string
   const files = (await fs.readdir(path.join(dir, 'nodes'))).filter((file) => file.endsWith('.json'));
   for (const file of files) {
     const id = path.basename(file, '.json');
-    await withLock(`node:${id}`, () => fs.rename(path.join(dir, 'nodes', file), nodeFile(work, canvasId, id)));
+    await withLock(`node:${id}`, () => renameFile(path.join(dir, 'nodes', file), nodeFile(work, canvasId, id)));
   }
   await updateCanvas(work, canvasId, (canvas) => {
     for (const layout of manifest.layouts) {

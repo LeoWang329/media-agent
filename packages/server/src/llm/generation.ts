@@ -31,6 +31,7 @@ const PERSIST_INTERVAL = 1000;
 
 // done：这次生成连同收尾的落盘全部做完
 const running = new Map<string, { controller: AbortController; done: Promise<void> }>();
+const removing = new Set<string>();
 
 export const isGenerating = (nodeId: string) => running.has(nodeId);
 
@@ -45,6 +46,18 @@ export async function stopGenerations(nodeIds: string[]): Promise<void> {
   await Promise.all(nodeIds.map((id) => (stopGeneration(id) ? running.get(id)?.done : undefined)));
 }
 
+// 先阻止新生成，再等旧生成收尾并删除，避免另一页在删除期间启动回复。
+export async function withStoppedGenerations<T>(keys: string[], nodeIds: string[], remove: () => Promise<T>): Promise<T> {
+  if (keys.some((key) => removing.has(key))) throw new HttpError(409, '正在删除，请稍后再试');
+  keys.forEach((key) => removing.add(key));
+  try {
+    await stopGenerations(nodeIds);
+    return await remove();
+  } finally {
+    keys.forEach((key) => removing.delete(key));
+  }
+}
+
 export type GenerationTarget = { configDir: string; work: string; canvasId: string; nodeId: string };
 
 // prepare 在节点上加好这次的 user 消息（send、edit 才有），并说明回复挂在哪条 user 消息下面
@@ -52,6 +65,7 @@ export type Prepare = (node: ChatNode) => { node: ChatNode; userMessage?: Messag
 
 export async function runGeneration(target: GenerationTarget, res: Response, prepare: Prepare): Promise<void> {
   const { configDir, work, canvasId, nodeId } = target;
+  if (removing.has(`canvas:${canvasId}`) || removing.has(`node:${nodeId}`)) throw new HttpError(409, '正在删除，不能开始生成');
   if (running.has(nodeId)) throw new HttpError(409, '这个节点正在生成回复，先停止或等它写完');
   const controller = new AbortController();
   let finish!: () => void;
