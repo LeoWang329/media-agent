@@ -29,6 +29,9 @@ V3 LoRA（model 和 clip 一起喂）+ 两张图各 `ColorCorrect(饱和度 −2
    想跑作者原版就把这两个名字换回 `krea2/krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled`。
 2. 反推的两份系统提示词换成 `docs/krea2-real-reverse-prompt.md` 的**定稿版**（作者那份跟文档不完全一样，
    我们程序里跑的是文档这版）。原文直接写在两个 `PrimitiveStringMultiline` 节点里，界面上能改。
+   里面那 8 个风格词（`looking at camera` / `look down` / …）写的是**示例**——是给反推模型看「这类词什么风格、
+   颗粒度多细」的，**不是让它从里面挑**：图里有什么写什么，没有的别写，一个都对不上就一个都不写
+   （2026-10-12 用户指出的坑，原先写成 `WORDS YOU MAY USE` 读起来像选项菜单）。
 3. `SaveImage` 前缀改成 `Krea2转真人-无审查`。
 
 另外：作者那份用的 `WorkflowNotes` 节点在有些实例上没装，这份换成了 ComfyUI 自带的
