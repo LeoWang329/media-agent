@@ -12,6 +12,9 @@ import {
   type LoraTarget,
   type TagWeighting,
   kreaDefaults,
+  KREA2_EDIT_LONG_SIDE,
+  KREA2_EDIT_PRESETS,
+  editPresetOf,
 } from '@media-agent/shared';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { api } from '../api';
@@ -54,6 +57,8 @@ export function GenSettingsDialog() {
 function KreaGenSettings({ node }: { node: ChatNode }) {
   const image = useImageSettings(node, 'Krea2');
   const krea = image.krea!;
+  // 这一组 LoRA 是哪个编辑方案（手动改过就是「自己选的」）
+  const editPreset = editPresetOf(image.loras);
   const options = useComfyStore((s) => s.options);
   const target = useComfyStore((s) => s.target);
   const status = useComfyStore((s) => s.status);
@@ -140,7 +145,7 @@ function KreaGenSettings({ node }: { node: ChatNode }) {
         <div className="gc-sec">
           <h4>起图</h4>
           <div className="seg" role="group" aria-label="起图">
-            {(['text', 'four-view'] as const).map((mode) => (
+            {(['text', 'four-view', 'edit'] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -148,32 +153,113 @@ function KreaGenSettings({ node }: { node: ChatNode }) {
                 onClick={() => {
                   if (mode === krea.mode) return;
                   const defaults = kreaDefaults(mode);
-                  save({ ...defaults, count: image.count, krea: { ...defaults.krea!, reference: krea.reference, extra: krea.extra } });
+                  save({ ...defaults, count: image.count, krea: { ...defaults.krea!, reference: krea.reference, referenceB: krea.referenceB ?? null, extra: krea.extra } });
                 }}
               >
-                {mode === 'text' ? '文生图' : '四视图'}
+                {mode === 'text' ? '文生图' : mode === 'four-view' ? '四视图' : '编辑'}
               </button>
             ))}
           </div>
-          {krea.mode === 'four-view' && (
+          {krea.mode !== 'text' && (
             <div className="stack">
-              <RefButton node={node} value={krea.reference} onPick={(reference) => save({ krea: { ...krea, reference } })} />
-              <label className="field">
-                参考图相似度
-                <CommitInput
-                  className="input mono"
-                  id="gcRefBoost"
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="10"
-                  aria-label="参考图相似度"
-                  value={String(krea.refBoost)}
-                  parse={numberFrom(0)}
-                  onCommit={(v) => save({ krea: { ...krea, refBoost: Number(v) } })}
-                />
-              </label>
-              <p className="hint">生成脸部特写、正面、侧面和背面全身四视图。框中文字作为额外要求；默认 1536×1024，尺寸可在面板上调整。</p>
+              {/* 编辑档能给两张：图 1 是场景、图 2 是主体（T07 的「双图」，顺序是训练时定的）；没选图 2 就是单图 */}
+              {krea.mode === 'edit' ? (
+                <>
+                  <span className="meta">图 1 · 场景：构图、背景、姿势</span>
+                  <RefButton node={node} value={krea.reference} onPick={(reference) => save({ krea: { ...krea, reference } })} />
+                  <span className="meta">图 2 · 人物：长相、身份（可不选）</span>
+                  <RefButton what="第二张参考图" node={node} value={krea.referenceB ?? null} onPick={(referenceB) => save({ krea: { ...krea, referenceB } })} />
+                </>
+              ) : (
+                <RefButton node={node} value={krea.reference} onPick={(reference) => save({ krea: { ...krea, reference } })} />
+              )}
+              {krea.mode === 'edit' && krea.referenceB ? (
+                <>
+                  <label className="field">
+                    图 1（场景）相似度
+                    <CommitInput
+                      className="input mono"
+                      id="gcRefBoostA"
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      aria-label="场景相似度"
+                      value={String(krea.refBoostA ?? 1)}
+                      parse={numberFrom(0)}
+                      onCommit={(v) => save({ krea: { ...krea, refBoostA: Number(v) } })}
+                    />
+                  </label>
+                  <label className="field">
+                    图 2（人物）相似度
+                    <CommitInput
+                      className="input mono"
+                      id="gcRefBoost"
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      aria-label="参考图相似度"
+                      value={String(krea.refBoost)}
+                      parse={numberFrom(0)}
+                      onCommit={(v) => save({ krea: { ...krea, refBoost: Number(v) } })}
+                    />
+                  </label>
+                </>
+              ) : (
+                <label className="field">
+                  参考图相似度
+                  <CommitInput
+                    className="input mono"
+                    id="gcRefBoost"
+                    type="number"
+                    step="0.5"
+                    min="0"
+                    max="10"
+                    aria-label="参考图相似度"
+                    value={String(krea.refBoost)}
+                    parse={numberFrom(0)}
+                    onCommit={(v) => save({ krea: { ...krea, refBoost: Number(v) } })}
+                  />
+                </label>
+              )}
+              {krea.mode === 'four-view' ? (
+                <p className="hint">生成脸部特写、正面、侧面和背面全身四视图。框中文字作为额外要求；默认 1536×1024，尺寸可在面板上调整。</p>
+              ) : (
+                <>
+                  {/* 编辑方案：选一个就把它的 LoRA 和作者给的推荐参数填进去，之后还能手动改 */}
+                  <label className="field">
+                    编辑方案
+                    <select
+                      className="select"
+                      id="gcEditPreset"
+                      aria-label="编辑方案"
+                      value={editPreset?.id ?? ''}
+                      onChange={(e) => {
+                        const picked = KREA2_EDIT_PRESETS.find((preset) => preset.id === e.target.value);
+                        if (picked) save({ ...picked.settings, loras: picked.loras.map((lora) => ({ ...lora })) });
+                      }}
+                    >
+                      <option value="">自己选的 LoRA</option>
+                      {KREA2_EDIT_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {editPreset && <p className="hint">{editPreset.note}</p>}
+                  <p className="hint">
+                    图 1 定场景（构图、背景、姿势），图 2 定人物长相；两张都选就是把图 2 的人放进图 1 的场景里。
+                    框里写清要改什么——模型照这句话重画整张，改哪儿它自己找，不用涂；没提到的部分也可能跟着变一点。
+                  </p>
+                  <p className="hint">
+                    这一档按参考图的比例出图，长边缩到 {KREA2_EDIT_LONG_SIDE} 再画（V3 那个 LoRA 是 2K 训的，缩到 1MP 会糊），
+                    所以面板上的尺寸、还有上面那个「参考图相似度」这一档都不看（相似度是四视图那条路的）。
+                    写实测不出来的话，先看「文字理解模型」是不是去审查那个、底模是不是写实类的。
+                  </p>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -1,10 +1,10 @@
-import type { ImageTempInfo, ImageWhere, JobImage } from '@media-agent/shared';
+import { editSettingsOf, EDIT_FNS, type EditFnId, type EditSettings, type ImageTempInfo, type ImageWhere, type JobImage } from '@media-agent/shared';
 import express, { type Request } from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { thumbnail } from '../assets/thumbs';
 import { copyToFolder, imageFile } from '../comfy/files';
-import type { ImageJobs, JobPlace, Refine } from '../comfy/jobs';
+import type { ImageJobs, EditJobRequest, InpaintRequest, JobPlace, Refine } from '../comfy/jobs';
 import { readConfig, requireWorkFolder, setLastDownloadFolder } from '../config';
 import { HttpError } from '../httpError';
 import { openExternal } from '../native/openExternal';
@@ -34,12 +34,28 @@ export function imageRoutes(configDir: string, jobs: ImageJobs): express.Router 
     res.status(201).json(await jobs.fourView({ work: await requireWorkFolder(configDir), canvasId: v.uuid(req.params.canvasId), nodeId: v.uuid(req.params.nodeId) }, reference, v.text(req.body?.extra ?? '', '额外要求')));
   });
 
+  // 图像编辑节点上点「开始」：走哪个功能、拿第几张图、要改什么，见 docs/dev-plan.md 5.36
+  router.post('/canvases/:canvasId/nodes/:nodeId/edit', async (req, res) => {
+    const work = await requireWorkFolder(configDir);
+    const canvasId = v.uuid(req.params.canvasId);
+    const nodeId = v.uuid(req.params.nodeId);
+    // 底用节点上现在存的那份编辑设置，请求里的字段覆盖它 —— 只在请求里带一部分（比如只带 fn）时，
+    // 才不会把用户选的反推 / 双图 / LoRA 悄悄换回默认值
+    const node = await readNode(work, canvasId, nodeId);
+    res.status(201).json(await jobs.editJob({ work, canvasId, nodeId }, editRequestOf(req, editSettingsOf(node.edit, node.slots.length))));
+  });
+
   // again 是「同样参数再来」「只换种子再来」，照着那一张出一张；refine 是出完的图上补做放大和部位重绘
   router.post(base, async (req, res) => {
     const again = req.body?.again === undefined ? undefined : againOf(req.body.again);
     const refine = req.body?.refine === undefined ? undefined : refineOf(req.body.refine);
     const promptIndex = again || refine ? 0 : v.index(req.body?.promptIndex, '提示词框');
     res.status(201).json(await jobs.create(await place(req), promptIndex, { again, refine }));
+  });
+
+  // 局部重绘：掩码是把原图要重画的地方抠成透明的那张 PNG，见 docs/dev-plan.md 5.35
+  router.post(`${base}/:jobId/:index/inpaint`, async (req, res) => {
+    res.status(201).json(await jobs.create(await place(req), 0, { inpaint: inpaintOf(req) }));
   });
 
   router.post(`${base}/:jobId/stop`, async (req, res) => {
@@ -168,6 +184,50 @@ function refineOf(value: unknown): Refine {
     index: v.index(fields.index, '图片'),
     upscale: v.upscaleSettings(fields.upscale),
     details: v.detailPasses(fields.details),
+  };
+}
+
+// 局部重绘的请求：这张图的序号在路径里，掩码是 base64 的 PNG，正面、负面可以不填（用原图那组的）
+function inpaintOf(req: Request): InpaintRequest {
+  const fields = (req.body ?? {}) as Record<string, unknown>;
+  const denoise = v.finiteNumber(fields.denoise, '重绘强度');
+  if (denoise <= 0 || denoise > 1) throw new HttpError(400, '重绘强度要大于 0、不超过 1');
+  return {
+    jobId: String(req.params.jobId),
+    index: v.index(Number(req.params.index), '图片'),
+    mask: v.pngBytes(fields.mask, '掩码'),
+    positive: v.text(fields.positive ?? '', '要画成什么'),
+    negative: v.text(fields.negative ?? '', '额外的负面词'),
+    denoise,
+  };
+}
+
+// 图像编辑节点「开始」的请求：用哪个功能、拿第几张图当原图、要改什么，见 docs/dev-plan.md 5.36。
+// real / inpaint / depth / remix / upscale 几层收半份；base 是节点上现在存的那份设置，请求里没带的字段就用它
+//（只带 fn 的请求也照节点走）。局部重绘在编辑节点里画的那份掩码跟大图窗口那条一样，是顶层一个 base64 PNG。
+// 框上那个「开始」多带 messageId + promptIndex：服务端不新建回复，出的图挂在这条框下面，
+// 见 docs/plan-image-edit-node-layout.md 第 4 节 ④
+function editRequestOf(req: Request, base: EditSettings): EditJobRequest {
+  const fields = (req.body ?? {}) as Record<string, unknown>;
+  const fn = fields.fn ?? base.fn;
+  // 认哪些功能照 EDIT_FNS 那张表来（别在这儿再抄一份名单，加功能时会漏）
+  if (!EDIT_FNS.some((one) => one.id === fn)) throw new HttpError(400, '不认识这个编辑功能');
+  const settings = v.editSettings(fields, base);
+  return {
+    fn: settings.fn as EditFnId,
+    slot: settings.slot,
+    slotB: settings.slotB,
+    text: settings.text,
+    refBoost: settings.refBoost,
+    real: settings.real,
+    inpaint: settings.inpaint,
+    depth: settings.depth,
+    remix: settings.remix,
+    upscale: settings.upscale,
+    ...(fields.messageId !== undefined && { messageId: v.nonEmptyText(fields.messageId, '消息 id') }),
+    ...(fields.promptIndex !== undefined && { promptIndex: v.index(fields.promptIndex, '提示词框') }),
+    // 没带掩码：局部重绘这条路到 editParams 里会报「先在图上拖个框或者涂抹出要重画的地方」
+    ...(fields.mask !== undefined && { maskBytes: v.pngBytes(fields.mask, '掩码') }),
   };
 }
 

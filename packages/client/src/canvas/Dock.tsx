@@ -1,6 +1,10 @@
 import {
   activePath,
   aspectRatioText,
+  editDiff,
+  editFnOf,
+  editSettingsOf,
+  editWriteOneText,
   hasUnsentSettings,
   imageSizeFits,
   MEDIA_EXTENSIONS,
@@ -11,6 +15,7 @@ import {
   VIDEO_DURATION,
   type AspectRatio,
   type ChatNode,
+  type KreaSettings,
   type PromptMeta,
 } from '@media-agent/shared';
 import { EditorContent, type Editor } from '@tiptap/react';
@@ -26,6 +31,7 @@ import { showMenu, type MenuItem } from '../ui/menu';
 import { Popover } from '../ui/Popover';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
+import { EditFnBar, EditStartBar, SLOT_B_ROLE } from './EditPanel';
 import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, KREA2_SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
@@ -51,14 +57,18 @@ const misfitNote = (image: { width: number; height: number }) => `尺寸不符�
 export function Dock({ node }: { node: ChatNode }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const use = node.kind;
+  const isEdit = use === 'edit';
   return (
-    <footer className={`dr-dock${use === 'image' ? ' is-image' : ''}`} data-od-id="composer-dock">
+    <footer className={`dr-dock${use === 'image' ? ' is-image' : ''}${isEdit ? ' is-edit' : ''}`} data-od-id="composer-dock">
       <Pending node={node} use={use} />
+      {/* 图像编辑节点：先选功能，再选图，再选提示词，最后开始，见 docs/dev-plan.md 5.36 */}
+      {isEdit && <EditFnBar node={node} />}
       <div className="slots-head">
         <span className="panel-title">
-          参考图 <span className="mono" id="slotCount">{node.slots.length}/9</span>
+          {isEdit ? '图' : '参考图'} <span className="mono" id="slotCount">{node.slots.length}/9</span>
         </span>
-        {use === 'image' ? <ImageParams node={node} /> : <VideoParams node={node} />}
+        {/* 编辑节点不吃尺寸和张数，这一行只留「资产库 / 电脑里的图 / 拼图」 */}
+        {use === 'video' ? <VideoParams node={node} /> : use === 'image' ? <ImageParams node={node} /> : null}
         <span className="grow" />
         <button type="button" className="btn btn-ghost btn-sm" id="slotAssets" data-od-id="btn-slot-from-assets" onClick={() => openAssets('slots')}>
           <Icon name="image" />
@@ -66,7 +76,7 @@ export function Dock({ node }: { node: ChatNode }) {
         </button>
         <button type="button" className="btn btn-ghost btn-sm" id="slotLocal" data-od-id="btn-slot-from-disk" onClick={() => fileInput.current?.click()}>
           <Icon name="folder" />
-          <span className="hide-sm">{use === 'image' ? '电脑里的图' : '电脑里的文件'}</span>
+          <span className="hide-sm">{use === 'video' ? '电脑里的文件' : '电脑里的图'}</span>
         </button>
         <button type="button" className="btn btn-ghost btn-sm" id="slotCollage" data-od-id="btn-collage" onClick={() => useOverlays.setState({ collage: true })}>
           <Icon name="grid" />
@@ -74,13 +84,14 @@ export function Dock({ node }: { node: ChatNode }) {
         </button>
       </div>
       <Slots node={node} />
+      {isEdit && <EditStartBar node={node} />}
       {use === 'video' && <MediaSlots node={node} />}
-      <Composer node={node} image={use === 'image'} />
+      <Composer node={node} />
       <input
         ref={fileInput}
         type="file"
         id="localFile"
-        accept={use === 'image' ? IMAGE_ACCEPT : VIDEO_NODE_ACCEPT}
+        accept={use === 'video' ? VIDEO_NODE_ACCEPT : IMAGE_ACCEPT}
         multiple
         hidden
         onChange={(e) => {
@@ -160,7 +171,7 @@ function ImageParams({ node }: { node: ChatNode }) {
   const [customAt, setCustomAt] = useState<DOMRect | null>(null);
   const family = usePromptInfo(node.systemPromptName)?.family ?? 'IL';
   const settings = useImageSettings(node, family);
-  const sizeGroups = family === 'Krea2' ? KREA2_SIZE_GROUPS.map((g) => ({ ...g, sizes: g.sizes.filter((s) => settings.krea?.mode !== 'four-view' || (s.width % 16 === 0 && s.height % 16 === 0)) })) : SIZE_GROUPS;
+  const sizeGroups = family === 'Krea2' ? KREA2_SIZE_GROUPS.map((g) => ({ ...g, sizes: g.sizes.filter((s) => settings.krea?.mode === 'text' || (s.width % 16 === 0 && s.height % 16 === 0)) })) : SIZE_GROUPS;
   const listed = sizeGroups.some((g) => g.sizes.some((size) => size.width === image.width && size.height === image.height));
   const options = useComfyStore((s) => s.options);
   const patchNode = useCanvasStore((s) => s.patchNode);
@@ -260,12 +271,13 @@ function ImageParams({ node }: { node: ChatNode }) {
   );
 }
 
-// 尺寸自己填：宽高取最近的 8 的倍数，见 docs/dev-plan.md 5.21
-function CustomSize({ anchor, size, krea, onPick, onClose }: { anchor: DOMRect; size: { width: number; height: number }; krea?: 'text' | 'four-view'; onPick: (size: { width: number; height: number }) => void; onClose: () => void }) {
+// 尺寸自己填：宽高取最近的 8 的倍数，见 docs/dev-plan.md 5.21；四视图和编辑用 EmptySD3LatentImage，取 16 的倍数
+function CustomSize({ anchor, size, krea, onPick, onClose }: { anchor: DOMRect; size: { width: number; height: number }; krea?: KreaSettings['mode']; onPick: (size: { width: number; height: number }) => void; onClose: () => void }) {
   const [draft, setDraft] = useState({ width: String(size.width), height: String(size.height) });
-  const multiple = krea === 'four-view' ? 16 : 8;
+  const sixteen = Boolean(krea && krea !== 'text');
+  const multiple = sixteen ? 16 : 8;
   const limits = krea ? { min: SIZE_LIMITS.min, max: 4096 } : SIZE_LIMITS;
-  const round = (value: string) => krea === 'four-view' ? Math.round(Number(value) / 16) * 16 : roundSize(Number(value));
+  const round = (value: string) => sixteen ? Math.round(Number(value) / 16) * 16 : roundSize(Number(value));
   const rounded = { width: round(draft.width), height: round(draft.height) };
   const ok = [rounded.width, rounded.height].every((side) => side >= limits.min && side <= limits.max);
   const go = () => ok && onPick(rounded);
@@ -305,7 +317,8 @@ function Pending({ node, use }: { node: ChatNode; use: PromptMeta['use'] }) {
   const images = useCanvasStore((s) => s.detail?.images);
   if (!hasUnsentSettings(node)) return null;
   const previous = activePath(node).at(-1)!;
-  const note = slotDiff(previous, node, use).systemNote;
+  // 图像编辑节点发的只有选中的那一张，说明也不是「新增参考图」那一套，见 docs/dev-plan.md 5.36
+  const note = node.kind === 'edit' ? editDiff(node.slots, editSettingsOf(node.edit, node.slots.length)).systemNote : slotDiff(previous, node, use).systemNote;
   if (!note) return null;
   const renumbered = note.includes('重新编号');
 
@@ -361,6 +374,14 @@ function Slots({ node }: { node: ChatNode }) {
     });
   };
 
+  // 编辑节点：点一下把这张图当成要改的原图。转真人开着「换脸」时图 2 是「真人参考」：
+  // 点到图 2 那张就把两张换个个儿，图 1 图 2 不会指同一张，见 docs/plan-image-edit-node-layout.md 第 4.2 节
+  const patchEditSlot = (target: ChatNode, index: number) => {
+    const now = editSettingsOf(target.edit, target.slots.length);
+    const swapB = now.fn === 'real' && now.real.dual && index === now.slotB && now.slotB !== now.slot ? { slotB: now.slot } : {};
+    void useCanvasStore.getState().patchNode(target.id, { edit: { slot: index, ...swapB } });
+  };
+
   const menu = (anchor: Element, index: number) => {
     const image = images?.[node.slots[index]];
     const processed = image?.processed ? processedNote(image) : null;
@@ -371,6 +392,14 @@ function Slots({ node }: { node: ChatNode }) {
     if (copyOnly) items.push({ note: copyOnly });
     items.push({ label: '放大看', icon: 'expand', onClick: () => useOverlays.setState({ zoom: { imageId: node.slots[index], title: `${index + 1} 号：${image?.originalName ?? ''}` } }) });
     if (node.kind === 'image') items.push({ label: '做四视图', icon: 'image', onClick: () => useOverlays.setState({ fourView: { nodeId: node.id, reference: { kind: 'slot', imageId: node.slots[index] } } }) });
+    if (node.kind === 'edit') {
+      const now = editSettingsOf(node.edit, node.slots.length);
+      items.push({ label: '用这张图', icon: 'check', onClick: () => patchEditSlot(node, index) });
+      // 转真人开着「换脸」：这张当图 2（真人参考），跟图 1 分开
+      if (now.fn === 'real' && now.real.dual) {
+        items.push({ label: `用这张当图 2（${SLOT_B_ROLE}）`, icon: 'swap', onClick: () => void useCanvasStore.getState().patchNode(node.id, { edit: { slotB: index } }) });
+      }
+    }
     items.push({ label: '换一张（从资产库挑）', icon: 'swap', onClick: () => openAssets('replace', index) });
     if (index > 0) items.push({ label: '往前挪一位', icon: 'chev-left', onClick: () => void moveSlot(node.id, index, index - 1) });
     if (index < node.slots.length - 1) items.push({ label: '往后挪一位', icon: 'chev-right', onClick: () => void moveSlot(node.id, index, index + 1) });
@@ -393,6 +422,8 @@ function Slots({ node }: { node: ChatNode }) {
   };
 
   const waiting = placing && placing.replaceIndex === null ? placing.thumbs : [];
+  const isEdit = node.kind === 'edit';
+  const edit = editSettingsOf(node.edit, node.slots.length);
   const cells = [];
   for (let i = 0; i < MAX_SLOTS; i += 1) {
     const imageId = node.slots[i];
@@ -402,17 +433,26 @@ function Slots({ node }: { node: ChatNode }) {
       const copyOnly = image ? copyOnlyNote(image) : null;
       const misfit = image && !imageSizeFits(image.width, image.height) ? misfitNote(image) : null;
       const tip = `${i + 1} 号：${image?.originalName ?? ''}${misfit ? `\n${misfit}` : ''}${processed ? `\n程序处理过：${processed}` : ''}${copyOnly ? `\n${copyOnly}` : ''}`;
+      const isSource = isEdit && i === edit.slot;
+      // 转真人开「换脸」时第二张是「真人参考」；两张不会指同一张，所以这里排掉
+      const isSourceB = isEdit && edit.fn === 'real' && edit.real.dual && edit.slotB !== edit.slot && i === edit.slotB;
       cells.push(
         <div
           key={`${i}-${imageId}`}
-          className={`slot is-filled${flash?.includes(i) ? ' is-renumbered' : ''}${over === i ? ' is-drop' : ''}${from === i ? ' is-drag-src' : ''}`}
+          className={`slot is-filled${isSource ? ' is-source' : ''}${isSourceB ? ' is-source-b' : ''}${flash?.includes(i) ? ' is-renumbered' : ''}${over === i ? ' is-drop' : ''}${from === i ? ' is-drag-src' : ''}`}
           draggable
           data-i={i}
-          title={tip}
+          title={isEdit ? `${tip}\n点一下：用这张图` : tip}
           tabIndex={0}
           data-od-id={`slot-${i + 1}`}
           data-testid="slot"
-          onClick={(e) => menu(e.currentTarget, i)}
+          // 编辑节点点一下是「用这张图」，菜单挪到右键；别的节点照旧左键开菜单，见 docs/dev-plan.md 5.36
+          onClick={(e) => (isEdit ? patchEditSlot(node, i) : menu(e.currentTarget, i))}
+          onContextMenu={(e) => {
+            if (!isEdit) return;
+            e.preventDefault();
+            menu(e.currentTarget, i);
+          }}
           onDragStart={(e) => {
             setFrom(i);
             e.dataTransfer.effectAllowed = 'move';
@@ -442,6 +482,8 @@ function Slots({ node }: { node: ChatNode }) {
         >
           {canvasId && <img className="im" src={imageThumbUrl(canvasId, imageId)} alt={image?.originalName ?? ''} loading="lazy" draggable={false} />}
           <span className="num-badge">{i + 1}</span>
+          {isSource && <span className="slot-role" data-testid="slot-role">{editFnOf(edit.fn).role}</span>}
+          {isSourceB && <span className="slot-role is-b" data-testid="slot-role-b">{SLOT_B_ROLE}</span>}
           {misfit ? <span className="proc is-misfit">尺寸不符</span> : (copyOnly || processed) && <span className="proc">{copyOnly ? '副本' : '处理过'}</span>}
           {placing?.replaceIndex === i && (
             <div className="processing">
@@ -497,8 +539,10 @@ function Slots({ node }: { node: ChatNode }) {
   );
 }
 
-function Composer({ node, image }: { node: ChatNode; image: boolean }) {
+function Composer({ node }: { node: ChatNode }) {
   const family = usePromptInfo(node.systemPromptName)?.family;
+  // 编辑节点：输入框旁多一个「写一个」——不问你要改什么，让模型按当前功能看着图自己开写，见 docs/dev-plan.md 5.36
+  const editFn = node.kind === 'edit' ? editFnOf(editSettingsOf(node.edit, node.slots.length).fn) : null;
   const busy = useCanvasStore((s) => Boolean(s.streams[node.id]) || Boolean(s.detail?.nodes.find((n) => n.id === node.id)?.generating));
   const focus = useCanvasStore((s) => (s.composerFocus?.nodeId === node.id ? s.composerFocus.seq : 0));
   const [empty, setEmpty] = useState(!node.draft.trim());
@@ -613,7 +657,7 @@ function Composer({ node, image }: { node: ChatNode; image: boolean }) {
           <Icon name="at" />
           引用图片
         </button>
-        {image && family !== 'Krea2' && (
+        {node.kind === 'image' && family !== 'Krea2' && (
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -625,6 +669,20 @@ function Composer({ node, image }: { node: ChatNode; image: boolean }) {
           >
             <Icon name="edit" />
             写标签
+          </button>
+        )}
+        {/* 放大 / 高清那条整条路不看提示词（fn.writes 是 false），不给「写一个」 */}
+        {editFn?.writes && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            id="btnWriteOne"
+            data-od-id="btn-write-one"
+            title={`不问你要改什么：让模型看着选中的那张图，按「${editFn.name}」这一套自己写几个方向`}
+            disabled={busy}
+            onClick={() => void useCanvasStore.getState().send(node.id, editWriteOneText(editFn))}
+          >            <Icon name="wand" />
+            写一个
           </button>
         )}
         <span className="meta hide-sm">Enter 发送 · Shift+Enter 换行</span>

@@ -1,0 +1,1129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MiniMax-H3 × Krea2 · 底模 / LoRA / NSFW / LMS 调研</title>
+<style>
+:root{
+  --bg:#07090c; --bg2:#0b0f14; --panel:rgba(255,255,255,.032); --panel2:rgba(255,255,255,.055);
+  --line:rgba(255,255,255,.085); --line2:rgba(255,255,255,.16);
+  --tx:#e8eef6; --tx2:#9fb0c3; --tx3:#6b7b8d;
+  --h3:#3fe0d0; --h3b:#7c6bff; --k2:#f5a83c; --ok:#54d68a; --warn:#ff6b6b;
+  --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,"Courier New",monospace;
+  --sans:"Inter","PingFang SC","Microsoft YaHei","Hiragino Sans GB",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --r:14px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--bg);color:var(--tx);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(1100px 600px at 12% -8%,rgba(124,107,255,.16),transparent 60%),
+    radial-gradient(900px 520px at 92% 4%,rgba(63,224,208,.11),transparent 58%),
+    radial-gradient(800px 500px at 60% 100%,rgba(245,168,60,.08),transparent 60%);
+  background-attachment:fixed;
+}
+body::before{ /* 细网格 */
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.35;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:64px 64px;
+  mask-image:radial-gradient(70% 60% at 50% 20%,#000 20%,transparent 100%);
+}
+#prog{position:fixed;top:0;left:0;height:2px;width:0;z-index:60;
+  background:linear-gradient(90deg,var(--h3),var(--h3b) 45%,var(--k2));box-shadow:0 0 14px rgba(63,224,208,.6)}
+
+/* ── 顶栏 ── */
+.top{position:sticky;top:0;z-index:50;backdrop-filter:blur(16px);background:rgba(7,9,12,.72);
+  border-bottom:1px solid var(--line)}
+.top .in{max-width:1240px;margin:0 auto;padding:11px 26px;display:flex;align-items:center;gap:20px}
+.brand{display:flex;align-items:center;gap:11px;font-weight:650;letter-spacing:.2px;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:linear-gradient(135deg,var(--h3),var(--h3b));
+  box-shadow:0 0 12px rgba(63,224,208,.8);animation:pulse 2.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.82)}}
+.brand small{color:var(--tx3);font-weight:400;font-size:12px;letter-spacing:.4px}
+nav{margin-left:auto;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav a{color:var(--tx2);text-decoration:none;font-size:13px;padding:6px 11px;border-radius:999px;
+  border:1px solid transparent;white-space:nowrap;transition:.22s}
+nav a:hover{color:var(--tx);background:var(--panel2)}
+nav a.on{color:#04120f;background:linear-gradient(135deg,var(--h3),#8fe9dd);font-weight:600}
+.top .theme{margin-left:6px;background:none;border:1px solid var(--line2);color:var(--tx2);
+  border-radius:999px;padding:6px 11px;cursor:pointer;font-size:12px;transition:.2s}
+.top .theme:hover{color:var(--tx);border-color:var(--h3)}
+
+/* ── 布局 ── */
+main{max-width:1240px;margin:0 auto;padding:0 26px 90px;position:relative;z-index:1}
+section{padding:74px 0 8px;scroll-margin-top:74px}
+.snum{font-family:var(--mono);font-size:12px;letter-spacing:3px;color:var(--tx3)}
+h2{font-size:clamp(25px,3.4vw,37px);line-height:1.25;margin:8px 0 6px;letter-spacing:-.4px;font-weight:680}
+h2 em{font-style:normal;background:linear-gradient(100deg,var(--h3),var(--h3b) 60%,var(--k2));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+h3{font-size:19px;margin:34px 0 10px;font-weight:640;letter-spacing:-.2px}
+h4{font-size:15px;margin:22px 0 8px;color:var(--tx);font-weight:620}
+p{margin:10px 0;color:var(--tx2)}
+p strong,li strong{color:var(--tx);font-weight:620}
+.lead{font-size:17.5px;color:var(--tx2);max-width:76ch}
+a{color:var(--h3)}
+code,.mono{font-family:var(--mono);font-size:.88em}
+.mono{color:#b6e9ff;background:rgba(63,224,208,.07);border:1px solid rgba(63,224,208,.16);
+  padding:1px 6px;border-radius:6px;white-space:nowrap}
+
+/* ── 卡片 ── */
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
+.card{background:linear-gradient(180deg,var(--panel),rgba(255,255,255,.012));
+  border:1px solid var(--line);border-radius:var(--r);padding:20px 21px;position:relative;overflow:hidden;
+  transition:transform .26s cubic-bezier(.2,.7,.3,1),border-color .26s,box-shadow .26s}
+.card:hover{transform:translateY(-3px);border-color:var(--line2);box-shadow:0 16px 40px -22px rgba(0,0,0,.9)}
+.card::after{content:"";position:absolute;inset:0 0 auto;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent);opacity:0;transition:.3s}
+.card:hover::after{opacity:1}
+.card.h3c{border-color:rgba(63,224,208,.24)}
+.card.k2c{border-color:rgba(245,168,60,.26)}
+.card .tag{font-family:var(--mono);font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--tx3)}
+.kpi{font-size:34px;font-weight:700;letter-spacing:-1px;line-height:1.1;margin:6px 0 4px}
+.kpi.c1{color:var(--h3)} .kpi.c2{color:var(--h3b)} .kpi.c3{color:var(--k2)}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;border-radius:999px;
+  border:1px solid var(--line2);color:var(--tx2);font-family:var(--mono)}
+.badge.h3{color:var(--h3);border-color:rgba(63,224,208,.4);background:rgba(63,224,208,.07)}
+.badge.k2{color:var(--k2);border-color:rgba(245,168,60,.4);background:rgba(245,168,60,.07)}
+.badge.ok{color:var(--ok);border-color:rgba(84,214,138,.4);background:rgba(84,214,138,.07)}
+.badge.no{color:var(--warn);border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.07)}
+
+/* ── Hero ── */
+.hero{padding:64px 0 20px;position:relative}
+.hero h1{font-size:clamp(33px,6vw,64px);line-height:1.06;margin:14px 0 16px;letter-spacing:-2px;font-weight:720}
+.hero h1 span{background:linear-gradient(100deg,#fff 6%,var(--h3) 44%,var(--h3b) 66%,var(--k2));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.hero .sub{font-size:18px;color:var(--tx2);max-width:74ch}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.callout{border-left:3px solid var(--k2);background:linear-gradient(90deg,rgba(245,168,60,.11),transparent 70%);
+  padding:16px 20px;border-radius:0 12px 12px 0;margin:26px 0}
+.callout.warn{border-color:var(--warn);background:linear-gradient(90deg,rgba(255,107,107,.11),transparent 70%)}
+.callout.ok{border-color:var(--ok);background:linear-gradient(90deg,rgba(84,214,138,.1),transparent 70%)}
+.callout p{margin:4px 0;color:var(--tx)}
+
+/* ── 表格 ── */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);margin:16px 0;
+  background:linear-gradient(180deg,rgba(255,255,255,.02),transparent)}
+table{border-collapse:collapse;width:100%;font-size:14.2px;min-width:520px}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{position:sticky;top:0;background:#0c1117;color:var(--tx);font-weight:620;font-size:13px;
+  letter-spacing:.2px;z-index:2;white-space:nowrap}
+tbody tr{transition:background .18s}
+tbody tr:hover{background:rgba(63,224,208,.05)}
+tbody tr:last-child td{border-bottom:none}
+td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+.hl{background:rgba(63,224,208,.09)!important;box-shadow:inset 3px 0 0 var(--h3)}
+.hl-k2{background:rgba(245,168,60,.09)!important;box-shadow:inset 3px 0 0 var(--k2)}
+.mut{color:var(--tx3)}
+
+/* ── 标签页 ── */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0 14px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.tabs button{background:var(--panel);border:1px solid var(--line);color:var(--tx2);font:inherit;font-size:13.5px;
+  padding:8px 15px;border-radius:999px;cursor:pointer;transition:.2s}
+.tabs button:hover{color:var(--tx);border-color:var(--line2)}
+.tabs button.on{background:linear-gradient(135deg,rgba(63,224,208,.9),rgba(124,107,255,.9));color:#04120f;
+  border-color:transparent;font-weight:640}
+.pane{display:none;animation:fade .34s ease}
+.pane.on{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* ── 交互：VRAM 组装器 ── */
+.builder{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}
+@media(max-width:900px){.builder{grid-template-columns:1fr}}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin:6px 0 14px}
+.chip{background:var(--panel);border:1px solid var(--line);color:var(--tx2);font:inherit;font-size:12.8px;
+  padding:6px 12px;border-radius:9px;cursor:pointer;transition:.2s;font-family:var(--mono)}
+.chip:hover{border-color:var(--line2);color:var(--tx)}
+.chip.on{background:rgba(63,224,208,.16);border-color:var(--h3);color:#c9fff8;box-shadow:0 0 0 1px rgba(63,224,208,.25) inset}
+.chip small{display:block;color:var(--tx3);font-size:10.5px;font-family:var(--sans)}
+.chip.on small{color:rgba(201,255,248,.75)}
+.bar{height:36px;border-radius:9px;background:rgba(255,255,255,.05);position:relative;overflow:hidden;
+  border:1px solid var(--line);margin:7px 0 4px}
+.bar i{position:absolute;left:0;top:0;bottom:0;transition:width .55s cubic-bezier(.2,.8,.2,1);
+  background:linear-gradient(90deg,rgba(63,224,208,.85),rgba(124,107,255,.85))}
+.bar.k2 i{background:linear-gradient(90deg,rgba(245,168,60,.9),rgba(255,107,107,.7))}
+.bar.over i{background:linear-gradient(90deg,rgba(255,107,107,.85),rgba(255,60,60,.95))}
+.bar b{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:12.5px;
+  text-shadow:0 1px 6px rgba(0,0,0,.75);z-index:3}
+.bar .budget{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--warn);
+  box-shadow:0 0 10px var(--warn);z-index:4;opacity:.9}
+.bar .budget::after{content:"32G";position:absolute;left:5px;top:1px;font-family:var(--mono);font-size:10px;
+  color:#ffd9d9;background:rgba(0,0,0,.62);padding:1px 5px;border-radius:4px;letter-spacing:.4px;white-space:nowrap}
+.verdict{margin-top:12px;padding:12px 15px;border-radius:11px;font-size:14px;border:1px solid var(--line)}
+.verdict.ok{border-color:rgba(84,214,138,.45);background:rgba(84,214,138,.08)}
+.verdict.no{border-color:rgba(255,107,107,.45);background:rgba(255,107,107,.08)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--tx3);margin-top:8px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+
+/* ── 交互：滑块 ── */
+.slider-wrap{margin:16px 0}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:34px;background:transparent;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:8px;border-radius:99px;
+  background:linear-gradient(90deg,rgba(63,224,208,.25),rgba(63,224,208,.75) 62%,rgba(255,107,107,.85))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;
+  margin-top:-7px;background:#fff;border:3px solid var(--h3);box-shadow:0 0 16px rgba(63,224,208,.85);transition:.15s}
+input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.12)}
+input[type=range]::-moz-range-track{height:8px;border-radius:99px;background:rgba(63,224,208,.5)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border:3px solid var(--h3);background:#fff;border-radius:50%}
+.zone-marks{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--tx3);margin-top:-4px}
+.wval{font-family:var(--mono);font-size:30px;font-weight:700;color:var(--h3);letter-spacing:-1px}
+.wbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-top:6px}
+.meter{height:7px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;margin:9px 0}
+.meter i{display:block;height:100%;transition:width .4s}
+
+/* ── 折叠 / 详情 ── */
+details{border:1px solid var(--line);border-radius:12px;padding:2px 16px;margin:9px 0;background:var(--panel);transition:.22s}
+details[open]{background:rgba(255,255,255,.045)}
+details:hover{border-color:var(--line2)}
+summary{cursor:pointer;padding:12px 2px;font-weight:600;list-style:none;display:flex;align-items:center;gap:10px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+";font-family:var(--mono);color:var(--h3);font-size:17px;transition:.24s;width:14px}
+details[open] summary::before{transform:rotate(45deg)}
+details p,details ul{color:var(--tx2);font-size:14.4px}
+
+/* ── 行动清单 ── */
+.todo{display:flex;gap:13px;align-items:flex-start;padding:13px 16px;border:1px solid var(--line);
+  border-radius:12px;margin:8px 0;background:var(--panel);cursor:pointer;transition:.22s;user-select:none}
+.todo:hover{border-color:var(--line2);background:var(--panel2)}
+.todo .box{flex:0 0 20px;width:20px;height:20px;border-radius:6px;border:1.6px solid var(--line2);margin-top:3px;
+  display:grid;place-items:center;font-size:13px;color:transparent;transition:.2s}
+.todo.done .box{background:linear-gradient(135deg,var(--h3),var(--ok));border-color:transparent;color:#04120f}
+.todo.done .txt{color:var(--tx3);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.25)}
+.todo .txt{font-size:14.6px;color:var(--tx);transition:.2s}
+.todo .txt small{display:block;color:var(--tx3);text-decoration:none;font-size:12.6px;margin-top:2px}
+.todo .pw{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--tx3);white-space:nowrap;padding-top:4px}
+.pbar{height:6px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden;margin:14px 0 6px}
+.pbar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--h3),var(--ok));transition:width .45s}
+
+/* ── 复制块 ── */
+.copy{position:relative;background:#080b0f;border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;margin:14px 0;overflow-x:auto}
+.copy pre{margin:0;font-family:var(--mono);font-size:13.1px;line-height:1.85;color:#cfe4f5;white-space:pre}
+.copy button{position:absolute;top:9px;right:9px;background:rgba(255,255,255,.06);border:1px solid var(--line2);
+  color:var(--tx2);font:inherit;font-size:11.5px;padding:4px 10px;border-radius:7px;cursor:pointer;transition:.2s;font-family:var(--mono)}
+.copy button:hover{color:var(--tx);border-color:var(--h3);background:rgba(63,224,208,.12)}
+.copy button.ok{color:var(--ok);border-color:var(--ok)}
+
+/* ── 搜索 ── */
+.search{display:flex;align-items:center;gap:10px;margin:14px 0 8px}
+.search input{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:11px;
+  padding:11px 15px;color:var(--tx);font:inherit;font-size:14px;transition:.2s}
+.search input:focus{outline:none;border-color:var(--h3);box-shadow:0 0 0 3px rgba(63,224,208,.13)}
+.search .cnt{font-family:var(--mono);font-size:12px;color:var(--tx3);white-space:nowrap}
+tr.hide{display:none}
+
+/* ── 流程 SVG ── */
+.flow{display:block;width:100%;height:auto;margin:22px 0 6px}
+.flow .b{fill:rgba(255,255,255,.04);stroke:rgba(255,255,255,.14)}
+.flow .t{fill:var(--tx);font-size:13px;font-weight:600}
+.flow .s{fill:var(--tx3);font-size:11px;font-family:var(--mono)}
+.flow .ln{stroke:rgba(63,224,208,.6);stroke-width:1.6;fill:none;stroke-dasharray:6 6;animation:dash 1.4s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-24}}
+
+footer{border-top:1px solid var(--line);margin-top:70px;padding:30px 0 60px;color:var(--tx3);font-size:13.4px}
+ul{padding-left:22px;color:var(--tx2)}
+li{margin:5px 0}
+.hr{height:1px;background:var(--line);margin:34px 0}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+@media print{.top,#prog{display:none}section{page-break-inside:avoid}}
+/* 明暗：light 只切 class，不写内联变量 */
+body.light{--bg:#f5f7f9;--bg2:#fff;--panel:rgba(10,20,30,.035);--panel2:rgba(10,20,30,.06);
+  --line:rgba(10,20,30,.13);--line2:rgba(10,20,30,.26);--tx:#0c1620;--tx2:#48596c;--tx3:#7d8b99;
+  --h3:#0d8f85;--h3b:#5b4be0;--k2:#b45309;--ok:#15803d;--warn:#dc2626;
+  background-image:radial-gradient(1100px 600px at 12% -8%,rgba(91,75,224,.10),transparent 60%),
+    radial-gradient(900px 520px at 92% 4%,rgba(13,143,133,.10),transparent 58%),
+    radial-gradient(800px 500px at 60% 100%,rgba(180,83,9,.07),transparent 60%)}
+body.light::before{background-image:linear-gradient(rgba(10,20,30,.04) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(10,20,30,.04) 1px,transparent 1px)}
+body.light .top{background:rgba(245,247,249,.8)}
+body.light th{background:#eef1f4}
+body.light .copy{background:#f2f5f8}
+body.light .copy pre{color:#1d2a36}
+body.light .mono{color:#0b6b62;background:rgba(13,143,133,.08);border-color:rgba(13,143,133,.2)}
+body.light nav a.on{color:#fff}
+body.light .bar{background:rgba(10,20,30,.07);border-color:rgba(10,20,30,.16)}
+body.light .bar b{text-shadow:none;color:#0c1620}
+body.light .chip.on{color:#083f3a;background:rgba(13,143,133,.16)}
+body.light .card{background:linear-gradient(180deg,rgba(255,255,255,.9),rgba(255,255,255,.55))}
+body.light .tw,body.light details,body.light .todo,body.light .wbox{background:#fff}
+body.light .callout{background:linear-gradient(90deg,rgba(180,83,9,.09),transparent 70%)}
+body.light .callout.ok{background:linear-gradient(90deg,rgba(21,128,61,.08),transparent 70%)}
+body.light .callout.warn{background:linear-gradient(90deg,rgba(220,38,38,.08),transparent 70%)}
+body.light .bar .cap{color:#0c1620}
+</style>
+</head>
+<body>
+<div id="prog"></div>
+
+<div class="top">
+  <div class="in">
+    <div class="brand"><span class="dot"></span><span>H3 × Krea2<small> 调研档案 2026-10-11</small></span></div>
+    <nav id="nav">
+      <a href="#s0">结论</a><a href="#s1">身份</a><a href="#s2">H3 选型</a><a href="#s3">Krea2 选型</a>
+      <a href="#s4">NSFW</a><a href="#s5">LMS</a><a href="#s6">行动清单</a><a href="#s7">存疑</a><a href="#s8">补充</a>
+    </nav>
+    <button class="theme" id="themebtn" title="切换明暗">◐</button>
+  </div>
+</div>
+
+<main>
+
+<!-- ══════════ HERO ══════════ -->
+<header class="hero">
+  <div class="badge h3">实机核实 · AutoDL RTX 5090 D 32G · ComfyUI 0.37.0</div>
+  <h1><span>MiniMax-H3 与 Krea2</span><br>底模 / LoRA / NSFW / LMS 调研</h1>
+  <p class="sub">两个模型的侧重点、NSFW 支持度，以及<b>「Minimax 的 LMS LoRA」到底是什么、怎么用、有没有现成工作流</b>。
+  全部结论标注来源类型：<span class="badge ok">实机 / 官方</span> 与 <span class="badge">社区说法</span> 分开写。</p>
+  <div class="meta">
+    <span class="badge">5 份子报告</span>
+    <span class="badge k2">Krea2：13B 单流 MMDiT</span>
+    <span class="badge h3">H3：33B 视频+音频</span>
+    <span class="badge no">本次未跑生成 · 未重启实例</span>
+  </div>
+
+  <div class="callout warn">
+    <p><b>先纠正一个前提：这两个不是同一类东西，不存在「选哪个当底模」。</b></p>
+    <p>MiniMax-H3 是<b>视频 + 音频</b>模型（768p / 24fps / 4–15 秒）；Krea2 是<b>静态图像</b>模型。把 HF 官方组织页 20 个仓库全枚举一遍，
+    MiniMax <b>没有任何 text-to-image / image-to-image 的开源底模</b>，Hailuo 系列也没开源权重。</p>
+    <p>→ 出真人照片继续用 <b>Krea2</b>；把真人照片变成视频才用 <b>H3</b>。真实关系是<b>串联</b>，不是二选一。</p>
+  </div>
+</header>
+
+<!-- ══════════ 0 结论 ══════════ -->
+<section id="s0">
+  <div class="snum">01 — 结论速览</div>
+  <h2>三句话看完，<em>五个数字</em>记住</h2>
+
+  <div class="grid g4" style="margin-top:22px">
+    <div class="card h3c"><div class="tag">H3 峰值显存</div><div class="kpi c1">31<span style="font-size:17px">GB</span></div>
+      <p style="font-size:13.6px;margin:0">720p 满帧实测死贴 31GB，最低只剩约 1GB。<b>32G 是「刚好够」，不是宽裕。</b></p></div>
+    <div class="card k2c"><div class="tag">Krea2 换档收益</div><div class="kpi c3">½</div>
+      <p style="font-size:13.6px;margin:0"><span class="mono">int8_convrot</span> 的量化误差只有 <span class="mono">fp8_scaled</span> 的一半（LPIPS 0.042 vs 0.094），还更快。</p></div>
+    <div class="card"><div class="tag">LMS 内部真名</div><div class="kpi c2" style="font-size:19px;word-break:break-all">ref2va_sharpness</div>
+      <p style="font-size:13.6px;margin:0">LMS = 作者的<b>锐化 / 细节增强</b>产品线代号。三个字母全称官方没给，<b>查不到，不臆测</b>。</p></div>
+    <div class="card"><div class="tag">你机器上的现成工作流</div><div class="kpi c1">8<span style="font-size:17px"> 个</span></div>
+      <p style="font-size:13.6px;margin:0">已在用 LMS 家族（LoRA 4 个 + 放大器 4 个），全部在 <span class="mono">U视频-MINIMAX-H3/</span>（共 58 个）。</p></div>
+  </div>
+
+  <h3>这条产线应该长这样</h3>
+  <svg class="flow" viewBox="0 0 1000 150" role="img" aria-label="动漫原图 → Krea2 转真人 → H3 生成视频">
+    <defs><marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="rgba(63,224,208,.75)"/></marker></defs>
+    <g>
+      <rect class="b" x="8" y="42" width="176" height="66" rx="12"/>
+      <text class="t" x="26" y="72">动漫 / 插画原图</text><text class="s" x="26" y="92">2D · 任意尺寸</text>
+    </g>
+    <path class="ln" d="M188,75 H244" marker-end="url(#ar)"/>
+    <g>
+      <rect class="b" x="250" y="30" width="228" height="90" rx="12" style="stroke:rgba(245,168,60,.4)"/>
+      <text class="t" x="268" y="58">Krea2 + A2R LoRA</text>
+      <text class="s" x="268" y="78">8 步 / CFG 1 / 2048</text>
+      <text class="s" x="268" y="96">→ 真人定妆图 ×N</text>
+    </g>
+    <path class="ln" d="M482,75 H538" marker-end="url(#ar)"/>
+    <g>
+      <rect class="b" x="544" y="30" width="238" height="90" rx="12" style="stroke:rgba(63,224,208,.42)"/>
+      <text class="t" x="562" y="58">H3 ref2va（多图参考）</text>
+      <text class="s" x="562" y="78">euler / simple / 8 步 / CFG 1</text>
+      <text class="s" x="562" y="96">1344×768 · 124 帧（17n+5）</text>
+    </g>
+    <path class="ln" d="M786,75 H842" marker-end="url(#ar)"/>
+    <g>
+      <rect class="b" x="848" y="42" width="146" height="66" rx="12"/>
+      <text class="t" x="866" y="72">真人风格视频</text><text class="s" x="866" y="92">要锐度：LMS @0.8</text>
+    </g>
+  </svg>
+  <p style="font-size:13.4px" class="mut">一致性靠图像阶段和参考图，<b>不靠 LMS</b>——LMS 只改锐度，不改身份、不改风格。</p>
+</section>
+
+<!-- ══════════ 1 身份 ══════════ -->
+<section id="s1">
+  <div class="snum">02 — 身份</div>
+  <h2>两个模型<em>到底是什么</em></h2>
+
+  <div class="two" style="margin-top:20px">
+    <div class="card h3c">
+      <span class="badge h3">MiniMax-H3</span>
+      <h3 style="margin:12px 0 6px">33B 全模态视频模型</h3>
+      <p style="font-size:14.4px">MiniMax（稀宇科技）<b>2026-08-03</b> 开源。33B dense 单流 Transformer，输出 <b>768p 视频 + 32kHz 立体声音频</b>，4–15 秒 / 24fps。
+      任务分 <span class="mono">fl2va</span>（首尾帧）/ <span class="mono">ref2va</span>（参考图视频音频）/ <span class="mono">hybrid</span>（混血）/ <span class="mono">t2va</span>（纯文本）。</p>
+      <ul style="font-size:14px">
+        <li>文本编码器 = <b>Qwen3-VL-32B</b>（显存大头）</li>
+        <li>三个 VAE：video / audio（<b>audio 必须 fp32</b>）/ music</li>
+        <li>ComfyUI <b>原生支持</b>（0.30.0+，基础流程不需要第三方节点包）</li>
+        <li>许可：MiniMax H3 Community License，<b>排除欧盟 / 英国 / 韩国 / 美国</b>（中国大陆可用）</li>
+      </ul>
+    </div>
+    <div class="card k2c">
+      <span class="badge k2">Krea2（K2）</span>
+      <h3 style="margin:12px 0 6px">约 13B 自研单流 MMDiT</h3>
+      <p style="font-size:14.4px">Krea AI 自研，<b>2026-05-16</b> 闭源线上版上线、<b>2026-06-23</b> 开放权重。ComfyUI 源码自述
+      <span class="mono">"Krea 2 (K2) — single-stream MMDiT"</span>。</p>
+      <ul style="font-size:14px">
+        <li>文本条件 = <b>Qwen3-VL-4B 的 12 层 hidden states</b>（内部 <span class="mono">txtfusion</span>），<b>conditioning 模板与 Qwen-Image 相同</b>（源码注释原文）</li>
+        <li><b>VAE 与 Qwen-Image 共用</b>（<span class="mono">qwen_image_vae.safetensors</span>）→ 画质天花板同源</li>
+        <li><span class="mono">shift = 1.15</span> 已写进 <span class="mono">class Krea2</span>，<b>工作流里不要再加 ModelSampling 节点</b></li>
+        <li>许可：Krea 2 Community License（<b>不是 Apache / MIT</b>）；与 <span class="mono">flux1_krea_dev</span> <b>没有血缘</b></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    <p><b>为什么要知道这个：</b>社区共识是「<b>编辑用 Qwen-Image-Edit，生成用 Krea2，视频用 H3</b>」。
+    Krea2 <b>没有原生编辑管线</b>——换背景 / 换材质会把主体「重新诠释」一遍；而你编辑档走 Qwen-Image-Edit 2509 / Ostris 这条路是<b>对的</b>，别试图用 Krea2 替代。</p>
+  </div>
+</section>
+
+<!-- ══════════ 2 H3 选型 ══════════ -->
+<section id="s2">
+  <div class="snum">03 — MiniMax-H3 选型</div>
+  <h2>底模、加速器、<em>显存怎么花</em></h2>
+  <p class="lead">实机 <b>68 个底模 + 85 个 LoRA</b>，来自至少 7 个来源，加载方式都不同。核心认知只有一条：
+  <b>量化买的是显存，不是速度。</b>只有 <span class="mono">fp8_scaled</span> 在 Ada / Blackwell 上是真 FP8 matmul；其他档位之间，只要「装得下」，时间差是噪声。</p>
+
+  <h3>交互 · 自己搭一套，看装不装得下</h3>
+  <div class="builder">
+    <div class="card">
+      <div class="tag">DiT 底模</div>
+      <div class="chips" id="c-dit"></div>
+      <div class="tag">文本编码器 Qwen3-VL-32B</div>
+      <div class="chips" id="c-te"></div>
+      <div class="tag">VAE（video + audio）</div>
+      <div class="chips" id="c-vae"></div>
+    </div>
+    <div class="card">
+      <div class="tag">同时驻留（朴素估算，实际不会这样）</div>
+      <div class="bar" id="bar-sim"><i id="b-sim"></i><span class="budget" style="left:69.7%"></span><b id="v-sim"></b></div>
+      <div class="tag" style="margin-top:12px">ComfyUI 实际（编码器先加载 → 编完码释放 → 再加载 DiT）</div>
+      <div class="bar" id="bar-seq"><i id="b-seq"></i><span class="budget" style="left:69.7%"></span><b id="v-seq"></b></div>
+      <div class="legend">
+        <span><i style="background:linear-gradient(90deg,#3fe0d0,#7c6bff)"></i>装得下</span>
+        <span><i style="background:linear-gradient(90deg,#ff6b6b,#ff3c3c)"></i>超出 32G 预算</span>
+        <span><i style="background:var(--warn)"></i>32GB 预算线（≈31.4 GiB 可用）</span>
+        <span>另留 ~1.5GB 给 latent / 激活；横轴满刻度 45 GiB</span>
+      </div>
+      <div class="verdict" id="verdict"></div>
+    </div>
+  </div>
+
+  <h3>加速 LoRA：至少 7 个来源，别混着用</h3>
+  <div class="tw"><table>
+    <thead><tr><th>家族</th><th>来源</th><th>步数</th><th>加载方式</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td><b>lightx2v Turbo</b></td><td>ModelTC / LightX2V</td><td class="num">4 / 8</td><td>普通 LoRA loader · <b>ComfyUI 官方模板就用它</b></td></tr>
+      <tr><td><b>PDD Acc-8Step</b></td><td><b>Alibaba-PAI</b></td><td class="num">8</td><td><b>需专用节点 + head bank</b>（<span class="mono">ComfyUI-MiniMax-H3-PDD-Acc</span>，你机器上有）</td></tr>
+      <tr><td>larryvrh Turbo</td><td>社区</td><td class="num">4–8</td><td>需专用 sampler 节点（已装）</td></tr>
+      <tr><td>HyperFlow 8step</td><td>Video Rebirth</td><td class="num">8</td><td>普通 LoRA + <b>手动 sigma 表</b></td></tr>
+      <tr><td>DMAD / PDMD</td><td>论文方法</td><td class="num">4</td><td>Diffusers LoRA</td></tr>
+      <tr><td>FastVideo FastH3</td><td>FastVideo + NVIDIA</td><td class="num">8 固定</td><td>整模型替换，且<b>只蒸馏 t2v / fl2v，Ref2VA 没做</b></td></tr>
+      <tr><td>lightx2v Turbo-SLA</td><td>LightX2V</td><td class="num">4</td><td>普通 LoRA + sage2 稀疏算子</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="grid g3">
+    <div class="card"><div class="tag">结论 1</div><h4>ref2v 上 PDD 明显更好</h4>
+      <p style="font-size:13.8px;margin:0">同一份第三方实测（1344×768 / 124 帧 / 同 seed）：PDD 8 步的细节锐度比 lightx2v 8 步高 <b>42%</b>（7.986 vs 5.630），
+      而 lightx2v 8 步相对 20 步成片档是<b>过平滑</b>的（−22%）。<b>但 i2v 上两者只差 1.5%</b>——不能跨能力外推。</p></div>
+    <div class="card"><div class="tag">结论 2</div><h4>shift 按作者的推荐值配对</h4>
+      <p style="font-size:13.8px;margin:0">544p 系 turbo <b>推荐</b> <span class="mono">12 / 3</span>，768p 系 turbo <b>推荐</b> <span class="mono">6 / 3</span>。
+      <b>但这不是「错一个数字就崩」的硬约束</b> —— 见 <a href="#s8">09 补充</a>里的更正。</p></div>
+    <div class="card"><div class="tag">结论 3</div><h4>两个「不能叠」</h4>
+      <p style="font-size:13.8px;margin:0">蒸馏 LoRA <b>之间</b>不能叠加；也不要叠 step-caching（blockcache / EasyCache）。角色 / 风格 LoRA 可以正常叠。</p></div>
+  </div>
+
+  <h3>一条必须知道的限制</h3>
+  <div class="callout warn">
+    <p><b>ComfyUI 里的 H3 没有真正的 video-to-video。</b>三个 H3 节点<b>都从空 latent 开始</b>，参考图 / 关键帧 / guide 是 <b>conditioning</b>——每一步被重新注入，但<b>从不被去噪</b>，也没有 <span class="mono">denoise &lt; 1</span> 的路径。</p>
+    <p>→ <b>参考视频里没有任何一帧会保留到输出里</b>。你拿到的是一个<b>全新生成</b>、近似跟随参考运动与节奏的视频。「拿一段源视频换角色」在本地 ComfyUI 做不到。</p>
+  </div>
+
+  <h3>参数基线（照填）</h3>
+  <div class="copy"><button onclick="cp(this)">复制</button><pre>底模      minimax_h3_ref2va_pruned_int8_convrot.safetensors      (19.53 GiB)
+  或      minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors (一档通吃，你库里 3 个工作流在用)
+编码器    qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors            (14.61 GiB，Blackwell 原生)
+Video VAE minimax_h3_video_vae_int8_convrot-v2.safetensors        (2.62 GiB，与 fp16 像素等价)
+Audio VAE minimax_h3_audio_vae_fp32.safetensors                   (0.56 GiB，必须 fp32)
+加速 LoRA minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16          @1.0   ← 注意是 ref2v 版
+锐化 LoRA minimax/minimax_h3_lms_v1.0_r64.safetensors             @0.8   ← 见第 05 节
+
+euler / simple / 8 步 / denoise 1 / CFG 1 / shift 12:3（768p 系改 6:3）
+分辨率 1344×768（768p 原生画布）   帧数必须落在 17n+5：5 22 39 56 73 90 107 124 …</pre></div>
+</section>
+
+<!-- ══════════ 3 Krea2 选型 ══════════ -->
+<section id="s3">
+  <div class="snum">04 — Krea2 选型</div>
+  <h2>换一份底模，<em>零改动升级</em></h2>
+  <p class="lead">唯一查到的一份系统性量化基准（30 组 prompt-seed 配对，条件与你完全一致：<span class="mono">euler + simple + 8 步 + CFG 1</span>，1024×1024）。
+  结论很干脆：<b>把 <span class="mono">fp8_scaled</span> 换成 <span class="mono">int8_convrot</span></b>——保真度翻倍、速度更快、文件只大 8%、走 ComfyUI 原生路径，<b>工作流一行不用改</b>。</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>格式</th><th>体积 GiB</th><th>LPIPS-Alex ↓</th><th>DINO ↑</th><th>权重 SNR dB ↑</th><th>采样秒 ↓</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td>BF16（参考）</td><td class="num">24.48</td><td class="num">0.0000</td><td class="num">1.0000</td><td class="num">—</td><td class="num">25.78</td><td class="mut">质量上限，32G 装得下但余量紧</td></tr>
+      <tr><td>FP8 Scaled <span class="badge">你现在用的</span></td><td class="num">12.24</td><td class="num">0.0937</td><td class="num">0.9710</td><td class="num">31.59</td><td class="num">19.50</td><td class="mut">次优但完全可用</td></tr>
+      <tr class="hl"><td><b>INT8 ConvRot</b> <span class="badge ok">推荐</span></td><td class="num">12.57</td><td class="num"><b>0.0419</b></td><td class="num"><b>0.9838</b></td><td class="num"><b>41.16</b></td><td class="num"><b>12.42</b></td><td class="mut">误差只有 fp8 的一半，还更快</td></tr>
+      <tr><td>MXFP8</td><td class="num">12.60</td><td class="num">0.0712</td><td class="num">0.9794</td><td class="num">31.60</td><td class="num">31.93</td><td class="mut">⚠ 基准里的慢是 Ada 回退路径，5090 上不成立</td></tr>
+      <tr><td>NVFP4</td><td class="num">7.15</td><td class="num">0.2051</td><td class="num">0.9348</td><td class="num">20.60</td><td class="num">24.93</td><td class="mut">LPIPS 是 int8 的 5 倍，32G 没理由用</td></tr>
+      <tr><td>INT4 ConvRot W4A4 <span class="badge no">非官方档</span></td><td class="num">6.43</td><td class="num">0.3147</td><td class="num">0.9113</td><td class="num">15.72</td><td class="num">9.54</td><td class="mut">官方 8 个档里<b>没有 int4</b>，实例上那个是第三方的</td></tr>
+    </tbody>
+  </table></div>
+  <p class="mut" style="font-size:13.4px">基准自述：int8 与第二名（GGUF Q8_0）的差距在 α=0.05 下<b>不具统计显著性</b>，应视为「近似打平」；但 int8 走原生 safetensors 路径，没必要为 Q8_0 装 GGUF 插件。</p>
+
+  <h3>采样参数：你有 4 处可以立刻改</h3>
+  <div class="grid g2">
+    <div class="card"><div class="tag">改动 1 · 步数</div><h4>10 步 → <b>8 步</b></h4>
+      <p style="font-size:13.8px;margin:0">官方 turbo 蒸馏点就是 8 步；A2R LoRA 官方 card 也写 8 步 / CFG 1 / 2048。多出的 2 步买到的是「更细的纹理」而不是「更对的构图」，
+      <b>收益低于把时间拿去换 seed</b>。</p></div>
+    <div class="card"><div class="tag">改动 2 · 底模</div><h4><span class="mono">fp8_scaled</span> → <span class="mono">int8_convrot</span></h4>
+      <p style="font-size:13.8px;margin:0">见上表。零成本，加载器与结构都不变。</p></div>
+    <div class="card"><div class="tag">改动 3 · CFG / 负面词</div><h4>CFG 必须 = 1，负面提示词<b>删掉</b></h4>
+      <p style="font-size:13.8px;margin:0">turbo 是 RL 无 CFG 训练 + guidance 蒸馏出来的，CFG 一开就过饱和发灰；<b>CFG=1 时负面提示词被忽略，写了白写</b>。
+      scheduler 建议 <span class="mono">simple</span> 做基线（<span class="mono">beta</span> 当风格旋钮）。</p></div>
+    <div class="card"><div class="tag">改动 4 · 编辑档底模</div><h4>JAV 片感 → RAW 棚拍</h4>
+      <p style="font-size:13.8px;margin:0">你现在编辑档用 <span class="mono">moodyAmateurMixKrea2_3JAVStyle</span>（官方定位「日式素人 JAV 片感、略糊、生活化」）；
+      想要更锐的写实，换 <span class="mono">_4RawStudioShot</span>（RAW 棚拍、真实皮肤纹理）或 <span class="mono">Moody-Krea-Mix-v2G</span>。</p></div>
+  </div>
+
+  <h3>turbo 不是「低质快版」</h3>
+  <div class="two">
+    <div class="card"><div class="tag">官方 README 原文</div>
+      <p style="font-size:14.2px;font-style:italic;color:var(--tx)">"The Raw model is an <b>undistilled checkpoint without any step / cfg guidance distillation and posttraining</b>…
+      In short, <b>TRAIN on Raw and RUN on Turbo</b>."</p>
+      <p style="font-size:13.8px">→ RAW 连 PO / RL 都没做，换来的是<b>多样性、可塑性、可训练性</b>；turbo 走完整管线（PO → RL → TDM 蒸馏），换来的是<b>审美完成度 + 速度 + 2K</b>。</p></div>
+    <div class="tw" style="margin:0"><table style="min-width:auto">
+      <thead><tr><th></th><th>RAW</th><th>Turbo</th></tr></thead>
+      <tbody>
+        <tr><td>官方步数 / CFG</td><td class="num">52 / 3.5</td><td class="num"><b>8 / 0.0</b></td></tr>
+        <tr><td>原生分辨率</td><td class="num">≤1K</td><td class="num"><b>1K–2K</b></td></tr>
+        <tr><td>负面提示词</td><td>有效</td><td><b>无效</b></td></tr>
+        <tr><td>多样性</td><td><b>高</b></td><td>低（会「锁死」构图）</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+
+  <h3>社区底模：真正值得装的只有三条线</h3>
+  <div class="tw"><table>
+    <thead><tr><th>线</th><th>作者 / 平台</th><th>定位</th><th>你盘上的文件</th></tr></thead>
+    <tbody>
+      <tr class="hl-k2"><td><b>Moody 家族</b></td><td><span class="mono">catlover1937</span> / Civitai</td>
+        <td>体量最大的写实 / NSFW 微调系列。<b>版本号是并列主题，不是升级</b>（作者原话）</td>
+        <td><span class="mono">Moody-Krea-Mix-v2G</span>（免费档最稳）<br><span class="mono">Moody-Mix-premium</span>（<b>仍付费</b>）<br><span class="mono">Amateur 3JAVStyle / 4RawStudioShot</span></td></tr>
+      <tr><td><b>Muse by Stable Yogi</b></td><td><span class="mono">Stable_Yogi</span> / Civitai 2741166</td>
+        <td>写实人像 / 全身 / 时尚编辑体，<b>6.75 万下载</b></td>
+        <td><span class="mono">krea2MuseByStable_v15TurboFp8</span>（实例是 v1.5，<b>最新已到 v3.5 Extended</b>）</td></tr>
+      <tr><td><b>RedCraft / Dark Beast</b></td><td><span class="mono">AiMetatron</span> / Civitai 958009</td>
+        <td>短剧 / 商用生产向，偏重口高强度风格化</td>
+        <td><span class="mono">RedCraft-HighNoise/LowNoise-…-RedMix-v4</span>（<b>DUAL 双权重要配对</b>）<br><span class="mono">darkBeastINT8Convrot2_krea211</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout">
+    <p><b>两个坑：</b>① <span class="mono">redcraftHybridH3A2A_30Krea2</span>、<span class="mono">darkBeastH3Director_darkBeast330</span> 是把 <b>MiniMax H3</b> 往 Krea2 上嫁接的<b>跨谱系混血</b>，TE / VAE 都不共享，风险高于纯 Krea2 微调。</p>
+    <p>② 中文圈的白玉 AIO（<span class="mono">Krea2-turbo-White_Marble-AIO_V1_FP8</span>，22.27 GB）里装的是 <b>bf16 文本编码器</b>，比分开装<b>白吃 3.5 GB 显存</b>（拆开只 17.8 GB）；它的卖点是 RunningHub 微调的「更符合国人审美 + 中文提示词理解」，不是 AIO 格式本身。</p>
+  </div>
+
+  <h3>转真人 LoRA：<span class="mono">Krea2_Anything2RealCharacters</span></h3>
+  <p>作者查到了：<b>WarmBloodAban</b>（B 站「AIGC特异点」/ AIGC-Singularity），发布在 HF 与 <a href="https://civitai.com/models/2808492/krea2anything2realcharacters" target="_blank" rel="noopener">Civitai 2808492</a>，HF 侧标 apache-2.0（<b>底模是 Krea2 community license，LoRA 标 Apache 的合规性存疑</b>，商用前自己判断）。</p>
+  <div class="grid g3">
+    <div class="card"><div class="tag">版本策略</div><h4>V3 是对的，别退回 V2.5</h4>
+      <p style="font-size:13.8px;margin:0">V1 / V2 / V2.5 是<b>整模微调</b>，V3 <b>改回发 LoRA</b>。作者原话：*"provides much stronger compatibility when stacking external Krea2 style or character LoRAs"*，
+      并修好了 V2.5 的「转得不彻底」。<b>作者称 V3 是可预见未来的最终版，没有 V4。</b></p></div>
+    <div class="card"><div class="tag">参数 + 一个纠正</div><h4>官方没给权重推荐值</h4>
+      <p style="font-size:13.8px;margin:0">触发词 <span class="mono">transform the image to realistic photograph</span>；官方参数 <b>8 步 / CFG 1 / 2048</b>。
+      <b>README 里根本没有 LoRA 权重推荐值，你挂的 1.0 是自己定的。</b>两条独立证据都指向：<b>满权重只能单挂，叠别的 LoRA 要降到 0.5–0.8</b>。</p></div>
+    <div class="card"><div class="tag">可能更好的替代</div><h4>两条 Krea2 专属</h4>
+      <p style="font-size:13.8px;margin:0"><b>Anime in real v2.0-Krea2</b>（Zoropaton，218 MB，触发词 <span class="mono">Ani2rel</span>，<b>下载量是 A2R 的 4 倍</b>，专攻景深 / 背景虚化）<br>
+      <b>[Krea2 Edit] Anime2Real v2.5</b>（xmsthc，触发词 <span class="mono">A2R</span>，带配套工作流）</p></div>
+  </div>
+  <p class="mut" style="font-size:13.4px;margin-top:12px">叠挂权重梯度（社区验证）：<b>加速 1.0 / 身份 1.0 / 细节 0.75 / NSFW 0.8 / 皮肤 0.45</b>。turbo LoRA 可以和 A2R 同挂。
+  你实测过 <span class="mono">Krea2EditModelPatch</span> 与写实 LoRA 不兼容（出粉白发灰废图），走 Ostris 路线才对——这与「功能型 LoRA 需要专门 pipeline」一致，别混用。</p>
+</section>
+
+<!-- ══════════ 4 NSFW ══════════ -->
+<section id="s4">
+  <div class="snum">05 — NSFW 支持度</div>
+  <h2>两边都是<em>同一个格局</em>：官方有对齐、本地有绕过、社区成规模</h2>
+  <p class="lead">差别在<b>形态和约束</b>，不在「谁更开放」。下面按三层拆：<b>底模能力 / 文本编码器 / 生态</b>。点标签切换。</p>
+
+  <div class="tabs" data-tabs="nsfw">
+    <button class="on" data-p="n1">① 底模与许可层</button>
+    <button data-p="n2">② 文本编码器层（最有效）</button>
+    <button data-p="n3">③ 生态层</button>
+    <button data-p="n4">④ 横向对比</button>
+  </div>
+
+  <div class="pane on" id="n1">
+    <div class="two">
+      <div class="card h3c"><span class="badge h3">MiniMax-H3</span>
+        <ul style="font-size:14.2px;margin-top:12px">
+          <li><b>许可 AUP 20 条里没有一条明确禁色情</b>（无 pornography / sexual 字样）。最接近的是第 5 条「禁止绕过官方安全护栏」和第 15 条宽泛道德兜底。<span class="badge ok">官方 license 原文</span></li>
+          <li><b>官方 API / 托管服务有审核</b>：明文写 *"Content suspected of being unlawful, <b>pornographic</b>, or infringing third-party rights may be blocked"*，实测返回 422 "sensitive content"。</li>
+          <li><b>本地开源权重没有这层托管审核</b>（架构层面）。但「本地权重是否 uncensored」<b>未被受控证明</b>——官方没做本地 checkpoint 行为评测，社区报告之间有矛盾。</li>
+          <li><b>地域硬约束</b>：Excluded Territories = 欧盟 / 英国 / 韩国 / 美国。<b>中国大陆可用</b>，AutoDL 不受影响。</li>
+        </ul></div>
+      <div class="card k2c"><span class="badge k2">Krea2 / Qwen-Image 系</span>
+        <ul style="font-size:14.2px;margin-top:12px">
+          <li><b>Krea 官方自己承认做了对齐微调</b>：<span class="mono">safety.md</span> 里有 2500 条 prompt 评测集；AMA 原话 *"open source version needed to go through some alignment training"*。<span class="badge ok">官方</span></li>
+          <li><b>许可不禁止 NSFW 生成</b>，但压了三道约束：<b>§4.2 强制部署方自建内容过滤</b>、<b>§4.1(c) 禁止移除安全 / 溯源机制</b>、<b>许可可提前 30 天通知单方撤销</b>，商用另有 $1M 门槛。</li>
+          <li>Qwen-Image 系底模本身能力宽松，社区实测能出的程度高；但默认参数不佳时会有解剖问题。</li>
+          <li><b>反例</b>：<span class="mono">krea2_identity_edit_v1_1/v1_2</span>（conradlocke）是<b>纯 SFW，明确不支持 NSFW</b>，别当 NSFW 工具用。</li>
+        </ul></div>
+    </div>
+  </div>
+
+  <div class="pane" id="n2">
+    <div class="callout ok">
+      <p><b>结论：审查主要发生在文本编码器这一层，而这一层的绕过几乎无损。</b></p>
+    </div>
+    <div class="two">
+      <div class="card">
+        <div class="tag">Heretic / abliteration 实测</div>
+        <div class="grid g2" style="margin-top:10px">
+          <div><div class="kpi c1" style="font-size:27px">30.8% → 100%</div><div class="mut" style="font-size:12.6px">HarmBench ASR（攻击成功率）</div></div>
+          <div><div class="kpi c2" style="font-size:27px">+0.03%</div><div class="mut" style="font-size:12.6px">MMLU（通用能力，几乎无损）</div></div>
+          <div><div class="kpi" style="font-size:27px">−1.83%</div><div class="mut" style="font-size:12.6px">GSM8K</div></div>
+          <div><div class="kpi c3" style="font-size:27px">54</div><div class="mut" style="font-size:12.6px">改动的张量数（整模型里极小）</div></div>
+        </div>
+        <p style="font-size:13.6px;margin-top:12px">原理是 abliteration（把「拒绝方向」从权重里投掉），不是重新训练。<b>所以它便宜、可复现、副作用小。</b></p>
+      </div>
+      <div class="card">
+        <div class="tag">你盘上已有的无审查文本编码器</div>
+        <ul style="font-size:14px;margin-top:10px">
+          <li><b>Krea2 侧</b>：<span class="mono">qwen3vl_4b_uncensored_int8_convrot.safetensors</span>（5.06 GB）——你已经在用，方向正确</li>
+          <li><b>H3 侧</b>：<span class="mono">qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot</span>（26.36 GB，ethanfel 系，704 likes）与 <span class="mono">..._int8_convrot_uncensored_FeiHou</span>（26.36 GB）</li>
+          <li><b>作者官方 LMS 工作流自己也在用</b>无审查编码器（<span class="mono">ethanfel/Qwen3-VL-4B-Heretic</span>）做提示词 / 人脸细节提取——说明这在生产流程里是常规操作</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="pane" id="n3">
+    <div class="two">
+      <div class="card h3c"><span class="badge h3">H3 生态</span>
+        <ul style="font-size:14.2px;margin-top:12px">
+          <li><b>NSFW 嫁接底模</b>：<span class="mono">10Eros-Max</span> / <span class="mono">h3ErosMax_beta3/beta6</span>、<span class="mono">Cobijada_H3_Hybrid_Uncensored</span>、<span class="mono">PinkCherry_fl2va_MiniMax_H3_pruned_int8_convrot-beta-0.6</span></li>
+          <li><b>NSFW 动作 LoRA</b>：<span class="mono">h3_Better_NSFW_Motion_V1</span>、<span class="mono">MysticXXX_MMH3-V1/V4</span>、<span class="mono">PinkFluffyBunny-unpruned-v2-rank256</span></li>
+          <li>社区合集：EllaPriest45 的 Actions / Characters / Styles 三个仓库、Hearmeman、nikdevs</li>
+          <li>HF 官方仓库 discussion #35（A100 用户）：*"less censorship… perfect model for nsfw video"* <span class="badge">社区说法</span></li>
+        </ul></div>
+      <div class="card k2c"><span class="badge k2">Krea2 / Qwen 生态</span>
+        <ul style="font-size:14.2px;margin-top:12px">
+          <li><b>NSFW 底模</b>：<span class="mono">Moody-Krea-Mix</span>（Civitai 11.58 万下载，明确标 uncensored）、<span class="mono">moodyAmateurMixKrea2_3JAVStyle</span>（V3 JAV 片感）、<span class="mono">_4RawStudioShot</span>（V4 RAW 棚拍人体）</li>
+          <li><b>Qwen-Image 系 NSFW AIO</b>：<span class="mono">Qwen-Rapid-AIO-NSFW</span> v10.4 / 14.1 / 18 / 19 / 20 / 23（各约 28.4 GB）。作者 Phr00t 维护了 23 个版本，<b>v5 起把 NSFW 与 SFW 拆成独立发布线</b>；作者推荐 <b>v19 求编辑一致性 / v23 求提示词遵循</b>；<b>已宣布停止更新</b>。<b>不能和 Krea2 互换</b>（TE 是 Qwen2.5-VL-7B，Krea2 是 Qwen3-VL-4B），但 conditioning 模板与 VAE 共用</li>
+          <li>零散资产：<span class="mono">KNP_V2_copy_copy-nsfw_1.5-2</span>、<span class="mono">krea2-Cc-天魔-身材</span>、<span class="mono">Nick_baotunqun / leggings</span>、<span class="mono">loras/qwen/Pornmaster_QI2.1_Breasts_Slider_V1</span></li>
+        </ul></div>
+    </div>
+  </div>
+
+  <div class="pane" id="n4">
+    <div class="tw"><table>
+      <thead><tr><th>维度</th><th>MiniMax-H3（视频+音频）</th><th>Krea2 / Qwen-Image（静态图）</th></tr></thead>
+      <tbody>
+        <tr><td>许可是否明文禁色情</td><td><b>没有</b>（20 条 AUP 无 porn 字样）</td><td><b>没有</b>，但 §4.2 把过滤义务压给部署方</td></tr>
+        <tr><td>官方托管服务审核</td><td><b>有</b>，明拦 pornographic</td><td>Krea App 侧有对齐；本地权重无</td></tr>
+        <tr><td>本地权重审核层</td><td>无（架构层面）</td><td>无（架构层面）</td></tr>
+        <tr><td>无审查 TE 可得性</td><td><b>有</b>（heretic / FeiHou，你盘上有）</td><td><b>有</b>（heretic 4B，你已在用）</td></tr>
+        <tr><td>生态规模</td><td>已成型（5+ LoRA 合集 + 多个 NSFW 底模）</td><td><b>最成熟</b>（几十个底模 + 身体/服装 LoRA）</td></tr>
+        <tr><td>成本</td><td><b>高</b>：32G 峰值 31GB，5 秒要几分钟起</td><td>低：一张 2K 图秒级</td></tr>
+        <tr><td>地域限制</td><td><b>有</b>：排除欧盟 / 英国 / 韩国 / 美国</td><td>无地域排除</td></tr>
+        <tr class="hl"><td>结论</td><td>视频向，音频是 Krea2 完全没有的维度</td><td>图像向，NSFW 生态最成熟</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout warn">
+      <p><b>一处必须修正的说法：</b><span class="mono">10Eros-Max</span> 的原文是 *"carries transferred character from <b>LTX 2.3, Wan 2.2, and Krea 2</b>"*——
+      <b>Krea2 只是三个来源之一，而且原文说的是 "character"，没写 "NSFW 数据"</b>。用它当「Krea2 的 NSFW 更强」的证据<b>不成立</b>；但「把 Krea2 的角色能力移植进 H3」这件事是真的。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 5 LMS ══════════ -->
+<section id="s5">
+  <div class="snum">06 — LMS LoRA 专项</div>
+  <h2><em>LMS</em> 是什么、怎么用、工作流在哪</h2>
+
+  <div class="callout ok">
+    <p><b>一句话：LMS = HuggingFace 作者 <span class="mono">Alissonerdx</span> 为 MiniMax-H3 做的「锐化 / 细节增强」产品线代号。</b>
+    官方文档标题就是《LMS / Sharpness LoRA》，LoRA 的<b>内部名是 <span class="mono">minimax_h3_ref2va_sharpness</span></b>。</p>
+  </div>
+
+  <h3>两条铁证（实机 ↔ 官方互相对上）</h3>
+  <div class="grid g2">
+    <div class="card"><div class="tag">实机 safetensors 元数据</div>
+      <div class="copy" style="margin:10px 0 0"><button onclick="cp(this)">复制</button><pre>name            minimax_h3_ref2va_sharpness
+ss_output_name  minimax_h3_ref2va_sharpness
+ss_base_model   minimax_h3_ref2va
+software        ai-toolkit 0.13.4
+training_info   {"step": 4000, "epoch": 10}
+tensors         516  ·  rank 64  ·  6.2 亿参数  ·  全 fp16</pre></div></div>
+    <div class="card"><div class="tag">作者官方工作流里的节点</div>
+      <p style="font-size:14px;margin:10px 0 0">那个 LoRA 节点的文件名逐字就是：</p>
+      <div class="copy" style="margin:8px 0 0"><button onclick="cp(this)">复制</button><pre>Downloads/minimax_h3_ref2va_sharpness (1).safetensors</pre></div>
+      <p style="font-size:13.8px">→ 作者训练时的原始文件名，<b>发布时才改名成 <span class="mono">minimax_h3_lms_v1.0_r64</span></b>。</p></div>
+  </div>
+  <p class="mut" style="font-size:13.4px">⚠️ <b>三个字母的全称官方和社区都没给，查不到</b>（作者文档、模型卡、awesome-list、ComfyUI Wiki 中文报道、bbs 中文帖、作者 HF 主页全都没有展开）。<b>不臆测。</b>中文圈有写作「训练者 NRDX」的说法。</p>
+
+  <h3>两个完全独立的用法</h3>
+  <div class="grid g2">
+    <div class="card h3c"><div class="tag">用法 ① 锐化 LoRA</div>
+      <div class="mono" style="margin:8px 0;display:block">loras/minimax/minimax_h3_lms_v1.0_r64.safetensors · 1.24 GB</div>
+      <p style="font-size:13.9px">挂在 <span class="mono">LoraLoaderModelOnly</span>，权重 <b>0.2–1.0</b>。<b>同分辨率</b>把 H3 偏软的输出「回锐」，<b>不增加像素</b>。
+      必须同时挂 <span class="mono">MiniMaxH3AddGuide</span>（<span class="mono">frame_idx = 0</span>），否则<b>不工作</b>。</p></div>
+    <div class="card"><div class="tag">用法 ② 潜空间放大器</div>
+      <div class="mono" style="margin:8px 0;display:block">latent_upscale_models/h3_upscaler_lms_v0.1_fp32.safetensors · 1.38 GB</div>
+      <p style="font-size:13.9px">当 <span class="mono">SelfLiftH3Sampler</span> 的 <span class="mono">upscaler_model</span>（第 9 个控件），<span class="mono">rho=0</span> 外部提升器模式：
+      前段低分辨率采样 → <b>学习式 latent 提升</b> → 高分辨率收尾。</p></div>
+  </div>
+  <div class="callout">
+    <p><b>放大器那两个文件名是同一份文件</b>：实机 <span class="mono">h3_upscaler_lms_v0.1_fp32</span> 与 <span class="mono">h3_upscaler_sharpness_2000steps_v0.1_fp32</span>
+    是<b>同一个 AutoDL blob</b>（md5 都是 <span class="mono">ac7519f3…</span>，都是 1,381,153,616 字节）——作者把旧名重命名成了新名，本地缓存留了两个名字。</p>
+    <p>它<b>不是 LoRA</b>，是从 <span class="mono">LBH-123-AI/Minimax_h3_latent_Upscaler</span> 初始化、再用<b>和 LMS LoRA 相同的 sharpness 数据集</b>微调 2000 步得到的。官方推荐 <b>fp16</b> 版，<b>你机器上装的是 fp32 训练存档</b>（换 fp16 省显存，画质无影响）。</p>
+  </div>
+  <details>
+    <summary><span class="mono">_r64</span> 和 <span class="mono">_r64_r2</span> 是不是同一份权重？</summary>
+    <p><b>是。</b>逐张量比对（516 / 516）显示差异只有 <b>1–2 个 fp16 ULP</b>（最大 2⁻¹²，全局相对差 5.1e-4，余弦 ≥ 0.9999998）。
+    决定性证据：<span class="mono">_r2</span> 的元数据 <span class="mono">sshs_model_hash</span> <b>仍然等于 r64 的数据段哈希</b>，同时多出 <span class="mono">hash_modifier_nonce</span> / <span class="mono">hash_modifier_time</span> 两个字段
+    → <b>二次保存 + 有意的哈希改写，不是第二次训练。</b>选哪个都行，建议以和官方同名的 <span class="mono">_r64</span> 为基准。</p>
+  </details>
+
+  <h3>交互 · 权重滑到哪儿？</h3>
+  <div class="card">
+    <div class="slider-wrap">
+      <input type="range" id="w" min="0" max="1.3" step="0.05" value="0.8" aria-label="LMS 权重">
+      <div class="zone-marks"><span>0</span><span>0.2 补刀</span><span>0.8 最稳</span><span>1.0 官方起点</span><span>1.3 作者对比图</span></div>
+    </div>
+    <div class="wbox">
+      <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+        <span class="wval" id="wv">0.80</span>
+        <span class="badge" id="wt">社区最稳</span>
+      </div>
+      <p id="wd" style="margin:10px 0 4px;font-size:14.2px"></p>
+      <div style="font-size:12.4px;color:var(--tx3)">锐度</div><div class="meter"><i id="m-s" style="background:linear-gradient(90deg,#3fe0d0,#7c6bff)"></i></div>
+      <div style="font-size:12.4px;color:var(--tx3)">过曝 / 伪影风险</div><div class="meter"><i id="m-r" style="background:linear-gradient(90deg,#54d68a,#ff6b6b)"></i></div>
+    </div>
+  </div>
+
+  <h3>最小配方</h3>
+  <div class="copy"><button onclick="cp(this)">复制</button><pre>前提：必须挂 MiniMaxH3AddGuide(frame_idx = 0)，源片经它当 guide latent
+      底模选 ref2va（hybrid_fl2va_ref2va 混血档实测也好用）
+      guide 与目标：帧数落在 17n+5、分辨率尽量一致
+
+底模      minimax_h3_ref2va_pruned_int8_convrot.safetensors
+加速 LoRA minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16   @ 1.0   ← 是 ref2v 版，不是 fl2v 版
+LMS       minimax/minimax_h3_lms_v1.0_r64.safetensors       @ 0.8   ← 官方起点 1.0，社区最稳 0.8
+提示词    Enhance this video with sharp, crisp details while preserving a natural
+          photorealistic appearance.                              ← 固定，不改写
+采样      euler / simple / 8 步 / denoise 1 / CFG 1
+shift     MiniMaxH3SigmaShift = 12 : 3      （768p 系 turbo 改成 6 : 3）
+目标      EmptyMiniMaxH3LatentAV = 1344 × 768 / 124 帧</pre></div>
+
+  <div class="tw"><table>
+    <thead><tr><th>权重</th><th>出处</th><th>什么时候用</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td class="num"><b>1.0</b></td><td>官方 <span class="mono">docs/lms.md</span>：*"Start with LoRA strength 1.0"*</td><td>官方起点</td></tr>
+      <tr class="hl"><td class="num"><b>0.8</b></td><td>社区（Banodoco 测试者）：*"0.8 左右皮肤和纹理最自然；两遍都推到 1.0 会过于极端"*</td><td><b>日常最稳</b></td></tr>
+      <tr><td class="num"><b>0.9</b></td><td>你机器上 <span class="mono">U27-MinimaxH3纹理增强-爱屋</span></td><td>LMS 当<b>唯一主效果</b></td></tr>
+      <tr><td class="num"><b>0.2 / 0.3 / 0.4</b></td><td>你机器上 <span class="mono">U24 / U30 / U29</span></td><td>挂在 5–10 个 LoRA 大链<b>末尾「补刀」</b></td></tr>
+    </tbody>
+  </table></div>
+  <p><b>两条归纳出来的经验：</b>① LMS <b>总是挂在 LoRA 链最后一环</b>（紧贴 sigma shift / guider 之前），锐化不被后续 LoRA 再「揉」一遍；
+  ② <b>叠的 LoRA 越多，LMS 权重越低</b>——前面已经有加对比 / 质感的 LoRA 时，再叠 0.9 会崩。</p>
+
+  <h3>你机器上已经有 8 个在用 LMS 的工作流</h3>
+  <p class="mut" style="font-size:13.6px">路径：<span class="mono">/root/ComfyUI/user/default/workflows/U视频-MINIMAX-H3/</span>（该目录共 58 个工作流）。点表头下方搜索框可按名字筛。</p>
+  <div class="search"><input id="wf" placeholder="筛选工作流 / 用法 / 权重…" aria-label="筛选工作流"><span class="cnt" id="wf-c"></span></div>
+  <div class="tw"><table id="wft">
+    <thead><tr><th>工作流</th><th>LMS 用法</th><th>定位</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td><b>U27-MinimaxH3纹理增强-爱屋</b></td><td>LoRA @ <b>0.9</b>（链尾）</td><td><b>最干净的蓝本</b>，36 节点、无 bypass、单一目标就是纹理增强；作者就是中文圈那位「爱屋」</td></tr>
+      <tr><td>U30-Minimax-H3-Singularity超双采放大-AIGC特异点</td><td>LoRA @ <b>0.3</b></td><td>双采 + <span class="mono">MinimaxH3LatentUpscaler3D</span>(×1.5)，ref2va 专职底模，9 图 + 3 视频参考</td></tr>
+      <tr><td>U29-H3高动态多图版-宫格图反推写词-小岚</td><td>LoRA @ <b>0.4</b></td><td>最重的综合流（10 个 LoRA 串联 + 文戏/武戏/高动态开关）</td></tr>
+      <tr><td>U24-文武双修T8版MiniMaxH3双采参考生视频V927</td><td>LoRA @ <b>0.2</b> + 放大器</td><td>LMS 两个用法同时出现的<b>唯一一个</b></td></tr>
+      <tr><td>U00-selflift群主试玩版</td><td><b>放大器</b>（新名）</td><td>SelfLift 试玩版，结构最干净（38 节点）</td></tr>
+      <tr><td>U37-真-上下文无缝无色差长视频-SelfLift双采-惊尘573</td><td><b>放大器</b></td><td>长视频接续，作者备注最全</td></tr>
+      <tr><td>U34-WORK-FISHER-9-28-MINIMAXH3-武戏高动态工作流</td><td><b>放大器</b>（旧名 ×1.5）</td><td>武戏高动态</td></tr>
+      <tr><td>U38-打斗增强版-多少会点不精</td><td><b>放大器</b>（旧名 ×1.2）</td><td>打斗增强</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout ok">
+    <p><b>想照着复现：用 <span class="mono">U27</span>（最干净）或 <span class="mono">U30</span>（LMS 当收尾 + 放大）；想玩 SelfLift：用 <span class="mono">U00</span>。</b></p>
+    <p>网上下载：作者官方工作流 <a href="https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/blob/main/workflows/minimax_h3_lms_workflow.json" target="_blank" rel="noopener">minimax_h3_lms_workflow.json</a>（103 节点，是<b>对比演示</b>性质，含 bypass 节点和作者本机路径，导入要改路径）；
+    社区 ethanfel 的 <a href="https://github.com/ethanfel/ComfyUI-MiniMaxH3-Context-Loop/tree/main/example_workflows" target="_blank" rel="noopener">DLSS5 + LMS</a>（接长视频体系，限制与显存估算写得很清楚）。
+    本仓库已存档原件：<span class="mono">outputs/research/minimax_h3_lms_workflow_author.json</span>。</p>
+  </div>
+
+  <h3>LMS 与「转真人」的关系</h3>
+  <p><b>LMS 不改身份、不改风格，只改锐度。</b>它对这个场景的价值在<b>后期</b>：真人化角色最怕的不是糊，而是「塑料感 / 涂抹感」，
+  而 LMS 的定位正是「把清晰、照片级的细节加回偏 soft 或过度平滑的输出」。两条硬限制：<b>一致性靠图像阶段和参考图，不靠 LMS</b>；
+  LMS 训练在 <span class="mono">ref2va + guide latent</span> 上，<b>混用原生参考图是作者标注的「实验性，可能不会更好」</b>。</p>
+</section>
+
+<!-- ══════════ 6 行动清单 ══════════ -->
+<section id="s6">
+  <div class="snum">07 — 行动清单</div>
+  <h2>按性价比排序，<em>勾掉即可</em></h2>
+  <p class="lead">勾选状态存在浏览器本地（localStorage），关掉页面再打开还在。</p>
+  <div class="pbar"><i id="pb"></i></div>
+  <div style="font-family:var(--mono);font-size:12.4px;color:var(--tx3)" id="pbt">0 / 8</div>
+
+  <h3>Krea2 线 · 立刻能做，零风险</h3>
+  <div id="todos-k"></div>
+  <h3>H3 线 · 想做视频再做</h3>
+  <div id="todos-h"></div>
+  <h3>可选 · 要我动手就说</h3>
+  <div id="todos-o"></div>
+</section>
+
+<!-- ══════════ 7 存疑 ══════════ -->
+<section id="s7">
+  <div class="snum">08 — 没查到 / 存疑</div>
+  <h2>把不确定的<em>明确标出来</em></h2>
+  <div class="grid g2">
+    <div>
+      <details open><summary>「LMS」三个字母的全称</summary><p><b>查不到。</b>官方文档、模型卡、awesome-list、ComfyUI Wiki 中文报道、bbs 中文帖、作者 HF 主页全都没有展开。本报告不做缩写臆测。</p></details>
+      <details><summary>「LoRA 是放大器的蒸馏版」？</summary><p><b>不成立为已证事实。</b>官方只说两者用<b>同一个 sharpness 数据集</b>（放大器 2000 步从 LBH 权重初始化；LoRA 4000 步 / 10 epoch），没有出现 distill 字样。只能写「同源同数据集」。</p></details>
+      <details><summary>H3 本地权重「是否 uncensored」</summary><p><b>未被受控证明。</b>官方没做本地 checkpoint 的行为评测，社区报告之间有矛盾。「本地无审核层」是架构事实，「模型行为不受限」是未测量的推论。</p></details>
+      <details><summary>Krea2 许可证条款</summary><p><b>未逐条核对</b>（官方另有 Model Licensing 与 Community License 两页，企业部署另有条款）。<b>商用前必须自己读原文</b>：Krea 系 community license、MiniMax H3 系 community license + 地域排除，A2R 的 LoRA 标 Apache-2.0 但底模不是 Apache。</p></details>
+    </div>
+    <div>
+      <details><summary>几个没查到来源的命名</summary><p><span class="mono">MASO</span>（RedCraft 命名里的标记）没有官方释义；<span class="mono">mystic07</span>、<span class="mono">veda/..._8nfe</span>、<span class="mono">quantfunc_int4_r128</span> 的来源也没查到。</p></details>
+      <details><summary>实例上的 FeiHou v0.8 对不上公开版本</summary><p>你盘上的是 <span class="mono">FeiHou_MiniMax-H3_Remix_HSA_turbo_v0.8_int8_convrotHQ</span>，而公开 HF 只到 v0.6，<b>建议核对 Civitai 上的版本</b>。</p></details>
+      <details><summary>Krea2 LoRA 生态覆盖率低</summary><p>实机 29 项里只有 <b>6 项完整查到、7 项部分查到、16 项没查到</b>——Krea2 从 2026-06 才开放权重，大量资产只在国内平台（liblib / ModelScope）流通，这是生态早期 + 平台封闭的真实结果。</p></details>
+      <details><summary>本次调研未跑任何生成任务</summary><p>遵守「不占显存、不重启、不关机」的红线。所有效果描述都来自官方文档、社区报道和你已有工作流的参数记录——<b>没有一条是本次实跑出来的</b>。</p></details>
+    </div>
+  </div>
+
+  <div class="hr"></div>
+  <h3>来源分层</h3>
+  <div class="grid g3">
+    <div class="card"><div class="tag">实机（只读）</div><p style="font-size:13.6px;margin:6px 0 0">AutoDL 实例 RTX 5090 D 32G · ComfyUI 0.37.0 · 202 个自定义节点包 · 68 个 H3 底模 / 85 个 H3 LoRA / 25 个 Krea2 底模 / 29 个 Krea2 LoRA / 58 个 H3 工作流。全部通过 SSH 只读读取。</p></div>
+    <div class="card"><div class="tag">官方一手</div><p style="font-size:13.6px;margin:6px 0 0">MiniMax 开源公告与 license 全文、Krea 技术报告与 GitHub、ComfyUI 源码（<span class="mono">comfy/ldm/krea2</span>、<span class="mono">comfy/ldm/minimax</span>、<span class="mono">comfy_extras/nodes_minimax_h3.py</span>）、Comfy-Org 权重仓库、HuggingFace API。</p></div>
+    <div class="card"><div class="tag">社区（标注为说法）</div><p style="font-size:13.6px;margin:6px 0 0">Civitai / HuggingFace 讨论区 / Reddit r/StableDiffusion / B 站 / 知乎 / bbs.monster / Banodoco Discord / ComfyUI Wiki 中文报道。凡属此类，正文里都标了 <span class="badge">社区说法</span> 或写「社区」。</p></div>
+  </div>
+</section>
+
+<!-- ══════════ 9 第二轮补充 ══════════ -->
+<section id="s8">
+  <div class="snum">09 — 第二轮补充</div>
+  <h2>Dasiwa 谱系、<em>真人 NSFW 推荐</em>、以及一处更正</h2>
+  <p class="lead">首轮交付后追加了三份子报告：<span class="mono">dasiwa-series.md</span>、<span class="mono">h3-nsfw-best.md</span>、<span class="mono">krea2-nsfw-best.md</span>。</p>
+
+  <div class="callout warn">
+    <p><b>更正我自己的说法：shift 不是「错一个数字就崩」。</b>首页第 03 节结论 2 原来写「错配是结构性崩坏」，<b>说重了</b>。</p>
+    <p>① 12/3 与 6/3 是 <b>lightx2v 作者的推荐值</b>（v1.2 的 HF discussion #52），不是硬约束；② <b>Dasiwa 作者给的蒸馏区间本身就是 video shift 6–12</b>，两个值都在范围内；
+    ③ 你自己的工作流就是两种并存 —— U24/U29/U34/U38 用 <b>12/3</b> 配 768p LoRA，U40 用 <b>6/3</b> 配 Dasiwa 底模，都能跑。</p>
+    <p>→ 准确说法：<b>shift 按 LoRA / 底模作者的推荐值配对；唯一 fail-closed 的是 Alibaba PDD Acc</b>（节点强制 12.0/3.0，写别的直接报错）。</p>
+  </div>
+
+  <h3>Dasiwa 系列是什么</h3>
+  <p><b>第三方「整包底模」，不是 544p / 768p 那种 turbo LoRA 分代。</b>来自 <b>darksidewalker</b> 的量化工具站
+  <span class="mono">dasiwa-quant-station</span>；同一个作者还做了 <span class="mono">ComfyUI-DaSiWa-Nodes</span>（你那个 U10 导演台就是它）。命名规则直接写在元数据的 <span class="mono">modelspec.title</span> 里：</p>
+  <div class="copy"><button onclick="cp(this)">复制</button><pre>dasiwa_minimax_h3_ref2va_v2_pruned_hybrid_turbo_int8_row-wise_convrot_runtime_mixed
+                  └任务族┘ └版本┘ └pruned┘└hybrid┘└turbo┘ └────────量化格式────────┘</pre></div>
+
+  <div class="grid g2">
+    <div class="card"><div class="tag">Hybrid 的确切技术（元数据原文）</div>
+      <div class="copy" style="margin:10px 0 0"><button onclick="cp(this)">复制</button><pre>base_model      minimax_h3_fl2va_pruned_bf16
+overlay_model   minimax_h3_ref2va_pruned_bf16
+h3_delta_mode   svd-r1024
+h3_delta_rank   1024
+h3_delta_strength 0.85
+h3_delta_energy adaln 100% · attn 55% · mlp 46%
+                out 100% · proj 93%</pre></div>
+      <p style="font-size:13.6px;margin:10px 0 0">→ <b>以 fl2va 为底，把 ref2va 的权重差用 SVD 低秩（rank 1024）按 0.85 强度叠进去</b>，得到一个既能首尾帧、又能多图参考的底模。</p></div>
+    <div class="card"><div class="tag">curveproj1025 是什么</div>
+      <p style="font-size:13.8px;margin:10px 0 0">全宽 <b>2688 维</b> AdaLN 经 <b>1025 点仿射最小二乘</b>投影到 pruned 的 <b>8 维曲线表</b> <span class="mono">adaln_t_table</span>
+      （模型 config 里的 <span class="mono">adaln_curve_grid: 1025</span> 就是它），另存一个 FP32 <span class="mono">diff_b</span> 承载常数项。</p>
+      <p style="font-size:13.8px">这就是为什么 Dasiwa 底模要配「<span class="mono">..._curveproj1025_compat</span>」版的 turbo LoRA。</p></div>
+  </div>
+
+  <div class="tw"><table>
+    <thead><tr><th>你盘上的文件</th><th>modelspec.title</th><th>形态</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">dasiwaHybrid4turboV1</td><td class="mono">..._v1_pruned_hybrid_bf16_m_4turbo_...</td><td>v1 + 4 步蒸馏已烘入</td></tr>
+      <tr><td class="mono">dasiwaHybrid8turboV1</td><td class="mono">..._v1_pruned_hybrid_bf16_m_8turbo_...</td><td>v1 + 8 步蒸馏已烘入</td></tr>
+      <tr><td class="mono">dasiwaHybridV2_int8</td><td class="mono">..._v2_pruned_hybrid</td><td>v2，<b>无 turbo</b> → 20–25 步</td></tr>
+      <tr><td class="mono">dasiwaHybridTurboV2_int8</td><td class="mono">..._v2_pruned_hybrid_turbo</td><td>v2 + turbo</td></tr>
+      <tr><td class="mono">dasiwaREF2VAHybridV1</td><td class="mono">..._v1_hybrid_pruned_int8_convrot</td><td>v1，ref2va 侧重</td></tr>
+      <tr class="hl"><td class="mono"><b>dasiwaHybridV4Turbo_int8</b></td><td class="mono">dasiwa_minimax_h3_ref2va_v4_pruned_turbo</td><td><b>最新（10-10），v4 + turbo</b></td></tr>
+    </tbody>
+  </table></div>
+  <p class="mut" style="font-size:13.4px">作者推荐 shift：<b>蒸馏版 video 6–12 / audio 3–5、4 或 8 步</b>（4 步只宜打样）；<b>非蒸馏版 10–12、20–25 步</b>。
+  另外 <span class="mono">modelspec.watermark</span> <b>不影响画面</b>（X25519+AES-256-GCM 的元数据溯源签名）；<b>自带加速的底模不要再叠加速 LoRA</b>；作者正在 HF 对镜像站提删，<b>自用可以，别再分发</b>。</p>
+
+  <h4>实测：U24 / U29 / U34 / U38 那样挂，到底对不对？</h4>
+  <p>那个 Dasiwa 专用 turbo LoRA 声明 <span class="mono">compatibility_scope: exact_checkpoint_sha256_only</span>，但那 4 个工作流把它挂在<b>非 Dasiwa</b> 的
+  <span class="mono">hybrid_fl2va_ref2va_b25-49-int8</span> 上。我把三个底模的 <span class="mono">adaln_t_table</span>（F32 [1025, 8]，32,800 字节）哈希算出来对比：</p>
+  <div class="tw"><table>
+    <thead><tr><th>底模</th><th>曲线表 sha256</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td class="mono">hybrid_fl2va_ref2va_b25-49-int8</td><td class="mono">ac8727cdec52137c…</td></tr>
+      <tr class="hl"><td class="mono">DasiwaMinimaxH3_dasiwaREF2VAHybridV1</td><td class="mono">ac8727cdec52137c… ← <b>完全相同</b></td></tr>
+      <tr><td class="mono">minimax_h3_ref2va_pruned_int8_convrot（官方）</td><td class="mono">c02a6c1188829768… ← 另一个</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout ok"><p>→ <b>曲线表没差，不属于结构性错配。</b>但主干权重不同，严格说不在 <span class="mono">exact_checkpoint_sha256_only</span> 的契约保证范围内。</p></div>
+
+  <h3>真人写实 NSFW：底模与 LoRA</h3>
+  <div class="tabs" data-tabs="best">
+    <button class="on" data-p="b1">H3（视频）</button>
+    <button data-p="b2">Krea2（图像）</button>
+  </div>
+
+  <div class="pane on" id="b1">
+    <div class="tw"><table>
+      <thead><tr><th>位置</th><th>推荐</th><th>依据</th><th>你的情况</th></tr></thead>
+      <tbody>
+        <tr class="hl"><td><b>底模</b></td><td class="mono">10Eros_Max_h3_TURBO-hybrid_beta5_int8</td>
+          <td>HF <b>789 likes</b> / 62 讨论（NSFW 类 H3 第一）；作者说 beta5 是「唯一真正可用的版本」；多个第三方 NSFW LoRA 直接把 "best with h3 eros max beta5" 写进文件名</td>
+          <td><span class="badge ok">你已经有</span> 20.97 GB，09-10</td></tr>
+        <tr><td>⚠️ 别用</td><td class="mono">..._beta4</td><td>作者在模型卡上标明 <b>beta3 / beta4 是 corrupted test versions</b></td><td>你也有 beta4 —— 别用那个</td></tr>
+        <tr><td>底模备选</td><td class="mono">PinkCherry v1.5 fl2va</td><td>HF 452 likes，唯一带 20+ 自测样片的 NSFW H3 底模</td><td>你有的是旧的 <span class="mono">beta-0.6</span></td></tr>
+        <tr><td>LoRA·概念</td><td class="mono">[MMH3] Mystic XXX</td><td>Civitai 2856467（alcaitiff，168 评论）；TenStrip 亲自写进 10Eros 官方用法。<b>用 v2 或 v4，别用 v1</b></td><td>你有 V1 / V4，<b>缺 V2</b></td></tr>
+        <tr><td>LoRA·总合</td><td class="mono">HMNSFW-AIO-V2.5</td><td>Civitai <b>28,438 downloads</b>（全类最高）；作者配方 <span class="mono">euler/simple/12 步/shift 6/turbo 0.5</span></td><td><span class="badge no">没有</span></td></tr>
+        <tr><td>LoRA·动作</td><td class="mono">h3_Better_NSFW_Motion_V1</td><td>7,635 downloads；作者配方 Mystic 0.8 + motion 0.9 + turbo 1 + motion adapter 1。但<b>训练数据是 3D 动画，真人他自己没测过 → 降到 0.5–0.7</b></td><td><span class="badge ok">有</span></td></tr>
+        <tr><td>LoRA·写实</td><td class="mono">Realism People</td><td>触发词 <span class="mono">r34l1sm</span>，权重 0.6–1.0；HF 469 likes / 83,195 downloads</td><td><span class="badge ok">有</span>（<span class="mono">h3-realism-people-...r34l1sm</span>）</td></tr>
+        <tr><td>无审查 TE</td><td>ethanfel Heretic 版</td><td>HF 705 likes，无审查 H3 编码器的公认首选</td><td><span class="badge ok">有</span></td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout warn">
+      <p><b>三条纠正</b>：① <span class="mono">Cobijada</span> / <span class="mono">FeiHou Remix</span> / <span class="mono">Singularity</span> <b>都不是 NSFW 底模</b> —— README 里连 NSFW 字样都没有，它们是功能型 hybrid / merge（我实机读元数据也印证了：Cobijada 只有一句 <span class="mono">converted_by: Star Ultimate Model Converter</span>）。
+      ② <span class="mono">h3ErosMax_*</span> 是 <b>Civitai 侧的文件名</b>，HF 侧同一个模型叫 <span class="mono">10Eros_Max_*</span> —— 同一个东西的两个名字。
+      ③ <span class="mono">beta6</span> 是<b>另一条路线</b>（10/3 shift、8–12 步、VSA 稀疏），<b>别套 beta5 的参数</b>。</p>
+    </div>
+  </div>
+
+  <div class="pane" id="b2">
+    <div class="tw"><table>
+      <thead><tr><th>位置</th><th>推荐</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr class="hl-k2"><td><b>底模</b></td><td class="mono">Krea2-SAT-DirtyRealism</td>
+          <td>Civitai <b>2796522</b>（作者 Sateluco，16,824 dl / 671 赞）。<b><span class="mono">Dirty Uncut</span> 不是独立底模，是它的最新版</b>（versionId 3372523，2026-09-30）。唯一用整段篇幅定义成人向的底模（*"strong focus on adult NSFW imagery"*）；6 版连续迭代；给了完整参数（896×1152、8 步、CFG 1、<span class="mono">Euler-SGM Uniform</span>、Hires denoise 0.15）；FP8 / INT8 ConvRot / INT4 / GGUF 四档；<b>许可最宽</b>（含 Sell / SellMerge）</td></tr>
+        <tr><td>热度冠军（非专攻 NSFW）</td><td class="mono">Moody Krea 2 Mix (uncensored)</td><td>115,811 dl；但多风格混合，许可最紧（<span class="mono">allowDerivatives=False</span>）</td></tr>
+        <tr><td>并列候选</td><td class="mono">Kreamania V4</td><td>24,666 dl，作者写 "completely uncensored"。<b>但有公开负评</b>（有用户称 V5 丢了写实感），故不列第一</td></tr>
+        <tr class="hl-k2"><td><b>LoRA·第 1</b></td><td class="mono">Krea2 TextFusion Refusal-Reduction LoRA</td>
+          <td>Civitai <b>2775340</b>，<b>51,771 downloads</b>，strength <b>1.00</b>。改的是 <b>TextFusion + projector（合成 12 路文本编码器表示的那层）+ text MLP</b> —— <b>正是无审查文本编码器管不到的那一层</b>，与你现有方案互补</td></tr>
+        <tr class="hl-k2"><td><b>LoRA·第 2</b></td><td class="mono">Krea 2 NSFW V4</td><td>Civitai <b>2725430</b>，<b>104,410 downloads</b>（NSFW 概念类最高）；权重梯度 <b>0.8 → 1 → 1.2 → 2</b></td></tr>
+        <tr><td>触发词（你已有的）</td><td class="mono">moodyAmateurMixKrea2</td><td>V3 = <span class="mono">JAVPHOTOGRAPHY</span>、V4 = <span class="mono">MoodyStudioPhotography</span>（来自 Civitai 2859971 —— 注意它和 <span class="mono">Moody Krea 2 Mix</span> 2731187 是<b>两个不同的模型页</b>）</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout">
+      <p><b>你盘上几个文件的核对</b>：<span class="mono">Nick_baotunqun_Krea2</span> 对应平台上的 <span class="mono">Nick_bodycon_包臀裙</span>（拼音误记）；
+      <span class="mono">KNP_V2_copy_copy-nsfw_1.5-2</span> 是 <span class="mono">Krea 2 NSFW</span> V2 的转存重命名件（<span class="mono">KNP</span> 只是它 v1 的触发词，V2 起已废弃）；
+      <span class="mono">Pornmaster_QI2.1_Breasts_Slider_V1</span> 是 <b>Qwen 系的，不能挂 Krea2</b>；
+      <span class="mono">Krea2-realism-V2</span>、<span class="mono">Nick_leggings_Krea2</span> 在平台上找不到同名条目（文件确实在你盘上，只是来源追不到）。</p>
+    </div>
+  </div>
+
+  <h3>两条实务提醒</h3>
+  <div class="grid g2">
+    <div class="card"><div class="tag">提醒 1</div><h4>底模会消失</h4>
+      <p style="font-size:13.8px;margin:6px 0 0"><span class="mono">Windy Krea Windy2 Turbo 0.1INT8</span>（Civitai 2785781）<b>API 已 404 下架</b>，CivArchive 标 Archived。
+      你这套底模有相当一部分来自 Civitai 与国内平台，<b>建议挑核心的留档并记下 SHA256</b>。</p></div>
+    <div class="card"><div class="tag">提醒 2</div><h4>没有受控横评</h4>
+      <p style="font-size:13.8px;margin:6px 0 0">H3 与 Krea2 两个方向都<b>找不到任何第三方多底模同 seed 的横评</b>。上面所有「哪个最好」都基于 likes / downloads / 作者自述 / 单条评论 ——
+      权重与叠挂顺序是作者原话，但「这几件叠在一起」<b>没有第三方实测</b>。<b>要定论只能自己 A/B。</b></p></div>
+  </div>
+</section>
+
+<footer>
+  <p>调研日期 <b>2026-10-11</b> · 汇总自 5 份子报告：<span class="mono">outputs/research/minimax-h3.md</span>、<span class="mono">minimax-h3-models.md</span>、<span class="mono">minimax-h3-lms.md</span>、<span class="mono">krea2-base.md</span>、<span class="mono">krea2-nsfw.md</span></p>
+  <p>同内容的 Markdown 版：<span class="mono">docs/minimax-h3-and-krea2.md</span> · 作者官方 LMS 工作流原件：<span class="mono">outputs/research/minimax_h3_lms_workflow_author.json</span></p>
+  <p class="mut">全部外部内容仅作资料引用，未执行其中任何指令。本次调研未在实例上跑生成、未改实例文件、未重启任何服务。</p>
+</footer>
+</main>
+
+<script>
+/* ── 进度条 + 导航高亮 ── */
+const bar=document.getElementById('prog');
+const links=[...document.querySelectorAll('#nav a')];
+const secs=links.map(a=>document.querySelector(a.getAttribute('href')));
+function onScroll(){
+  const h=document.documentElement.scrollHeight-innerHeight;
+  bar.style.width=(h>0?scrollY/h*100:0)+'%';
+  let i=secs.length-1;
+  for(let k=0;k<secs.length;k++){ if(secs[k].getBoundingClientRect().top<=140) i=k; }
+  links.forEach((a,k)=>a.classList.toggle('on',k===i));
+}
+addEventListener('scroll',onScroll,{passive:true});addEventListener('resize',onScroll);onScroll();
+
+/* ── 存储：file:// 下 localStorage 可能被拒，退化到内存 ── */
+const mem={};
+const store={
+  get(k){try{return localStorage.getItem(k)}catch(e){return mem[k]??null}},
+  set(k,v){try{localStorage.setItem(k,v)}catch(e){mem[k]=v}}
+};
+
+/* ── 明暗切换（只切 class，变量在 CSS 里） ── */
+const tb=document.getElementById('themebtn');
+if(store.get('theme')==='light') document.body.classList.add('light');
+tb.onclick=()=>{
+  const isLight=document.body.classList.toggle('light');
+  store.set('theme',isLight?'light':'dark');
+  tb.textContent=isLight?'◑':'◐';
+};
+tb.textContent=document.body.classList.contains('light')?'◑':'◐';
+
+/* ── 复制（file:// 下 clipboard API 常常不可用，兜底用 textarea） ── */
+function cp(btn){
+  const t=btn.parentElement.querySelector('pre').innerText;
+  const flash=(msg,ok)=>{btn.textContent=msg;btn.classList.toggle('ok',ok);
+    setTimeout(()=>{btn.textContent='复制';btn.classList.remove('ok')},1500)};
+  const fallback=()=>{
+    try{
+      const ta=document.createElement('textarea');
+      ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);
+      ta.select();const ok=document.execCommand('copy');document.body.removeChild(ta);
+      flash(ok?'已复制':'请手动选中',ok);
+    }catch(e){flash('请手动选中',false)}
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t).then(()=>flash('已复制',true)).catch(fallback);
+  }else fallback();
+}
+
+/* ── 标签页 ── */
+document.querySelectorAll('.tabs').forEach(tabs=>{
+  tabs.addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    tabs.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    const group=tabs.dataset.tabs;
+    const panes=[...tabs.parentElement.querySelectorAll('.pane')];
+    panes.forEach(p=>p.classList.toggle('on',p.id===b.dataset.p));
+  });
+});
+
+/* ── VRAM 组装器 ── */
+const BUDGET=31.36; // GiB
+const dit=[
+  {n:'pruned_int8_convrot',v:19.53,d:'官方模板默认',on:1},
+  {n:'pruned_fp8_scaled',v:19.52,d:'真 FP8 路径，5090 值得 A/B'},
+  {n:'hybrid b25-49 int8',v:19.53,d:'一档通吃 fl2va + ref2va'},
+  {n:'pruned_nvfp4',v:11.67,d:'给 ≤16G 卡'},
+  {n:'pruned_bf16',v:37.46,d:'装不下'},
+  {n:'Singularity r2va int8',v:19.53,d:'写实/动作/VFX 定位明确'}
+];
+const te=[
+  {n:'nvfp4_awq',v:14.61,d:'Blackwell 原生，官方默认',on:1},
+  {n:'int8_convrot',v:25.28,d:'Ampere 正解'},
+  {n:'gguf Q4_K_M',v:13.58,d:'只有 1/3 速度'},
+  {n:'bf16',v:47.97,d:'装不下'}
+];
+const vae=[
+  {n:'int8 VAE + fp32 audio',v:3.18,d:'像素等价，省 2.4G',on:1},
+  {n:'fp16 VAE + fp32 audio',v:5.41,d:'传统配法'}
+];
+const sel={dit:0,te:0,vae:0};
+function mk(host,list,key){
+  host.innerHTML=list.map((it,i)=>`<button class="chip${it.on?' on':''}" data-k="${key}" data-i="${i}">
+    ${it.n}<small>${it.v.toFixed(2)} GiB · ${it.d}</small></button>`).join('');
+  host.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{
+    sel[key]=+b.dataset.i; host.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x===b)); calc();
+  });
+}
+mk(document.getElementById('c-dit'),dit,'dit');
+mk(document.getElementById('c-te'),te,'te');
+mk(document.getElementById('c-vae'),vae,'vae');
+function calc(){
+  const a=dit[sel.dit].v,b=te[sel.te].v,c=vae[sel.vae].v,OV=1.5,MAX=45;
+  const sim=a+b+c, seq=Math.max(a,b)+c;
+  const paint=(barId,fillId,valId,val)=>{
+    const over=val>BUDGET;
+    document.getElementById(fillId).style.width=Math.min(val/MAX*100,100)+'%';
+    document.getElementById(barId).classList.toggle('over',over);
+    document.getElementById(valId).textContent=val.toFixed(1)+' GiB'+(over?' ⚠':'');
+  };
+  paint('bar-sim','b-sim','v-sim',sim+OV);
+  paint('bar-seq','b-seq','v-seq',seq+OV);
+  const v=document.getElementById('verdict');
+  const bad=a>BUDGET||seq+OV>BUDGET;
+  v.className='verdict '+(bad?'no':'ok');
+  v.innerHTML=bad
+    ? `<b>装不下。</b>超出 <b>${((Math.max(a,seq)+OV)-BUDGET).toFixed(1)} GiB</b>。要么降 DiT 档位，要么接受 layerwise offload（慢一个数量级）。`
+    : `<b>装得下。</b>按 ComfyUI 的真实顺序加载（编码器编完码就释放），峰值约 <b>${(seq+OV).toFixed(1)} GiB</b>，
+       距 ${BUDGET} GiB 预算还差 <b>${(BUDGET-seq-OV).toFixed(1)} GiB</b>。<span class="mut">注意：720p 满帧实测峰值会顶到 31 GiB —— 剩下的余量全给 latent 和激活。</span>`;
+}
+calc();
+
+/* ── LMS 权重滑块 ── */
+const W=document.getElementById('w');
+const zones=[
+  {t:0.1,b:'几乎无效果',d:'低于 0.2 基本看不出锐化。',s:12,r:6,bg:'',cls:''},
+  {t:0.4,b:'链尾「补刀」',d:'前面已经挂了 5–10 个 LoRA（加对比 / 加质感）时用这个区间——再往上叠会崩。你机器上 U24 / U29 / U30 就在 0.2–0.4。',s:38,r:22,bg:'k2',cls:'k2'},
+  {t:0.85,b:'社区最稳',d:'Banodoco 测试者的结论：「0.8 左右皮肤和纹理最自然；两遍都推到 1.0 会过于极端」。日常推荐值。',s:66,r:34,cls:'c1'},
+  {t:1.05,b:'官方起点',d:'作者 docs/lms.md 原文 "Start with LoRA strength 1.0"。当 LMS 是唯一主效果时可以到 0.9（你机器上 U27 就是 0.9）。',s:82,r:50,cls:'c1'},
+  {t:9,b:'作者对比图的值',d:'作者官方工作流的对比图标注写的是 strength 1.3，但 LoRA 节点控件值其实是 1.0——推测 1.3 是旧标注，不是文档推荐值。这一档开始容易过硬 / 过曝。',s:97,r:78,cls:'c3'}
+];
+function wUpd(){
+  const v=+W.value, z=zones.find(z=>v<=z.t);
+  document.getElementById('wv').textContent=v.toFixed(2);
+  const t=document.getElementById('wt'); t.textContent=z.b; t.className='badge '+z.cls;
+  document.getElementById('wd').textContent=z.d;
+  document.getElementById('m-s').style.width=z.s+'%';
+  document.getElementById('m-r').style.width=z.r+'%';
+}
+W.addEventListener('input',wUpd); wUpd();
+
+/* ── 工作流筛选 ── */
+const wf=document.getElementById('wf'), rows=[...document.querySelectorAll('#wft tbody tr')];
+const cnt=document.getElementById('wf-c');
+function filt(){
+  const q=wf.value.trim().toLowerCase(); let n=0;
+  rows.forEach(r=>{const hit=!q||r.innerText.toLowerCase().includes(q); r.classList.toggle('hide',!hit); if(hit)n++;});
+  cnt.textContent=n+' / '+rows.length;
+}
+wf.addEventListener('input',filt); filt();
+
+/* ── 行动清单 ── */
+const TODOS=[
+ {g:'todos-k',items:[
+  ['生成档底模换成 int8_convrot','krea2_turbo_fp8_scaled → krea2_turbo_int8_convrot：保真 + 速度双赢，工作流不用改结构','Krea2'],
+  ['步数 10 → 8','官方 turbo 蒸馏点就是 8 步；A2R LoRA 官方 card 同样写 8 步','Krea2'],
+  ['CFG 确认 = 1，删掉负面提示词','CFG>1 会过饱和发灰；CFG=1 时负面提示词被忽略','Krea2'],
+  ['确认没有多余的 shift 节点','1.15 已写进 class Krea2，再加 ModelSamplingSD3 是二次干预','Krea2'],
+  ['试 Anime in real v2.0-Krea2','触发词 Ani2rel，下载量是 A2R 的 4 倍；若同时挂风格 LoRA，把 A2R 降到 0.5–0.8','Krea2'],
+  ['编辑档底模试换 _4RawStudioShot','现在用 3JAVStyle（JAV 片感、偏糊）；RAW 棚拍版或 Moody-Krea-Mix-v2G 更锐','Krea2']
+ ]},
+ {g:'todos-h',items:[
+  ['跑通 H3 最小闭环','hybrid b25-49-int8 + nvfp4_awq TE + ref2v_turbo@1.0 + LMS@0.8 + euler/simple/8步/CFG1 + 1344×768×124帧','H3'],
+  ['想上质量就换 PDD Acc-8Step','Ref2VA 上细节 +42%；shift 要配 12/3，且不能和其他蒸馏 LoRA 叠加','H3'],
+  ['放大器换 fp16 版','现在装的是 fp32 训练存档（1.38 GB）；换 fp16 省显存，画质无影响','H3']
+ ]},
+ {g:'todos-o',items:[
+  ['把 8 步 / int8_convrot 写进画布预设','packages/shared/src/krea2.ts 的 KREA2_EDIT_PRESETS 与 kreaDefaults（worktree 分支，未提交）','待你说'],
+  ['把作者原版 LMS 工作流改好路径部署到工作流库','原件已存档在 outputs/research/minimax_h3_lms_workflow_author.json','待你说'],
+  ['实跑一次「Krea2 转真人 → H3 ref2va + LMS」串联','会占 GPU，动手前先问你','待你说']
+ ]}
+];
+const KEY='mh3k2-todo-';
+let total=0,done=0;
+TODOS.forEach(g=>{
+  const host=document.getElementById(g.g);
+  g.items.forEach((it,i)=>{
+    const id=KEY+g.g+'-'+i, on=store.get(id)==='1';
+    total++; if(on) done++;
+    const d=document.createElement('div');
+    d.className='todo'+(on?' done':'');
+    d.innerHTML=`<span class="box">✓</span><span class="txt">${it[0]}<small>${it[1]}</small></span><span class="pw">${it[2]}</span>`;
+    d.onclick=()=>{const now=!d.classList.contains('done'); d.classList.toggle('done',now);
+      store.set(id,now?'1':'0'); recount();};
+    host.appendChild(d);
+  });
+});
+function recount(){
+  done=[...document.querySelectorAll('.todo')].filter(x=>x.classList.contains('done')).length;
+  document.getElementById('pb').style.width=(done/total*100)+'%';
+  document.getElementById('pbt').textContent=done+' / '+total+(done===total?'　全部完成 ✔':'');
+}
+recount();
+</script>
+</body>
+</html>

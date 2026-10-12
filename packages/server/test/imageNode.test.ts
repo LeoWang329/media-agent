@@ -157,17 +157,21 @@ describe('生图节点', () => {
 });
 
 describe('节点类型', () => {
-  it('新建时定类型：不说是视频节点，用 ref2va；生图节点用 il，il 删了用排在最前的生图提示词，一套都没有建不了', async () => {
+  it('新建时定类型：不说是视频节点，用 ref2va；生图节点用 il，il 删了用排在最前的生图提示词，一套都没有建不了；编辑节点用 edit', async () => {
     const create = (body: object) => t.call<ChatNode>('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 0, ...body });
     expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'video', systemPromptName: 'ref2va' });
     expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'il' });
+    expect((await create({ kind: 'edit' })).body).toMatchObject({ kind: 'edit', systemPromptName: 'edit' });
     await t.ok('DELETE', '/prompts/il');
     expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'pony' });
     await t.ok('DELETE', '/prompts/pony');
     expect((await create({ kind: 'image' })).body).toMatchObject({ kind: 'image', systemPromptName: 'krea2' });
     await t.ok('DELETE', '/prompts/krea2');
     expect(await create({ kind: 'image' })).toMatchObject({ status: 400, body: { error: '设置里还没有生图用的系统提示词' } });
-    expect(await create({ kind: 'audio' })).toMatchObject({ status: 400, body: { error: '节点类型只能是 video 或 image' } });
+    // 编辑那套删了用排在最前的编辑提示词，一套都没有也建不了
+    for (const name of ['edit', 'edit-outfit', 'edit-inpaint', 'edit-real', 'edit-depth', 'edit-remix', 'edit-fourview']) await t.ok('DELETE', `/prompts/${name}`);
+    expect(await create({ kind: 'edit' })).toMatchObject({ status: 400, body: { error: '设置里还没有图像编辑用的系统提示词' } });
+    expect(await create({ kind: 'audio' })).toMatchObject({ status: 400, body: { error: '节点类型只能是 video、image 或 edit' } });
   });
 
   it('系统提示词只能换成同一种的；岔出来的节点和原节点同一种', async () => {
@@ -192,8 +196,76 @@ describe('节点类型', () => {
     await t.ok('PATCH', nodeUrl(), { title: '老节点' });
     expect(JSON.parse(await fs.readFile(file, 'utf8')).kind).toBe('image');
 
+    // 编辑提示词的老节点算图像编辑节点，卡片上标着 edit（画布上的卡片按它分颜色），见 docs/dev-plan.md 5.36
+    await old('edit');
+    expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'edit' });
+    const cards = (await t.ok<CanvasDetail>('GET', `/canvases/${canvasId}`)).nodes;
+    expect(cards[0]).toMatchObject({ kind: 'edit', image: null });
+    expect(await t.call('PATCH', nodeUrl(), { systemPromptName: 'pony' })).toMatchObject({ status: 400, body: { error: '图像编辑节点只能选图像编辑用的系统提示词' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { systemPromptName: 'edit-outfit' })).toMatchObject({ kind: 'edit', systemPromptName: 'edit-outfit' });
+
     await old('gone');
     expect(await t.ok<ChatNode>('GET', nodeUrl())).toMatchObject({ kind: 'video' });
+  });
+});
+
+describe('编辑节点让模型写提示词', () => {
+  // 在同一个画布上新建一个图像编辑节点，后面的请求都对着它
+  async function useEditNode(): Promise<void> {
+    nodeId = (await t.ok('POST', `/canvases/${canvasId}/nodes`, { x: 0, y: 600, kind: 'edit' })).id;
+  }
+
+  it('换功能就把「模型提示词」换成那个功能那一份；请求里自己指定了就照指定的', async () => {
+    await useEditNode();
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'real' } })).toMatchObject({ edit: { fn: 'real' }, systemPromptName: 'edit-real' });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'outfit' } })).toMatchObject({ systemPromptName: 'edit-outfit' });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'inpaint' } })).toMatchObject({ systemPromptName: 'edit-inpaint' });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'depth' } })).toMatchObject({ systemPromptName: 'edit-depth', edit: { fn: 'depth' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'remix' } })).toMatchObject({ systemPromptName: 'edit-remix', edit: { fn: 'remix' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'fourview' } })).toMatchObject({ systemPromptName: 'edit-fourview', edit: { fn: 'fourview' } });
+    // 放大 / 高清**没有**自己那份提示词（不用模型写字）：留着刚才那套，别换成找不到的
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'upscale' } })).toMatchObject({ systemPromptName: 'edit-fourview', edit: { fn: 'upscale' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'edit', text: '换成黑皮衣' } })).toMatchObject({ systemPromptName: 'edit', edit: { text: '换成黑皮衣' } });
+    // 只改那句话、不动功能：提示词不跟着动
+    await t.ok('PATCH', nodeUrl(), { edit: { fn: 'real', text: 'x' } });
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { text: 'y' } })).toMatchObject({ systemPromptName: 'edit-real' });
+    // 明写了系统提示词：那个功能那一份不生效，照请求里的
+    expect(await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'outfit' }, systemPromptName: 'edit-real' })).toMatchObject({ systemPromptName: 'edit-real' });
+  });
+
+  it('说一句话：只把选中的那张图发给模型，回复上记下是给哪个功能、第几张图写的', async () => {
+    await useEditNode();
+    const first = await t.addImage(canvasId, '#884422');
+    const second = await t.addImage(canvasId, '#224488');
+    await t.ok('PATCH', nodeUrl(), { slots: [first, second], edit: { fn: 'edit', slot: 1, text: '' } });
+
+    const reply = await send('把外套换成黑皮衣');
+    // 假模型把收到的图数出来：只有选中的第 2 张，不是槽位里两张都发
+    expect(reply.text).toContain('收到 1 张图：<Picture 2>');
+    expect(reply.text).toContain('请求里一共 1 张图');
+    // 框里写的是指令编辑那一套（mock 按功能写不一样的话），回复上记着是给哪个功能、第几张图写的
+    expect(reply.parsed?.prompts[0].text).toContain('Change her coat into a black studded leather biker jacket');
+    expect(reply.edit).toEqual({ fn: 'edit', slot: 1 });
+    // user 消息那句说明写在正文里，说的是第 2 张
+    const node = await t.ok<ChatNode>('GET', nodeUrl());
+    const user = Object.values(node.messages).find((m) => m.role === 'user')!;
+    expect(user.systemNote).toBe('要改的是第 2 张参考图。');
+    expect(user.attachments).toEqual([{ picture: 2, imageId: second }]);
+
+    // 换成「换装」再发一次：挑的是换装那份提示词，框里的话跟着换
+    await t.ok('PATCH', nodeUrl(), { edit: { fn: 'outfit' } });
+    const second2 = await send('换成红色晚礼服');
+    expect(second2.parsed?.prompts[0].text).toContain('Dress her in a red silk evening gown');
+    expect(second2.edit).toEqual({ fn: 'outfit', slot: 1 });
+  });
+
+  it('槽位里还没放图时照发，说明里写清没有图可看', async () => {
+    await useEditNode();
+    const reply = await send('换个背景');
+    expect(reply.text).toContain('收到 0 张图');
+    expect(reply.edit).toEqual({ fn: 'edit', slot: 0 });
+    const node = await t.ok<ChatNode>('GET', nodeUrl());
+    expect(Object.values(node.messages).find((m) => m.role === 'user')!.systemNote).toBe('还没有选要改的图。');
   });
 });
 

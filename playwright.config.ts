@@ -1,5 +1,5 @@
 import { defineConfig } from '@playwright/test';
-import { E2E_APP_PORT, MOCK_COMFY_PORT, MOCK_LLM_PORT } from './tests/e2e/env';
+import { E2E_APP_PORT, MOCK_COMFY_PORT, MOCK_COMFY_SSH_PORT, MOCK_LLM_PORT } from './tests/e2e/env';
 
 export default defineConfig({
   testDir: 'tests/e2e',
@@ -16,11 +16,13 @@ export default defineConfig({
     {
       command: 'npm run mock-llm',
       url: `http://127.0.0.1:${MOCK_LLM_PORT}/v1/models`,
+      env: { PORT: String(MOCK_LLM_PORT) },
       reuseExistingServer: true,
     },
     {
       command: 'npm run mock-comfyui',
       url: `http://127.0.0.1:${MOCK_COMFY_PORT}/system_stats`,
+      env: { PORT: String(MOCK_COMFY_PORT), SSH_PORT: String(MOCK_COMFY_SSH_PORT) },
       reuseExistingServer: true,
     },
     {

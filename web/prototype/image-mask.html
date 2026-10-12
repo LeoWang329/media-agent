@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>提示词画布 · 局部重绘的掩码编辑器</title>
+  <link rel="stylesheet" href="shared/app.css" />
+  <script src="shared/app.js"></script>
+  <style>
+    .mk { max-width: 1400px; margin: 0 auto; padding: 20px 20px 40px; }
+    .mk-note { margin: 14px 0 16px; color: var(--muted); font-size: 13.5px; max-width: 96ch; }
+    .mk-note b { color: var(--fg); font-weight: 520; }
+    /* 照真界面的「看大图和参数」：左边大图、右边 380 的参数栏 */
+    .mk-win { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--bg); height: min(78dvh, 760px); display: flex; flex-direction: column; }
+    .mk-title { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+    .mk-title .spacer { flex: 1; }
+    .mk-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; }
+    .mk-stage { position: relative; min-width: 0; min-height: 0; display: grid; padding: 16px 20px; background: var(--canvas-bg, var(--fg-softer)); }
+    .mk-side { min-width: 0; min-height: 0; overflow-y: auto; border-left: 1px solid var(--border); padding-bottom: 16px; }
+    .mk-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 10px; }
+    .mk-brush { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+    .mk-brush input[type='range'] { width: 120px; }
+    .mk-board { position: relative; display: inline-grid; margin: auto; max-width: 100%; max-height: 100%; min-height: 0; line-height: 0; }
+    .mk-board > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; user-select: none; }
+    .mk-canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 6px; cursor: crosshair; touch-action: none; }
+    .mk-cursor { position: absolute; border: 1px solid var(--fg); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+    .mk-form { display: flex; flex-direction: column; gap: 10px; margin: 0 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--fg-softer); }
+    .mk-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+    .mk-form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .mk-form textarea, .mk-form input { font-family: var(--font-mono); font-size: 12.5px; }
+    .mk-form textarea { resize: vertical; line-height: 1.5; }
+    .mk-form .hint { font-size: 12px; color: var(--muted); margin: 0; }
+    .mk-form .acts { display: flex; justify-content: flex-end; gap: 8px; }
+    .mk-params { margin: 16px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; }
+    .mk-kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; padding: 5px 0; }
+    .mk-kv .k { color: var(--muted); font-size: 12.5px; }
+    @media (max-width: 900px) { .mk-body { grid-template-columns: 1fr; grid-template-rows: 46dvh auto; overflow-y: auto; } .mk-side { border-left: 0; border-top: 1px solid var(--border); } }
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <a class="brand" href="index.html"><span class="brand-mark" data-icon="logo"></span>提示词画布</a>
+    <span class="meta hide-sm">界面原型 · 局部重绘</span>
+    <span class="spacer"></span>
+    <button class="btn btn-ghost btn-icon" data-theme-toggle></button>
+  </header>
+
+  <main class="mk">
+    <p class="mk-note">
+      大图窗口里点「<b>局部重绘</b>」，左边大图换成掩码编辑器，右边出这块表单。要重画的地方<b>画成红的就是</b>——
+      拖框（<b>按住拖出框，框里按住能拖动、拉四个角能缩放</b>）、涂抹（笔刷粗细可调）、擦（把画过的擦掉）、撤销、清空，两个工具能叠加。
+      画完点「开始重绘」，程序把原图里画过的地方改成<b>透明</b>存成 PNG 传给 ComfyUI，那边只裁这一块重画、再拼回原图，<b>别处一个像素不动</b>。
+    </p>
+
+    <section class="mk-win" data-od-id="mask-editor-prototype">
+      <div class="mk-title">
+        <span class="meta">雨夜站台 · 提示词 · 生图</span>
+        <b>种子 2093619700</b>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-icon" aria-label="关闭"><span data-icon="x"></span></button>
+      </div>
+      <div class="mk-body">
+        <div class="mk-stage">
+          <div class="mk-tools">
+            <div class="seg" role="group" aria-label="掩码工具">
+              <button type="button" data-tool="rect" aria-pressed="true">拖框</button>
+              <button type="button" data-tool="brush" aria-pressed="false">涂抹</button>
+              <button type="button" data-tool="eraser" aria-pressed="false">擦</button>
+            </div>
+            <label class="mk-brush" hidden>笔刷
+              <input type="range" min="4" max="320" value="60" aria-label="笔刷大小" />
+              <span class="mono" data-brush-value>60</span>
+            </label>
+            <button type="button" class="btn btn-ghost btn-sm" data-act="undo" disabled><span data-icon="undo"></span>撤销</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-act="clear" disabled>清空</button>
+            <span class="meta" data-hint>按住拖一个框，能拖动、能拉四个角</span>
+          </div>
+          <div class="mk-board">
+            <img src="img/gen/a8-heroine-turn.jpg" alt="" draggable="false" />
+            <canvas class="mk-canvas"></canvas>
+            <span class="mk-cursor" hidden></span>
+          </div>
+        </div>
+
+        <aside class="mk-side">
+          <div class="mk-form">
+            <b>局部重绘 · 框里的地方重画，别处一个像素不动</b>
+            <label>这块画成什么
+              <textarea rows="3">1girl, solo, red leather jacket, standing on a rainy platform, night, neon reflections</textarea>
+            </label>
+            <div class="row2">
+              <label>额外的负面词
+                <input value="blurry, extra fingers" />
+              </label>
+              <label>重绘强度
+                <input type="number" min="0.05" max="1" step="0.05" value="0.8" />
+              </label>
+            </div>
+            <p class="hint">1 是完全重画，0.5 到 0.8 保留原来的轮廓、只改细节。要在这台 ComfyUI 上装 ComfyUI-Inpaint-CropAndStitch 插件。</p>
+            <div class="acts">
+              <button type="button" class="btn btn-ghost btn-sm">取消</button>
+              <button type="button" class="btn btn-primary btn-sm" data-act="go" disabled>开始重绘</button>
+            </div>
+          </div>
+          <div class="mk-params">
+            <div class="mk-kv"><span class="k">尺寸</span><span class="mono" data-size>832×1216</span></div>
+            <div class="mk-kv"><span class="k">底模</span><span class="mono">il-test <span class="tag">IL</span></span></div>
+            <div class="mk-kv"><span class="k">重绘强度</span><span class="mono" data-denoise>0.8</span></div>
+            <div class="mk-kv"><span class="k">掩码</span><span class="mono" data-mask>还没画</span></div>
+            <div class="mk-kv"><span class="k">工作流</span><span>InpaintCropImproved → InpaintModelConditioning → KSampler → InpaintStitchImproved</span></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // 和真实现（packages/client/src/canvas/MaskEditor.tsx）同一套画法：画布按原图像素建，显示时缩到框里，
+    // 拖框是一个能拖能拉角的活形状，涂抹和擦是按先后叠上去的笔迹，两个能叠加。
+    (() => {
+      const board = document.querySelector('.mk-board');
+      const image = board.querySelector('img');
+      const canvas = board.querySelector('.mk-canvas');
+      const cursor = board.querySelector('.mk-cursor');
+      const ctx = canvas.getContext('2d');
+      const brushInput = document.querySelector('.mk-brush input');
+      const tools = [...document.querySelectorAll('[data-tool]')];
+      const hint = document.querySelector('[data-hint]');
+      const undoBtn = document.querySelector('[data-act="undo"]');
+      const clearBtn = document.querySelector('[data-act="clear"]');
+      const goBtn = document.querySelector('[data-act="go"]');
+      const HINTS = { rect: '按住拖一个框，能拖动、能拉四个角', brush: '按住涂要改的地方', eraser: '按住擦掉画过的' };
+      const HANDLE = 7;
+      let shapes = { rect: null, strokes: [] };
+      let draft = null;
+      let history = [];
+      let gesture = null;
+      let tool = 'rect';
+      let brush = Number(brushInput.value);
+      let natural = { width: 0, height: 0 };
+      let scale = 1;
+
+      const shown = () => draft ?? shapes;
+      const empty = (s) => !s.rect && !s.strokes.length;
+
+      function paint(shapes, color, edge) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const thin = Math.max(1.5, Math.min(canvas.width, canvas.height) / 500);
+        if (shapes.rect) {
+          ctx.fillStyle = color;
+          ctx.fillRect(shapes.rect.x, shapes.rect.y, shapes.rect.width, shapes.rect.height);
+          ctx.strokeStyle = edge;
+          ctx.lineWidth = thin;
+          ctx.setLineDash([thin * 5, thin * 4]);
+          ctx.strokeRect(shapes.rect.x, shapes.rect.y, shapes.rect.width, shapes.rect.height);
+          ctx.setLineDash([]);
+        }
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        for (const stroke of shapes.strokes) {
+          ctx.globalCompositeOperation = stroke.eraser ? 'destination-out' : 'source-over';
+          ctx.lineWidth = stroke.size;
+          if (stroke.points.length === 1) {
+            ctx.beginPath();
+            ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.size / 2, 0, Math.PI * 2);
+            ctx.fill();
+            continue;
+          }
+          ctx.beginPath();
+          stroke.points.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      function render() {
+        paint(shown(), 'rgba(255, 74, 74, .42)', 'rgba(255, 255, 255, .95)');
+        const state = shown();
+        undoBtn.disabled = !history.length;
+        clearBtn.disabled = empty(state);
+        goBtn.disabled = empty(state);
+        document.querySelector('[data-mask]').textContent = empty(state)
+          ? '还没画'
+          : `${state.rect ? '框' : ''}${state.rect && state.strokes.length ? ' + ' : ''}${state.strokes.length ? state.strokes.length + ' 笔涂抹' : ''} · 导出 ${natural.width}×${natural.height} 的 PNG`;
+      }
+
+      image.addEventListener('load', () => {
+        natural = { width: image.naturalWidth, height: image.naturalHeight };
+        canvas.width = natural.width;
+        canvas.height = natural.height;
+        document.querySelector('[data-size]').textContent = `${natural.width}×${natural.height}`;
+        const fit = () => {
+          scale = board.clientWidth / natural.width;
+        };
+        new ResizeObserver(fit).observe(board);
+        fit();
+        render();
+      });
+
+      const at = (event) => {
+        const box = canvas.getBoundingClientRect();
+        return { x: ((event.clientX - box.left) * canvas.width) / box.width, y: ((event.clientY - box.top) * canvas.height) / box.height };
+      };
+      const handleSize = () => (HANDLE * canvas.width) / canvas.getBoundingClientRect().width;
+      const inside = (p, r) => p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
+      const cornerAt = (p, size) => {
+        const r = shapes.rect;
+        if (!r) return null;
+        const corners = [['nw', r.x, r.y], ['ne', r.x + r.width, r.y], ['sw', r.x, r.y + r.height], ['se', r.x + r.width, r.y + r.height]];
+        const hit = corners.find(([, x, y]) => Math.abs(p.x - x) <= size && Math.abs(p.y - y) <= size);
+        return hit ? { kind: 'resize', corner: hit[0], start: r } : null;
+      };
+
+      canvas.addEventListener('pointerdown', (event) => {
+        canvas.setPointerCapture(event.pointerId);
+        const p = at(event);
+        if (tool === 'rect') {
+          gesture = cornerAt(p, handleSize()) ?? (shapes.rect && inside(p, shapes.rect) ? { kind: 'move', from: p, start: shapes.rect } : { kind: 'new', from: p });
+          draft = gesture.kind === 'new' ? { ...shapes, rect: { x: p.x, y: p.y, width: 0, height: 0 } } : shapes;
+        } else {
+          gesture = { kind: 'stroke' };
+          draft = { ...shapes, strokes: [...shapes.strokes, { eraser: tool === 'eraser', size: brush, points: [p] }] };
+        }
+        render();
+      });
+
+      canvas.addEventListener('pointermove', (event) => {
+        const p = at(event);
+        cursor.hidden = tool === 'rect';
+        cursor.style.left = p.x * scale + 'px';
+        cursor.style.top = p.y * scale + 'px';
+        cursor.style.width = brush * scale + 'px';
+        cursor.style.height = brush * scale + 'px';
+        if (!gesture) return;
+        if (gesture.kind === 'stroke') {
+          const strokes = draft.strokes.slice();
+          const last = strokes[strokes.length - 1];
+          strokes[strokes.length - 1] = { ...last, points: [...last.points, p] };
+          draft = { ...draft, strokes };
+        } else if (gesture.kind === 'new') {
+          draft = { ...shapes, rect: { x: Math.min(gesture.from.x, p.x), y: Math.min(gesture.from.y, p.y), width: Math.abs(p.x - gesture.from.x), height: Math.abs(p.y - gesture.from.y) } };
+        } else if (gesture.kind === 'move') {
+          draft = { ...shapes, rect: { ...gesture.start, x: gesture.start.x + (p.x - gesture.from.x), y: gesture.start.y + (p.y - gesture.from.y) } };
+        } else {
+          const { start, corner } = gesture;
+          const left = corner === 'nw' || corner === 'sw' ? p.x : start.x;
+          const top = corner === 'nw' || corner === 'ne' ? p.y : start.y;
+          const right = corner === 'ne' || corner === 'se' ? p.x : start.x + start.width;
+          const bottom = corner === 'sw' || corner === 'se' ? p.y : start.y + start.height;
+          draft = { ...shapes, rect: { x: Math.min(left, right), y: Math.min(top, bottom), width: Math.abs(right - left), height: Math.abs(bottom - top) } };
+        }
+        render();
+      });
+
+      const up = (event) => {
+        if (!gesture) return;
+        const active = gesture;
+        gesture = null;
+        canvas.releasePointerCapture?.(event.pointerId);
+        const next = draft.rect && (draft.rect.width < 2 || draft.rect.height < 2) && active.kind === 'new' ? { ...draft, rect: null } : draft;
+        history = [...history, shapes].slice(-20);
+        shapes = next;
+        draft = null;
+        render();
+      };
+      canvas.addEventListener('pointerup', up);
+      canvas.addEventListener('pointerleave', () => (cursor.hidden = true));
+
+      for (const button of tools) {
+        button.addEventListener('click', () => {
+          tool = button.dataset.tool;
+          for (const other of tools) other.setAttribute('aria-pressed', String(other === button));
+          document.querySelector('.mk-brush').hidden = tool === 'rect';
+          cursor.hidden = true;
+          hint.textContent = HINTS[tool];
+        });
+      }
+      brushInput.addEventListener('input', () => {
+        brush = Number(brushInput.value);
+        document.querySelector('[data-brush-value]').textContent = String(brush);
+      });
+      undoBtn.addEventListener('click', () => {
+        const back = history[history.length - 1];
+        if (!back) return;
+        history = history.slice(0, -1);
+        shapes = back;
+        render();
+      });
+      clearBtn.addEventListener('click', () => {
+        history = [...history, shapes].slice(-20);
+        shapes = { rect: null, strokes: [] };
+        render();
+      });
+      document.querySelector('input[type="number"]').addEventListener('input', (event) => {
+        document.querySelector('[data-denoise]').textContent = event.target.value;
+      });
+      goBtn.addEventListener('click', () => {
+        hint.textContent = '真界面上这一步会导出 PNG 发给服务端，框下面多出一组';
+      });
+      render();
+    })();
+  </script>
+</body>
+</html>

@@ -8,12 +8,19 @@ import {
   controlModels,
   controlPreprocessors,
   defaultImageSettings,
+  EDIT_LORA,
+  editPresetOf,
   downloadFileName,
   FAMILY_DEFAULTS,
   imageErrorKind,
   IMAGE_SIZES,
   imageSettingsOf,
+  INPAINT_CROP,
+  inpaintGraph,
   jobSeeds,
+  kreaDefaults,
+  kreaGraph,
+  KREA2_EDIT_PRESETS,
   negativePrompt,
   newControl,
   parsePromptMeta,
@@ -30,12 +37,20 @@ import {
 
 describe('parsePromptMeta', () => {
   it('开头的说明段写着「用途: 生图」的是生图提示词，读出底模系列，发给模型的部分去掉这段', () => {
-    expect(parsePromptMeta('---\n用途: 生图\n底模: IL\n---\n只写标签')).toEqual({ use: 'image', family: 'IL', body: '只写标签' });
-    expect(parsePromptMeta('---\r\n用途：生图\r\n底模：pony\r\n---\r\n正文')).toEqual({ use: 'image', family: 'Pony', body: '正文' });
+    expect(parsePromptMeta('---\n用途: 生图\n底模: IL\n---\n只写标签')).toEqual({ use: 'image', family: 'IL', fn: null, body: '只写标签' });
+    expect(parsePromptMeta('---\r\n用途：生图\r\n底模：pony\r\n---\r\n正文')).toEqual({ use: 'image', family: 'Pony', fn: null, body: '正文' });
   });
 
-  it('没有说明段、用途不是生图的都是视频提示词；底模写错是 null', () => {
-    expect(parsePromptMeta('你是视频提示词助手')).toEqual({ use: 'video', family: null, body: '你是视频提示词助手' });
+  it('写着「用途: 编辑」的是图像编辑提示词，读出它管哪个功能', () => {
+    const meta = parsePromptMeta('---\n用途: 编辑\n功能: 换装\n---\n只写衣服');
+    expect(meta).toEqual({ use: 'edit', family: null, fn: '换装', body: '只写衣服' });
+    // 功能名写成中文冒号也认；没写功能名是 null（编辑节点还要靠它挑提示词，见 docs/dev-plan.md 5.36）
+    expect(parsePromptMeta('---\n用途：编辑\n功能：转真人\n---\n正文').fn).toBe('转真人');
+    expect(parsePromptMeta('---\n用途: 编辑\n---\n正文')).toMatchObject({ use: 'edit', fn: null });
+  });
+
+  it('没有说明段、用途不是生图也不是编辑的都是视频提示词；底模写错是 null', () => {
+    expect(parsePromptMeta('你是视频提示词助手')).toEqual({ use: 'video', family: null, fn: null, body: '你是视频提示词助手' });
     expect(parsePromptMeta('---\n用途: 视频\n---\n正文')).toMatchObject({ use: 'video', body: '正文' });
     expect(parsePromptMeta('---\n用途: 生图\n底模: SD1.5\n---\n正文')).toMatchObject({ use: 'image', family: null });
     expect(parsePromptMeta('正文\n---\n用途: 生图\n---').use).toBe('video');
@@ -288,6 +303,216 @@ describe('builtinGraph', () => {
     expect(detailers.map(([, item]) => item.inputs.sam_model_opt)).toEqual(sams.map(([id]) => [id, 0]));
     expect(detailers[1][1].inputs).not.toHaveProperty('segm_detector_opt');
     expect(detailers[0][1].inputs).toMatchObject({ model: ['4', 0], clip: ['5', 0], bbox_threshold: 0.2, denoise: 0.5, sam_detection_hint: 'center-1', sam_threshold: 0.93 });
+  });
+});
+
+describe('inpaintGraph', () => {
+  const params: ImageJobParams = {
+    family: 'IL',
+    positive: 'masterpiece, best quality, 1girl',
+    negative: 'lowres, bad hands',
+    workflow: BUILTIN_WORKFLOW,
+    width: 1024,
+    height: 1024,
+    checkpoint: 'il-test.safetensors',
+    loras: [],
+    steps: 28,
+    cfg: 5.5,
+    sampler: 'dpmpp_2m',
+    scheduler: 'karras',
+    clipSkip: 2,
+    inpaint: { mask: 'image-temp/2026-02-18/101112-mask.png', denoise: 0.8 },
+  };
+
+  it('照 E05：底图和掩码同一张 PNG（alpha 通道），裁一块 → 条件 → 采样 → 解码 → 拼回原图 → 预览', () => {
+    expect(inpaintGraph(params, 7, { mask: 'media-agent-mask.png' })).toEqual({
+      '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'il-test.safetensors' } },
+      '2': { class_type: 'CLIPSetLastLayer', inputs: { stop_at_clip_layer: -2, clip: ['1', 1] } },
+      '3': { class_type: 'CLIPTextEncode', inputs: { text: 'masterpiece, best quality, 1girl', clip: ['2', 0] } },
+      '4': { class_type: 'CLIPTextEncode', inputs: { text: 'lowres, bad hands', clip: ['2', 0] } },
+      '5': { class_type: 'LoadImage', inputs: { image: 'media-agent-mask.png' } },
+      '6': { class_type: 'InpaintCropImproved', inputs: { image: ['5', 0], mask: ['5', 1], ...INPAINT_CROP } },
+      '7': { class_type: 'InpaintModelConditioning', inputs: { positive: ['3', 0], negative: ['4', 0], vae: ['1', 2], pixels: ['6', 1], mask: ['6', 2], noise_mask: true } },
+      '8': {
+        class_type: 'KSampler',
+        inputs: {
+          seed: 7,
+          steps: 28,
+          cfg: 5.5,
+          sampler_name: 'dpmpp_2m',
+          scheduler: 'karras',
+          denoise: 0.8,
+          model: ['1', 0],
+          positive: ['7', 0],
+          negative: ['7', 1],
+          latent_image: ['7', 2],
+        },
+      },
+      '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['1', 2] } },
+      '10': { class_type: 'InpaintStitchImproved', inputs: { stitcher: ['6', 0], inpainted_image: ['9', 0] } },
+      '11': { class_type: 'PreviewImage', inputs: { images: ['10', 0] } },
+    });
+  });
+
+  it('InpaintCropImproved 的参数照 E05：遮罩外扩 8 像素、重画那块按 1024、周边多留 20% 上下文；没写强度就是 1', () => {
+    expect(INPAINT_CROP).toMatchObject({
+      mask_expand_pixels: 8,
+      output_target_width: 1024,
+      output_target_height: 1024,
+      context_from_mask_extend_factor: 1.2,
+      mask_blend_pixels: 32,
+      output_resize_to_target_size: true,
+      output_padding: '32',
+      device_mode: 'cpu (compatible)',
+      preresize: false,
+    });
+    // 一共 25 个必填项：image 是接进来的那张，另外 24 个参数一个都不能少
+    expect(Object.keys(INPAINT_CROP)).toHaveLength(24);
+    const graph = inpaintGraph({ ...params, inpaint: undefined }, 7);
+    expect(graph['8'].inputs.denoise).toBe(1);
+  });
+
+  it('单独的 VAE、LoRA、A1111 的权重算法和内置流程一样接', () => {
+    const graph = inpaintGraph({ ...params, vae: 'sdxl_vae.safetensors', loras: [{ name: 'a.safetensors', strength: 0.8 }], weighting: 'a1111', loraTarget: 'model' }, 7);
+    expect(graph['2']).toEqual({ class_type: 'VAELoader', inputs: { vae_name: 'sdxl_vae.safetensors' } });
+    expect(graph['3']).toEqual({ class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'a.safetensors', strength_model: 0.8, model: ['1', 0] } });
+    expect(graph['5'].class_type).toBe('BNK_CLIPTextEncodeAdvanced');
+    expect(graph['10'].inputs).toMatchObject({ model: ['3', 0], positive: ['9', 0], negative: ['9', 1], latent_image: ['9', 2] });
+    expect(graph['9'].inputs).toMatchObject({ vae: ['2', 0], pixels: ['8', 1], mask: ['8', 2] });
+    expect(graph['11'].inputs.vae).toEqual(['2', 0]);
+    expect(graph['8'].inputs.image).toEqual(['7', 0]);
+  });
+});
+
+describe('编辑方案', () => {
+  it('按 LoRA 名字认方案，强度改过也算；不是方案里的就是 null', () => {
+    expect(editPresetOf(kreaDefaults('edit').loras)?.id).toBe('real-v3');
+    expect(editPresetOf([{ name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength: 0.8 }])?.id).toBe('real-v3');
+    expect(editPresetOf([{ name: 'krea2/krea2_identity_edit_v1_1.safetensors', strength: 0.6 }])?.id).toBe('identity-v1-1');
+    expect(editPresetOf([])).toBeNull();
+    expect(editPresetOf(undefined)).toBeNull();
+    expect(editPresetOf([{ name: 'krea2/krea2_darkbrush.safetensors' }])).toBeNull();
+  });
+
+  it('每个方案都有一句说明和一个 LoRA；动漫转真人那两档带触发词和作者给的参数', () => {
+    for (const preset of KREA2_EDIT_PRESETS) {
+      expect(preset.label).toBeTruthy();
+      expect(preset.note).toBeTruthy();
+      expect(preset.loras.length).toBeGreaterThan(0);
+    }
+    // 默认那个是检验过的：V3 + 10 步 + CFG 1（尺寸由参考图定，方案里不再管宽高）
+    expect(KREA2_EDIT_PRESETS[0]).toMatchObject({
+      id: 'real-v3',
+      trigger: 'transform the image to realistic photograph',
+      settings: { steps: 10, cfg: 1 },
+    });
+    expect(KREA2_EDIT_PRESETS.find((p) => p.id === 'real-v1')).toMatchObject({
+      trigger: 'transform the image to realistic photograph',
+      settings: { steps: 10, cfg: 1 },
+    });
+    // 换装和身份编辑没有触发词：它们吃的是自然语言指令
+    expect(KREA2_EDIT_PRESETS.filter((p) => !p.trigger).map((p) => p.id)).toEqual(['identity-v1-1', 'identity-v1-2', 'outfit']);
+    // 每个方案的 LoRA 组合都不一样，不然认不出来
+    expect(new Set(KREA2_EDIT_PRESETS.map((p) => p.loras.map((l) => l.name).join('+'))).size).toBe(KREA2_EDIT_PRESETS.length);
+  });
+
+  it('编辑档默认：写实微调底模 + 去审查的文字理解 + 真人化 V3、10 步、CFG 1', () => {
+    expect(kreaDefaults('edit')).toMatchObject({
+      checkpoint: 'krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors',
+      textEncoder: 'qwen3vl_4b_uncensored_int8_convrot.safetensors',
+      loras: [{ name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength: 1 }],
+      steps: 10,
+      cfg: 1,
+      sampler: 'euler',
+      scheduler: 'simple',
+    });
+  });
+});
+
+describe('kreaGraph 的三个档', () => {
+  const params: ImageJobParams = {
+    family: 'Krea2',
+    positive: 'transform the image to realistic photograph, a young woman',
+    negative: '',
+    workflow: BUILTIN_WORKFLOW,
+    width: 1024,
+    height: 1024,
+    checkpoint: 'krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors',
+    textEncoder: 'qwen3vl_4b_uncensored_int8_convrot.safetensors',
+    vae: 'qwen_image_vae.safetensors',
+    loras: [{ name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength: 1 }],
+    steps: 10,
+    cfg: 1,
+    sampler: 'euler',
+    scheduler: 'simple',
+    krea: { mode: 'edit', reference: { kind: 'slot', imageId: 'a' }, refBoost: 1, refBoostA: 1, extra: '' },
+  };
+  const nodesOf = (graph: ReturnType<typeof kreaGraph>, type: string) => Object.entries(graph).filter(([, node]) => node.class_type === type);
+
+  it('编辑档走作者那套 Ostris：参考图按比例缩到长边 2048，尺寸跟着它走，再出图', () => {
+    expect(kreaGraph(params, 7, 'scene.png')).toEqual({
+      '1': { class_type: 'UNETLoader', inputs: { unet_name: 'krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors', weight_dtype: 'default' } },
+      '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen3vl_4b_uncensored_int8_convrot.safetensors', type: 'krea2', device: 'default' } },
+      '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+      '4': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength_model: 1 } },
+      '5': { class_type: 'Krea2OstrisEditModelPatch', inputs: { model: ['4', 0], kv_cache: true } },
+      '6': { class_type: 'LoadImage', inputs: { image: 'scene.png' } },
+      '7': {
+        class_type: 'LayerUtility: ImageScaleByAspectRatio V2',
+        inputs: {
+          image: ['6', 0],
+          aspect_ratio: 'original',
+          proportional_width: 1,
+          proportional_height: 1,
+          fit: 'crop',
+          method: 'lanczos',
+          round_to_multiple: '16',
+          scale_to_side: 'longest',
+          scale_to_length: 2048,
+          background_color: '#000000',
+        },
+      },
+      '8': { class_type: 'GetImageSize', inputs: { image: ['7', 0] } },
+      '9': { class_type: 'EmptySD3LatentImage', inputs: { width: ['8', 0], height: ['8', 1], batch_size: 1 } },
+      '10': { class_type: 'TextEncodeKrea2OstrisEdit', inputs: { clip: ['2', 0], prompt: params.positive, vae: ['3', 0], image1: ['7', 0] } },
+      '11': { class_type: 'TextEncodeKrea2OstrisEdit', inputs: { clip: ['2', 0], prompt: '', vae: ['3', 0], image1: ['7', 0] } },
+      '12': {
+        class_type: 'KSampler',
+        inputs: { model: ['5', 0], positive: ['10', 0], negative: ['11', 0], latent_image: ['9', 0], seed: 7, steps: 10, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1 },
+      },
+      '13': { class_type: 'VAEDecode', inputs: { samples: ['12', 0], vae: ['3', 0] } },
+      '14': { class_type: 'PreviewImage', inputs: { images: ['13', 0] } },
+    });
+  });
+
+  it('双图：图 1 是场景、图 2 是主体，两张各缩一遍，编码节点两路都接', () => {
+    const graph = kreaGraph(params, 7, 'scene.png', 'subject.png');
+    expect(nodesOf(graph, 'LoadImage').map(([, node]) => node.inputs.image)).toEqual(['scene.png', 'subject.png']);
+    expect(nodesOf(graph, 'LayerUtility: ImageScaleByAspectRatio V2').map(([, node]) => node.inputs.image)).toEqual([['6', 0], ['8', 0]]);
+    for (const [, node] of nodesOf(graph, 'TextEncodeKrea2OstrisEdit')) {
+      expect(node.inputs).toMatchObject({ image1: ['7', 0], image2: ['9', 0] });
+    }
+    // 出图尺寸还是看图 1 的（场景定构图），潜变量从它的尺寸来
+    expect(nodesOf(graph, 'GetImageSize')[0][1].inputs).toEqual({ image: ['7', 0] });
+    expect(nodesOf(graph, 'EmptySD3LatentImage')[0][1].inputs).toMatchObject({ width: ['10', 0], height: ['10', 1] });
+    expect(nodesOf(graph, 'KSampler')[0][1].inputs).toMatchObject({ denoise: 1 });
+  });
+
+  it('四视图不受影响：还是 Krea2Edit 那套、还是缩到 1024×1024、也不接 `_b`', () => {
+    const graph = kreaGraph({ ...params, krea: { mode: 'four-view', reference: null, refBoost: 4, extra: '' } }, 7, 'ref.png');
+    const patch = nodesOf(graph, 'Krea2EditModelPatch')[0][1];
+    expect(patch.inputs).toMatchObject({ ref_boost: 4, ref_boost_a: 1, source_image: ['7', 0], target_latent: ['5', 0] });
+    expect(patch.inputs).not.toHaveProperty('source_latent_b');
+    expect(nodesOf(graph, 'ImageResizeKJv2')[0][1].inputs).toMatchObject({ width: 1024, height: 1024 });
+    expect(nodesOf(graph, 'Krea2OstrisEditModelPatch')).toHaveLength(0);
+    expect(nodesOf(graph, 'EmptySD3LatentImage')[0][1].inputs).toMatchObject({ width: 1024, height: 1024 });
+  });
+
+  it('文生图还是自带那套：EmptyLatentImage + CLIPTextEncode，不带参考图', () => {
+    const graph = kreaGraph({ ...params, krea: { mode: 'text', reference: null, refBoost: 1, extra: '' } }, 7);
+    expect(nodesOf(graph, 'EmptyLatentImage')[0][1].inputs).toMatchObject({ width: 1024, height: 1024 });
+    expect(nodesOf(graph, 'CLIPTextEncode')[0][1].inputs).toMatchObject({ text: params.positive });
+    expect(nodesOf(graph, 'LoadImage')).toHaveLength(0);
   });
 });
 

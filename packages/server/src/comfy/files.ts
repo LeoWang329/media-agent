@@ -1,4 +1,4 @@
-import { downloadFileName, tempFileName, tempFolderName, videoDownloadName, videoTempFileName, type JobImage, type VideoJob } from '@media-agent/shared';
+import { downloadFileName, maskFileName, tempFileName, tempFolderName, videoDownloadName, videoTempFileName, type JobImage, type VideoJob } from '@media-agent/shared';
 import fs, { constants } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -8,6 +8,15 @@ export async function saveTemp(work: string, data: Uint8Array, seed: number, whe
   const dir = path.join(work, 'image-temp', folder);
   await fs.mkdir(dir, { recursive: true });
   const name = await writeNew(dir, tempFileName(when, seed), (target) => fs.writeFile(target, data, { flag: 'wx' }));
+  return `image-temp/${folder}/${name}`;
+}
+
+// 局部重绘那张抠过透明的 PNG，存进同一个临时文件夹，「已清理」那套逻辑跟着适用，见 docs/dev-plan.md 5.35
+export async function saveMaskTemp(work: string, data: Uint8Array, when = new Date()): Promise<string> {
+  const folder = tempFolderName(when);
+  const dir = path.join(work, 'image-temp', folder);
+  await fs.mkdir(dir, { recursive: true });
+  const name = await writeNew(dir, maskFileName(when), (target) => fs.writeFile(target, data, { flag: 'wx' }));
   return `image-temp/${folder}/${name}`;
 }
 

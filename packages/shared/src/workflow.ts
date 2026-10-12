@@ -8,6 +8,10 @@ export const BUILTIN_WORKFLOW = { id: null, name: '内置流程', hash: '' };
 export const PLUGIN_OF: Record<string, string> = {
   Krea2EditModelPatch: 'ComfyUI-Krea2Edit',
   Krea2EditGroundedEncode: 'ComfyUI-Krea2Edit',
+  // 编辑档走的那套（作者给 ai-toolkit 训的 edit LoRA 用的），见 docs/dev-plan.md 5.34
+  Krea2OstrisEditModelPatch: 'ComfyUI-Krea2-Ostris-Edit（ostris/ComfyUI-Krea2-Ostris-Edit）',
+  TextEncodeKrea2OstrisEdit: 'ComfyUI-Krea2-Ostris-Edit（ostris/ComfyUI-Krea2-Ostris-Edit）',
+  'LayerUtility: ImageScaleByAspectRatio V2': 'ComfyUI_LayerStyle',
   ImageResizeKJv2: 'ComfyUI-KJNodes',
   FaceDetailer: 'ComfyUI-Impact-Pack',
   SAMLoader: 'ComfyUI-Impact-Pack',
@@ -34,6 +38,29 @@ export const PLUGIN_OF: Record<string, string> = {
   MiniMaxH3AddGuide: 'ComfyUI-MiniMax-H3（H3 官方节点包）',
   SelfLiftH3Sampler: 'comfyui-SelfLift',
   MiniMaxH3AudioGuideFeather: 'ComfyUI-MiniMax-H3-Audio-Guide-Feather（wjc573/ComfyUI-MiniMax-H3-Audio-Guide-Feather）',
+  // 局部重绘只裁一块、拼回去那对节点是插件带的，见 docs/dev-plan.md 5.35；InpaintModelConditioning 是 ComfyUI 自带的
+  InpaintCropImproved: 'ComfyUI-Inpaint-CropAndStitch',
+  InpaintStitchImproved: 'ComfyUI-Inpaint-CropAndStitch',
+  // 转真人那一档（图像编辑节点的「转真人」功能）用的，见 docs/dev-plan.md 5.36、docs/krea2-real-usage.md：
+  // 主图那个编码节点是作者的，反推那三个是 llama.cpp 那个插件；ColorCorrect 在 art-venture 里（跟 LayerStyle 不是一个包）。
+  // FluxKontextMultiReferenceLatentMethod 是 ComfyUI 本体自带的（Comfy-Org/ComfyUI#9356 加的），报这句是让人升级本体。
+  // 这几条 2026-10-11 照那台实例的 object_info 的 python_module 核过一遍
+  Easy_QwenEdit2509: 'easy_qwenEdit_2509（cardenluo/easy_qwenEdit_2509）',
+  FluxKontextMultiReferenceLatentMethod: 'ComfyUI 本体（升级到带 Flux Kontext / Krea2 支持的那版）',
+  llama_cpp_model_loader: 'llama-cpp_vllm（那台上装的这个；节点模块名 custom_nodes.llama-cpp_vllm）',
+  llama_cpp_parameters: 'llama-cpp_vllm（那台上装的这个；节点模块名 custom_nodes.llama-cpp_vllm）',
+  llama_cpp_instruct_adv: 'llama-cpp_vllm（那台上装的这个；节点模块名 custom_nodes.llama-cpp_vllm）',
+  ColorCorrect: 'comfyui-art-venture（ArtVenture/Post Processing）',
+  // 深度迁移那一档（图像编辑节点的「深度迁移」功能）用的，见 docs/dev-plan.md 5.36、krea2Depth.ts：
+  // 控制类三节点是 facok 那个包，深度提取是 controlnet_aux（跟上面的 AIO_Preprocessor 同一个包）。
+  // 这几条 2026-10-12 照那台实例 object_info 的 python_module 核过一遍：
+  // comfyui-krea2-controlnet / comfyui_controlnet_aux。
+  // 风格 Remix 那条图里没有新节点（LoraLoaderModelOnly、TextEncodeKrea2OstrisEdit 上面都有了）；
+  // ImageScaleToTotalPixels 是 ComfyUI 本体（comfy_extras），缺了要升级本体，不是插件，所以不列
+  Krea2ControlLoRALoader: 'comfyui-krea2-controlnet（facok/comfyui-krea2-controlnet）',
+  Krea2ControlImageEncode: 'comfyui-krea2-controlnet（facok/comfyui-krea2-controlnet）',
+  Krea2ControlApply: 'comfyui-krea2-controlnet（facok/comfyui-krea2-controlnet）',
+  DepthAnythingV2Preprocessor: 'comfyui_controlnet_aux',
 };
 export const DETAILER_NODES = ['FaceDetailer', 'UltralyticsDetectorProvider'];
 
@@ -56,26 +83,7 @@ export function builtinGraph(params: ImageJobParams, seed: number, uploaded: { i
     return [id, 0];
   };
   const out = ([id]: Link, index: number): Link => [id, index];
-  const checkpoint = add('CheckpointLoaderSimple', { ckpt_name: params.checkpoint });
-  let model = checkpoint;
-  let clip = out(checkpoint, 1);
-  const vae = params.vae ? add('VAELoader', { vae_name: params.vae }) : out(checkpoint, 2);
-  for (const lora of params.loras ?? []) {
-    if (params.loraTarget === 'model') {
-      model = add('LoraLoaderModelOnly', { lora_name: lora.name, strength_model: lora.strength, model });
-      continue;
-    }
-    const loaded = add('LoraLoader', { lora_name: lora.name, strength_model: lora.strength, strength_clip: lora.strength, model, clip });
-    model = loaded;
-    clip = out(loaded, 1);
-  }
-  const skip = add('CLIPSetLastLayer', { stop_at_clip_layer: -(params.clipSkip ?? 1), clip });
-  const encode = (text: string) =>
-    params.weighting === 'a1111'
-      ? add('BNK_CLIPTextEncodeAdvanced', { text, clip: skip, token_normalization: 'none', weight_interpretation: 'A1111' })
-      : add('CLIPTextEncode', { text, clip: skip });
-  const positive = encode(params.positive);
-  const negative = encode(params.negative);
+  const { model, clip: skip, vae, positive, negative } = encodeHead(add, out, params);
 
   // ControlNet：参考图提取成姿势图、深度图这些（不提取的直接用），按顺序接在正负面后面。采样和放大重画用接好的，部位重绘用原来的
   let guided = { positive, negative };
@@ -129,8 +137,8 @@ export function builtinGraph(params: ImageJobParams, seed: number, uploaded: { i
       guide_size_for: true,
       max_size: 1024,
       ...sampling,
-      positive: pass.positive ? encode(pass.positive) : positive,
-      negative: pass.negative ? encode(pass.negative) : negative,
+      positive: pass.positive ? encodeWith(add, skip, params, pass.positive) : positive,
+      negative: pass.negative ? encodeWith(add, skip, params, pass.negative) : negative,
       denoise: pass.denoise,
       feather: 5,
       noise_mask: true,
@@ -157,6 +165,114 @@ export function builtinGraph(params: ImageJobParams, seed: number, uploaded: { i
 
   add('PreviewImage', { images: image });
   return graph;
+}
+
+// InpaintCropImproved 的参数，照实例上那个调好的 E05，见 docs/dev-plan.md 5.35。24 个必填项全给；
+// 动过默认值的三处是 mask_expand_pixels（0→8）、output_target_width/height（512→1024）。
+// context_from_mask_extend_factor 1.2 是「裁的时候在掩码外多留 20% 上下文」，接缝能接上靠它
+export const INPAINT_CROP = {
+  downscale_algorithm: 'bilinear',
+  upscale_algorithm: 'bicubic',
+  preresize: false,
+  preresize_mode: 'ensure minimum resolution',
+  preresize_min_width: 1024,
+  preresize_min_height: 1024,
+  preresize_max_width: 16384,
+  preresize_max_height: 16384,
+  mask_fill_holes: true,
+  mask_expand_pixels: 8,
+  mask_invert: false,
+  mask_blend_pixels: 32,
+  mask_hipass_filter: 0.1,
+  extend_for_outpainting: false,
+  extend_up_factor: 1,
+  extend_down_factor: 1,
+  extend_left_factor: 1,
+  extend_right_factor: 1,
+  context_from_mask_extend_factor: 1.2,
+  output_resize_to_target_size: true,
+  output_target_width: 1024,
+  output_target_height: 1024,
+  output_padding: '32',
+  device_mode: 'cpu (compatible)',
+};
+
+// 局部重绘，见 docs/dev-plan.md 5.35：底图和掩码是同一张 PNG，掩码走它的 alpha 通道（只改了透明度，颜色照留）。
+// 照 E05：只裁遮罩附近一块重画，再拼回原图 —— 「遮罩外一个像素不动」是这个算法保证的。
+// uploaded.mask 是那张抠过透明的 PNG 在 ComfyUI 上的名字；denoise 是重绘强度（默认 1，调到 0.5 到 0.8 保留原来的轮廓）
+// 局部重绘，见 docs/dev-plan.md 5.35。**底图和掩码分成两张传**（image 就是原图、mask 是
+// 「要重画处 alpha=0」的那张 PNG）：ComfyUI 的 LoadImage 会把 RGBA 按 alpha 合成到黑底上，
+// 所以「一张 PNG 同时当底图和掩码」时，要重画那块在底图里永远是黑的（2026-10-12 真机上验的）。
+// 只给了掩码、没给底图时还照老路走（那时候底图就是那张掩码 PNG 本身）。
+export function inpaintGraph(params: ImageJobParams, seed: number, uploaded: { mask?: string; image?: string } = {}): ComfyGraph {
+  const graph: ComfyGraph = {};
+  const add = (class_type: string, inputs: Record<string, unknown>): Link => {
+    const id = String(Object.keys(graph).length + 1);
+    graph[id] = { class_type, inputs };
+    return [id, 0];
+  };
+  const out = ([id]: Link, index: number): Link => [id, index];
+  const { model, clip: skip, vae, positive, negative } = encodeHead(add, out, params);
+  const loaded = add('LoadImage', { image: uploaded.image ?? uploaded.mask ?? '' });
+  // 分两张时：掩码那张 PNG 的 alpha 就是掩码，LoadImage 的 MASK 输出正好是「1 − alpha」——
+  // 要重画的地方（alpha=0）是 1，正是 InpaintCropImproved 要的。IMAGE 输出只有三通道，取不了 alpha
+  const mask = uploaded.image ? out(add('LoadImage', { image: uploaded.mask ?? '' }), 1) : out(loaded, 1);
+  const crop = add('InpaintCropImproved', { image: loaded, mask, ...INPAINT_CROP });
+  const conditioned = add('InpaintModelConditioning', {
+    positive,
+    negative,
+    vae,
+    pixels: out(crop, 1),
+    mask: out(crop, 2),
+    noise_mask: true,
+  });
+  const sampled = add('KSampler', {
+    seed,
+    steps: params.steps,
+    cfg: params.cfg,
+    sampler_name: params.sampler,
+    scheduler: params.scheduler,
+    denoise: params.inpaint?.denoise ?? 1,
+    model,
+    positive: out(conditioned, 0),
+    negative: out(conditioned, 1),
+    latent_image: out(conditioned, 2),
+  });
+  const stitched = add('InpaintStitchImproved', { stitcher: out(crop, 0), inpainted_image: add('VAEDecode', { samples: sampled, vae }) });
+  add('PreviewImage', { images: stitched });
+  return graph;
+}
+
+// 底模、LoRA、clip skip、正负面：内置流程和局部重绘共用的前半段
+function encodeHead(add: (class_type: string, inputs: Record<string, unknown>) => Link, out: (link: Link, index: number) => Link, params: ImageJobParams) {
+  const checkpoint = add('CheckpointLoaderSimple', { ckpt_name: params.checkpoint });
+  let model = checkpoint;
+  let clip = out(checkpoint, 1);
+  const vae = params.vae ? add('VAELoader', { vae_name: params.vae }) : out(checkpoint, 2);
+  for (const lora of params.loras ?? []) {
+    if (params.loraTarget === 'model') {
+      model = add('LoraLoaderModelOnly', { lora_name: lora.name, strength_model: lora.strength, model });
+      continue;
+    }
+    const loaded = add('LoraLoader', { lora_name: lora.name, strength_model: lora.strength, strength_clip: lora.strength, model, clip });
+    model = loaded;
+    clip = out(loaded, 1);
+  }
+  const skip = add('CLIPSetLastLayer', { stop_at_clip_layer: -(params.clipSkip ?? 1), clip });
+  return {
+    model,
+    clip: skip,
+    vae,
+    positive: encodeWith(add, skip, params, params.positive),
+    negative: encodeWith(add, skip, params, params.negative),
+  };
+}
+
+// A1111 的权重算法换一种编码节点，见 docs/dev-plan.md 5.21
+function encodeWith(add: (class_type: string, inputs: Record<string, unknown>) => Link, clip: Link, params: ImageJobParams, text: string): Link {
+  return params.weighting === 'a1111'
+    ? add('BNK_CLIPTextEncodeAdvanced', { text, clip, token_normalization: 'none', weight_interpretation: 'A1111' })
+    : add('CLIPTextEncode', { text, clip });
 }
 
 // ─── 导入的工作流，见 docs/dev-plan.md 5.18 ───

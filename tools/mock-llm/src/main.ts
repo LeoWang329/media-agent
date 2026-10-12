@@ -1,6 +1,7 @@
 import { createMockLlmApp } from './app';
 
-const PORT = 3799;
+// 端口能从环境变量覆盖，见 tools/mock-comfyui/src/main.ts 里的说明
+const PORT = Number(process.env.PORT ?? 3799);
 
 createMockLlmApp().listen(PORT, '127.0.0.1', (err) => {
   if (err) throw err;

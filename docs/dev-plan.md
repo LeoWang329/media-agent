@@ -700,7 +700,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   - 出图设置的说明里写推荐的模型：IL 用 NoobAI-XL 出的 ControlNet（比如深度 `Eugeoter/noob-sdxl-controlnet-depth_midas-v1-1`、姿势 `Laxhar/noob_openpose`），Pony 用通用 SDXL 的（比如 xinsir 出的 union，一个文件管好几种）。
 - 画风（P17）就是原来的画风参考，WebUI 里它也在 ControlNet 里：`IPAdapterModelLoader` + `CLIPVisionLoader` + `IPAdapterAdvanced`（`weight_type` 用 style transfer），接在底模后面，模型从这两个节点的列表里选。说明里写推荐的模型：IL 用 NoobAI 的 IP-Adapter，Pony 用 `ip-adapter-plus_sdxl_vit-h`。
 - 图生图（P17）：出图设置里起图选「文生图」或「图生图」；图生图选一张参考图（来源同 ControlNet）和重绘强度（默认 0.6）：`LoadImage` → `ImageScale` 缩放裁切成出图尺寸 → `VAEEncode` → `KSampler`。只用自带节点。
-- 局部重绘（P18）：在一张出的图上点，大图窗口进涂抹模式。用画笔涂要重画的地方，笔刷能调大小，能擦、能清空；再填这块要画成什么（默认是原图框里的标签，正面、负面照普通出图加固定开头和负面词）和重绘强度（`denoise` 默认 1；调到 0.5 到 0.8 保留原来的轮廓、只改细节）。
+- 局部重绘（P18）：在一张出的图上点，大图窗口进掩码模式，**拖框和涂抹两个工具都能用**（详见 5.35）。用画笔涂要重画的地方，笔刷能调大小，能擦、能清空；也能在图上按住拖一个矩形、拖动、拉手柄缩放；两种能叠加。再填这块要画成什么（默认是原图框里的标签，正面、负面照普通出图加固定开头和负面词）和重绘强度（`denoise` 默认 1；调到 0.5 到 0.8 保留原来的轮廓、只改细节）。
   - 发的时候程序把原图涂过的地方改成透明（只改透明度，颜色照留），存成 PNG 放进临时文件夹，用 `/upload/image` 传上去，`LoadImage` 把透明的地方当遮罩。
   - 流程照 AutoDL 实例上修好的 E05：`LoadImage` → `InpaintCropImproved`（只裁出遮罩附近一块：周边多带 1.5 倍，遮罩外扩 8 像素，缩放到 1024×1024）→ `InpaintModelConditioning`（普通底模也能用）→ `KSampler`（底模、LoRA、步数这些同原图，原图是导入的工作流出的就用节点现在的出图设置；种子随机）→ `VAEDecode` → `InpaintStitchImproved`（缩回去拼回原图，边缘羽化 32 像素，遮罩附近以外保持原图像素）→ `PreviewImage`。
   - 要装 ComfyUI-Inpaint-CropAndStitch 插件。节点名和参数名，开工前对照 E05 的 JSON 核对。
@@ -973,6 +973,144 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
   `LoraLoaderModelOnly` 两套（都接 `['4', 0]`，8 步 @0.75 / 4 步 @0.7）、`SelfLiftH3Sampler.model` = `['75', 0]`、`model_hires` = `['76', 0]`、`BasicScheduler.model` = `['75', 0]`；
   第 2 段有 `MiniMaxH3AudioGuideFeather`（刻度 12、`positive` 接 `AddGuide`），第 1 段没有；拼接那条读 `media_agent_<jobId>_s0/s1.mp4`。
   羽化「真的起作用」也单独验过：同种子只差刻度，音频指纹 0 = `8f0534a9…`、12 = `d434b2f0…`，同参数复跑逐比特相同；而作者原版 `compat.py` 下 12 和 0 一模一样（假绿）。
+
+### 5.34 Krea2 指令编辑（第五批）
+
+> 位置说明：`docs/plan-image-edit.md` 里写的是「并进 5.32 / 5.33」，那两节后来被 SelfLift 那套占了，所以落到 5.34 / 5.35。
+
+用户原话：「放一张图进去，指定改哪儿，但不用涂抹。」
+
+- 「起图」那一排从两个按钮变成三个：**文生图 / 四视图 / 编辑**（`KreaSettings['mode']` 加 `'edit'`）。不新做节点类型，就在 `Krea2 出图设置` 里。
+- 原理：**作者那套 Ostris 编辑节点**（`Krea2OstrisEditModelPatch` + `TextEncodeKrea2OstrisEdit`，来自 [ostris/ComfyUI-Krea2-Ostris-Edit](https://github.com/ostris/ComfyUI-Krea2-Ostris-Edit) v1.0.1）。这条是给**用 ai-toolkit 训的 edit LoRA**（动漫转真人那类）用的：
+  `UNETLoader` → `LoraLoaderModelOnly`（串起来）→ `Krea2OstrisEditModelPatch(kv_cache true)` → `KSampler(denoise 1, cfg 1, euler/simple)` → `VAEDecode` → `PreviewImage`；
+  `CLIPLoader` → `TextEncodeKrea2OstrisEdit(prompt = 框里那句话, vae, image1 = 参考图)` → 正面，同一个节点空 prompt → 负面。
+  **这不是 img2img**：`denoise 1` + 空潜变量，参考图是当「参考」喂进 Qwen3-VL 和模型的参考潜变量，改哪儿由正面词决定，**所以不用掩码、不用涂**。
+  - **为什么不用 Krea2Edit 那条路**（本节原来写的）：真机上验过，`Krea2EditModelPatch` 配写实/转真人 LoRA 会出花图（边缘露原图、颜色飞），摘掉 LoRA 也一样；同一个 LoRA 在 Ostris 这条路上是好的。四视图没这个问题，继续保持用 Krea2Edit。
+  - 插件：`PLUGIN_OF` 里 `Krea2OstrisEditModelPatch` / `TextEncodeKrea2OstrisEdit` → `ComfyUI-Krea2-Ostris-Edit`，`LayerUtility: ImageScaleByAspectRatio V2` → `ComfyUI_LayerStyle`。缺了照样给安装包名字。
+- **尺寸**：编辑档**不看面板上的宽高**——参考图先按自己的比例缩到**长边 2048**（`LayerUtility: ImageScaleByAspectRatio V2`，`scale_to_length = KREA2_EDIT_LONG_SIDE`、`scale_to_side = longest`、`round_to_multiple = '16'`），出图尺寸跟着缩放后的参考图走（`GetImageSize` → `EmptySD3LatentImage` 的宽高）。
+  - 为什么是 2048：V3 那个 LoRA 是 2K 训的。作者示例里用的 `FluxKontextImageScale` 只有 ~1MP（880×1184），真机对比明显发糊，拉长边就清楚了。
+  - 面板的尺寸校验还是留着（`mode !== 'text'` 时要求 16 的倍数），因为切档时 `kreaDefaults('edit')` 会带上 1024×1536，懒一下也不会撞校验。
+  - **「参考图相似度」（`ref_boost` / `refBoostA`）编辑档不看**，那是四视图那条路的；字段还存着，界面上有提示说明。
+- **双图**：编辑档能给**两张**参考图 —— **图 1 = 场景（构图/背景/姿势）在前，图 2 = 主体（人物长相）在后**（训练顺序）。接法是 `image1` / `image2`，两个编码节点（正负面）都给；**没选图 2 时 `image2` 一个都不接**。作者的双图触发词里 `Figure 2` 指的就是第二张。
+  - 尺寸还是看图 1 的（场景定构图），图 2 只当参考。
+  - `KreaSettings` 加 `referenceB?: RefImage | null`、`refBoostA?: number`（都可选，老节点读出来当没选/1）。预设不存参考图，两张都不存。
+  - 大图参数里双图写「编辑（双图）· 场景 N / 人物 M」，单图写「编辑 · 相似度 N」（这个显示还是四视图那套字段，编辑档实际不看）。
+- 默认值（`kreaDefaults('edit')`）：底模 `krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors`（写实微调）、文字理解 `qwen3vl_4b_uncensored_int8_convrot.safetensors`（去审查）、VAE `qwen_image_vae.safetensors`、LoRA 动漫转真人 V3 @1、**10 步**、CFG 1、euler/simple、`kv_cache = true`。
+  - `kv_cache` 开着是照作者那张示例，真机对比也比关掉清楚；关掉那张脸更软。`OSTRIS_EDIT_KV_CACHE` 常量控制。
+  - 底模和文字理解这两样决定「出不出得来写实」和「松不松」，都能在出图设置里换。**写实类的底模 + 去审查的编码器出来就是露骨的**（真机验过），这是这一档的既定行为，不是 bug。
+- 编辑也要选参考图（来源照四视图：槽位里的图，或这个节点出过的图）。没选时点生图返回 400「编辑还没选参考图」，一张都不发。参考图后来删了、临时文件清了又没下载过，报「编辑的参考图找不到了」。
+- 一组的 `kind` 是 `'edit'`，框下面那组标「编辑」，大图参数里「起图」写「编辑 · 相似度 N」。
+- **编辑方案**（`KREA2_EDIT_PRESETS`）：出图设置里「编辑」档下面一个下拉，每个方案 = 一套 LoRA（名字 + 强度）+ 可选触发词 + 可选参数。选一个就把 LoRA 和参数填进节点（之后还能手动改）；**手动改过 LoRA 就显示「自己选的 LoRA」**。
+  - 服务端**不另存「选了哪个方案」**：照这一组的 LoRA 名字反认（`editPresetOf`），认出来且方案带触发词时，把触发词放在正面词最前面（`触发词\n\n框里那句话`）。这样手写 LoRA 名字也能吃到触发词，改强度也不影响认。
+  - 现在的方案（第一个是默认，`DEFAULT_EDIT_PRESET`）：`动漫转真人 V3`（默认，触发词 `transform the image to realistic photograph`、10 步 / CFG 1）、`动漫转真人 V1`（同触发词、10 步）、`身份编辑 v1.1`（照 T07）、`身份编辑 v1.2`、`换装（krea_outfittransfer）`。
+  - **只有前两个在真机上验过**（配的就是 Ostris 这条路）。身份编辑和换装那两个是给 Krea2Edit 那套训的，配这条路没验过，方案说明里写清了「试了再说」。
+  - 触发词和推荐参数都是照作者在模型页上写的（动漫转真人那两档见 Civitai 2808492）。**要加新方案就往这个数组里加一条**，界面和服务端都跟着走。
+- **界面上要写清局限**：没提到的部分不保证像素不动（背景、姿态、构图可能跟着变一点），人物长相靠 LoRA 保住。要「只改一块、别处一个像素不动」用局部重绘（5.35）。尺寸和相似度这两栏这一档不看，界面上也有提示。
+- 预设照旧：`PresetSettings` 存 `krea.mode`，参考图不存。
+
+### 5.35 局部重绘：拖框 + 涂抹（第五批）
+
+用户原话：「把它针对指定区域做一些变更，就不用涂抹的那一块」，接着又说「同时也支持涂抹」。所以两种画法都做，同一个窗口里切换、能叠加。
+
+- **入口**：大图窗口「做四视图」旁边加「局部重绘」。**照「做四视图」的规矩，Krea2 出的图不给这个按钮**（局部重绘是内置 SDXL 流程的活，Krea2 那张底模走不了 E05 那条路）。
+- **掩码怎么给**：把原图涂过的地方**改成透明**（只改透明度，颜色照留），存成 PNG 进临时文件夹，用 `/upload/image` 传上去；`LoadImage` 的槽 0 出 IMAGE、槽 1 出 MASK，掩码就是这张 PNG 的 **alpha 通道**。一次上传、一个节点、底图和掩码同源，天然像素对齐 —— 不用 `LoadImageMask`，也不会出现掩码和底图尺寸对不上。
+- **画法**：拖框（按住拖一个矩形，能拖动、能拉手柄缩放）+ 画笔（大小可调，能擦、能清空），两种叠加。编辑器画在显示尺寸上，导出的 PNG 必须是**原图像素**尺寸：要重画处 alpha=0，别处 255。
+- **流程照实例上的 `E05-局部重绘-手绘遮罩SDXL`**：
+  `LoadImage` → `InpaintCropImproved`（只裁遮罩附近一块）→ `InpaintModelConditioning`（`noise_mask=true`，普通底模也能用）→ `KSampler` → `VAEDecode` → `InpaintStitchImproved`（缩回去拼回原图）→ `PreviewImage`。
+  「遮罩外不动」是这个算法保证的：只裁遮罩附近一块重画，再拼回原图。
+- `InpaintCropImproved` 照 E05 的值填（25 个必填项：接进来的 `image` 加 24 个参数，全给）：`mask_expand_pixels = 8`、`output_target_width/height = 1024`、`context_from_mask_extend_factor = 1.2`、`mask_blend_pixels = 32`、`output_resize_to_target_size = true`、`output_padding = 32`、`device_mode = cpu (compatible)`、`preresize = false`，其余同默认。这三个非默认值是给 SDXL 调的，Krea2 那边要不要改等真机看。周边多留 20%（`context_from_mask_extend_factor`）就是接缝能接上的原因。
+- `KSampler` 的底模、LoRA、步数这些照原图那组（原图是导入的工作流出的就用节点现在的出图设置），种子随机，`denoise` 默认 1（调到 0.5–0.8 保留原来的轮廓、只改细节）。
+- 正面、负面照普通出图加固定开头和负面词；正面默认是原图框里的标签。
+- 接口：`POST /canvases/:canvasId/nodes/:nodeId/messages/:messageId/images/:jobId/:index/inpaint`，收 `{ mask（base64 PNG）、positive、negative、denoise }`。掩码 PNG 落在 `image-temp/当天/`，所以「已清理」那套自动适用；`ImageJobParams` 加可选的 `inpaint: { mask, denoise }` 记着这张 PNG 的路径，「同样参数再来」「只换种子再来」重发时**重新上传同一张 PNG，不用再涂**。临时文件被清掉时报错，和补做那条一样。
+- 一组的 `kind` 是 `'inpaint'`，参数里记着从哪张来。
+- 要装 `ComfyUI-Inpaint-CropAndStitch`（`InpaintCropImproved` / `InpaintStitchImproved` 是它带的），缺了照 5.18 说缺哪个节点、装哪个插件。
+- 假的 ComfyUI 要补 `InpaintCropImproved`（出 `STITCHER` + `IMAGE` + `MASK`）、`InpaintModelConditioning`、`InpaintStitchImproved` 三个节点；`LoadImage` 本来就出 `['IMAGE','MASK']`，alpha 掩码那条路 mock 天然支持。
+- 「涂抹的界面原型」这条是 P18 一直没开工的原因（`web/prototype/` 里原先没有）——原型先出给用户看，点头了再写实现。
+
+### 5.36 图像编辑节点（第六批）
+
+用户原话：「我需要额外有一个节点，图像编辑的界面。我可以打开一张图或多张图，然后有编辑的各类选项。有的节点编辑我还想让模型参与帮忙写提示词。」
+
+**为什么单独开一种节点**：编辑跟生图是两回事——生图是「照这句话画一张新的」，编辑是「拿这张图改一改」。框里的语义、底下的按钮、要几张图都不一样，硬塞进生图节点会把两边的提示词、参数和出图入口全搅在一起。所以节点类型从两种变三种：`video` / `image` / `edit`。
+
+详细计划在 `docs/plan-image-edit-node.md`（开发步骤）和 `docs/plan-image-edit-node-layout.md`（界面草图，配能点的原型 `web/prototype/image-edit-node.html`）；转真人那套照 `docs/krea2-real-usage.md`（作者原件 `krea2_v10.json`）。
+
+**节点类型和系统提示词解绑**（以前 `NodeKind = PromptMeta['use']`）：
+
+- `NodeKind` 独立成 `'video' | 'image' | 'edit'`；`PromptMeta['use']` 也加 `'edit'`。两者成员一样但不再互为别名，以后各自能走各自的。
+- 系统提示词的说明段多认一种「用途: 编辑」；再读一个「功能: 指令编辑 / 换装 / 局部重绘 / 转真人」，见 `packages/shared/src/promptMeta.ts`。
+- 编辑节点**每个功能一套**系统提示词，都放在 `docs/prompts/`：`edit.md`、`edit-outfit.md`、`edit-inpaint.md`、`edit-real.md`，共用的输出格式是 `format-requirement-edit.md`。选哪个功能就用哪套，用户在设置页里能改能换。
+- **模型不决定功能**：模型只写字，功能是用户在面板里选的；候选框上的角标只标「这条是给哪个功能用的」。
+- 老节点没记 `kind` 的照旧按现在用的系统提示词补：生图提示词算生图节点，编辑提示词算图像编辑节点，别的（包括提示词已经不在了的）算视频节点。
+
+**第一轮范围**（用户说「所有功能都做」，分三批）：
+
+| 批 | 功能 | 走什么 |
+| --- | --- | --- |
+| 1 | 指令编辑 | Krea2 编辑档（T07） |
+| 1 | 转真人 | `docs/krea2-real-usage.md` 那套：`Easy_QwenEdit2509` + `Krea2OstrisEditModelPatch` + `beta57`；含「反推 / 手输」、「只转真人 / 换脸（`image2_strength`）」、LoRA 两组；无审查当默认 |
+| 1 | 换装 | Krea2 编辑档 + `krea_outfittransfer` |
+| 1 | 局部重绘 | E05（5.35） |
+| 2 | 放大 / 高清、四视图 | 都从大图窗口搬（**已做完**，见下面 E5） |
+| 3 | 扩图、深度 / 姿势迁移、风格 Remix | **要先在真机上摸工作流**（现在不接 AutoDL，等有机器） |
+
+**第 3 批的真机摸底结论**（2026-10-12，`outputs/devcheck/w3-findings.md`）：**深度迁移能做、风格 Remix / 换人能做，姿势迁移和扩图不做**。
+
+- **深度迁移**（进代码）：控制类三节点一组（`Krea2ControlLoRALoader` → `Krea2ControlApply`，facok 的 `comfyui-krea2-controlnet`）+ `DepthAnythingV2Preprocessor`（`depth_anything_v2_vitl.pth`、resolution 1024）→ `Krea2ControlImageEncode`（grayscale / per_image_minmax / invert false）。**控制编码那个 latent 必须和采样器用的是同一个**（官方 README 明写）。底模 turbo fp8、8 步 / CFG 1 / euler / simple、1024×1024。逐字照抄 `outputs/devcheck/w3-depth.json`，主结果图 `outputs/real/shots/W3-深度-DepthAnything控制.png`。
+  - ⚠️ `Krea2ControlLoRALoader.strength` **不能填 0**：0 时 loader 不注册采样 wrapper，`Krea2ControlApply` 直接抛「must receive the MODEL output from Krea2 Control LoRA Loader.」（`w3-depth0.json` 那次）。
+- **风格 Remix / 换人**（进代码）：Ostris 那条路（跟转真人同族）但**只喂 model**（`LoraLoaderModelOnly`，不是 `LoraLoader`）+ `Krea2OstrisEditModelPatch(kv_cache=true)` + `TextEncodeKrea2OstrisEdit`（参考图先 `ImageScaleToTotalPixels` 到 0.140625 MP / 384×384 / step 16）+ 正负各一个 `FluxKontextMultiReferenceLatentMethod(index_timestep_zero)`。底模 turbo int8 convrot、8 步 / CFG 1 / euler / simple、出图尺寸跟参考图无关。两个 LoRA 同一套接线只换 `lora_name`：`krea2/krea2_reid_rank32.safetensors`（放得开）和 `krea2/Krea2_Remix_RealCosplay_rank64_v1.safetensors`（保守）。逐字照抄 `w3-reid2.json` / `w3-remix2.json`。
+  - ⚠️ **LoRA 名必须带 `krea2/` 前缀**，少了会在提交阶段被 `value_not_in_list` 拒掉（真机踩过）。
+- **姿势迁移不做**：那台上 `Krea2ControlLoRALoader` 的 373 项里没有任何 pose 的 Krea2 控制 LoRA；拿 OpenPose 骨架喂深度 LoRA 会把骨架白线当成内容画进画面（`W3-深度-OpenPose试探-T0人像.png`）。
+- **扩图不做**：现有节点满足不了那个 LoRA 的输入契约（要源图在画布上的 bounding box → `reference_placements`），四种接法都试过，见 `w3-findings.md` 第 4 节。要做得先装 `ComfyUI-Rebels-Krea2-Outpaint`。
+- **这两档先用验过的那套底模**（turbo fp8 / int8 + fp8 文字理解），**不扩成「无审查」两档** —— 那一档没在真机上验过。
+
+**E1 已经做完**（2026-10-11）：
+
+- `NodeKind` 加 `'edit'`、`PromptMeta` 加 `use: 'edit'` 和 `fn`、`parsePromptMeta` 认「用途: 编辑」「功能:」。
+- `BUILTIN_PROMPTS` 加四份编辑提示词；`FORMAT_REQUIREMENT_DOCS` 加 `edit`。
+- 新建节点菜单第三项「图像编辑节点」；卡片标「编辑」、边框用新加的 `--edit` 青色（跟视频的灰、生图的紫分开）；`NodeSummary` 加 `kind`。
+- 设置页第三组「写改图说明 · 图像编辑节点用」，每份带「编辑 · 功能名」标签；固定格式要求多一份「图像编辑节点的四套用这份」。
+- 编辑节点默认用 `edit`（指令编辑）那套；一套编辑提示词都没有时建不出来，报「设置里还没有图像编辑用的系统提示词」。
+- 编辑节点只能选编辑用的系统提示词，报「图像编辑节点只能选图像编辑用的系统提示词」。
+- 单测卡在 `packages/shared/test/imageJob.test.ts`（说明段）、`packages/server/test/prompts.test.ts`（列表和格式要求）、`packages/server/test/imageNode.test.ts`（新建定类型、老节点归类、换提示词）；e2e 在 `tests/e2e/20-edit-node.spec.ts`。
+- **E2 已经做完**（2026-10-11）：面板底部的编辑栏，从上到下是 **功能 → 图 → 提示词 → 开始**：
+  - **功能**：下拉，先只放「指令编辑」，另外三个列出来标「还没做」，点了给一句提示。
+  - **图**：槽位点一下就是「用这张图」（单选），选中的底下标角色名（`要改的` / `要转的` …），原来那个菜单挪到**右键**；卡片上写「N 张图」，不再显示时长和比例。
+  - **提示词**：下拉里是指令编辑那六条现成的（换衣服 / 换背景 / 加个东西 / 去掉个东西 / 改光线 / 改表情），选中填进下面那行；那行能改。
+  - **参数 + 开始**：相似度 + 开始（没选图或没写字时按住）。点开始服务端自己造一条回复、把出的图挂在框下面（照「做四视图」那套），走 Krea2 编辑档。
+  - **指令编辑挂的是身份编辑 v1.1 的 LoRA，不是动漫转真人 V3** —— 所以不会自己加真人化触发词；编辑档的接线照 5.34（Ostris 那两个节点），**不是**四视图那条 Krea2Edit。
+  - 编辑节点的 `edit` 设置在节点里记着（功能、第几张图、那句话、相似度），后端 `PATCH` 收 `edit`，建任务走 `POST /canvases/:id/nodes/:nid/edit`。
+  - **E3 已经做完**（2026-10-11）：模型参与那套，报告 `docs/reports/P27.md`。
+    - 面板顶栏那一格在编辑节点上叫「**模型提示词**」，只列**当前功能那一份**（按提示词说明段里的「功能: 」对名字）；换功能服务端自己把 `systemPromptName` 换成那份，请求里明写了系统提示词的照请求。
+    - 发给模型的图**只有选中的那一张**（`editDiff`），并说明「要改的是第 N 张参考图」；面板底下「有改动还没发出去」那句也跟着换。
+    - 每条回复上记 `message.edit = { fn, slot }`：候选框右下角标「**指令编辑 · 用 1 号图**」，按钮 **「用它」** 把框里那句话落到编辑栏，功能、图一起切回去。
+    - 输入框旁多一个「**写一个**」：不问你要改什么，直接发「看图，按「X」给我几个方向。」。
+    - 假模型按固定格式要求里那句「一个字都不会被程序改动」认编辑那四套（四个功能回四句不一样的话），测试靠它卡「换功能真的换了提示词」。
+    - 「框上直接开始出图」（布局稿第 4 节 ④）和另外三个功能的界面切换留给 E4 / E6；E4 之前「换功能」在 e2e 里是调接口换的。
+    - **真机验过**：指令编辑这条路（Ostris 两个节点 + 身份编辑 v1.1）在那台上跑通了，见 `docs/reports/real-machine-edit-node.md`。
+  - **E4 已经做完**（2026-10-11，转真人 + 换装；局部重绘留给下一轮）：报告 `docs/reports/P28.md`。
+    - **转真人照作者那套**（那台上的 `Krea2转真人-全开关（反推+单双图+手输）`，参数一字不改）：`Easy_QwenEdit2509` + `Krea2OstrisEditModelPatch(kv_cache=true)` + `KSampler(euler, **beta57**, 8 步, CFG 1)` + V3 LoRA（model 和 clip 一起喂）+ 两张图各自 `ColorCorrect(−20)`/长边 1536 + 反推（35B MoE，`force_offload=false`）。无审查是默认。
+    - 反推的两份系统提示词抠自 `docs/krea2-real-reverse-prompt.md`（放代码里，不放 `docs/prompts/`），有一条测试从 doc 里抠出来逐字比对。
+    - **换装**照编辑档那条路，只换 `krea_outfittransfer` 的 LoRA；四条现成句子在 `EDIT_PRESETS.outfit`。
+    - 面板：功能下拉能切转真人/换装；转真人那套参数区（谁写词 / 做法+图 2 强度 / LoRA 两组 / 无审查）；图槽能标「真人参考」。
+    - **`POST /edit` 的底改成节点上存的设置**（请求里的字段覆盖它）——只发 `{fn}` 时不会再把反推/双图/LoRA 悄悄换回默认值。
+    - **真机验过**：跟作者那套同一张图对照，四条转真人出来基本一致（30 秒 / 21 秒 vs 作者 80 秒 / 38 秒）；`image2_strength` 那个旋钮还没单独验。
+  - **E7 第一半已经做完**（2026-10-12）：新增两个功能「**深度迁移**」和「**风格 Remix**」（第 3 批那三条里能做的两条，姿势迁移和扩图不做，理由见上面那张表下面）。报告见本节，接线和参数照 `outputs/devcheck/w3-findings.md` 逐字抄。
+    - `EditFnId` 加 `'depth' | 'remix'`，`EDIT_FNS` 各一条（名字必须跟系统提示词说明段里的「功能:」一字不差）；每个功能一套系统提示词 `docs/prompts/edit-depth.md` / `edit-remix.md`，`BUILTIN_PROMPTS` 从 12 套变 14 套。
+    - 内置流程在两个新文件里：`packages/shared/src/krea2Depth.ts`（控制类三节点那一组）、`packages/shared/src/krea2Remix.ts`（Ostris 那条只喂 model）。`kreaGraph` 按 `krea.mode` 分派，服务端 `editParams` 里两条新分支把底模 / 文字理解定死成跑通的那套（**不扩无审查两档**），控制强度和 LoRA 走 `ImageJobParams.remix`。
+    - 面板各一块参数区：深度迁移是「提示词 + 控制强度（默认 1，只收 0.1–1.5）」，风格 Remix 是「提示词 + 换人/风格 LoRA 下拉 + 强度」。两个功能都**没有**出图设置那一套（尺寸跟图走）。
+    - `PLUGIN_OF` 补 `Krea2ControlLoRALoader` / `Krea2ControlImageEncode` / `Krea2ControlApply`（`comfyui-krea2-controlnet`）和 `DepthAnythingV2Preprocessor`（`comfyui_controlnet_aux`）—— 2026-10-12 照实机 `object_info` 的 `python_module` 核过；`ImageScaleToTotalPixels` 是 ComfyUI 本体（`comfy_extras`），缺了要升级本体，不是插件，所以不列。
+    - 测试：单测 `packages/shared/test/krea2DepthRemix.test.ts`（两张图的整条接线，逐项卡参数、LoRA 前缀、latent 共用、正负 conditioning 的接法）、集成 `packages/server/test/editJobs.test.ts`（假 ComfyUI 真收到的那张图 + 缺图 / 缺插件的人话）、e2e `tests/e2e/23-edit-depth-remix.spec.ts`。
+  - **E5 已经做完**（第 2 批那两个功能 + 收尾的「框上开始」）：
+    - **放大 / 高清**：`EditFnId` 加 `'upscale'`，参数是**倍数（1.5 / 2）+ 放大模型 + 面部修复开关**三样。走的是生图节点已有的那条内置放大路（`UpscaleModelLoader` + `ImageUpscaleWithModel` → `ImageScale` 缩到原图 × 倍数，取 8 的倍数），**重绘强度固定 0 = 只放大不重画**；「面部修复」是部位重绘的一道（`UltralyticsDetectorProvider` + `FaceDetailer`，`newDetailPass` 的默认参数）。原图是槽位里选中的那张（`ImageJobParams.upscaleFrom`），出图前由 `graphMaker` 走 `refFile` 传上去。底模、步数这些照**这份提示词说明段里那个系列**（跟局部重绘同一个 `sdxlFamily`，没写按 IL，Krea2 走不了这条）。
+    - **放大模型没选就用这台 ComfyUI 上第一个**（`chooseUpscaleModel`，跟底模那套 `chooseCheckpoint` 一个路子）：面板上留着「用这台 ComfyUI 上的第一个」，点了「开始」就能直接放大。
+    - **这个功能不用模型写字**：`EditFn` 加了 `writes` 字段，它是 `false` —— 面板上没有「提示词」那一行（写明「这个功能不用模型写字」）、输入框旁没有「写一个」、`EDIT_PRESETS.upscale` 是空的、**没有 `docs/prompts/edit-upscale.md`**；换功能时 `promptNameForFn` 找不到就留着现在那套，顶栏那一格写着「是聊天用的」。
+    - **四视图**：`EditFnId` 加 `'fourview'`，跟生图节点那个「做四视图」同一条路（`krea2_4panel` + `Krea2EditModelPatch` / `Krea2EditGroundedEncode`，`krea.mode` 还是 `'four-view'`）。原图是槽位里选中的那张；框里那句话当**额外要求**，主指令 `FOUR_VIEW_INSTRUCTION` 由 `fourViewPrompt()` 接在最前面，**不写也行**。系统提示词 `docs/prompts/edit-fourview.md`（说明段 `用途: 编辑` + `功能: 四视图`），`BUILTIN_PROMPTS` 从 14 套变 15 套。
+    - **`editTextBlock()`**（shared）统一了「这个功能要不要先写字」：放大 / 高清、四视图、转真人开着反推时都不用写，别的一律要 —— 面板底部的「开始」、框上的「开始」和服务端三处问的是同一个函数。
+    - **框上直接「开始」**（布局稿第 4 节 ④）：框上多一个「开始」，用**这条框自己的**功能 / 图 / 那句话出图。`POST /edit` 多收 `messageId` + `promptIndex`：带上时**不新建回复**，出的那组挂在这条回复的那个框下面（`promptIndex` 就是框的序号），不带时照旧自己造一条回复；面板底部和框上共用这一条服务端路径。缺东西时给一句人话：功能还没做、这条框用的图不在槽位里了、局部重绘还没画掩码。
+    - 顺手修的界面实话：深度迁移 / 风格 Remix 那两句「尺寸不用填，跟着这张图走」改成**出图固定 1024×1024**（照真机那几份 JSON，代码里的尺寸没动）；局部重绘那块加一句「这一块走 SDXL 那条重绘流程，底模按提示词上的系列走」。
+    - 测试：单测 `packages/shared/test/edit.test.ts`（八个功能、`writes`、`editTextBlock`、放大默认值）、集成 `packages/server/test/editJobs.test.ts`（放大那条的内置流程和面部修复、四视图那条的接线和主指令拼接、框上「开始」不新建回复 + 两条人话）、e2e `tests/e2e/24-edit-upscale-fourview.spec.ts`。
+    - ⚠️ **局部重绘真机上是坏的**（2026-10-12 验的）：掩码对（单独跑探针确认过白框落在抠掉的位置）、尺寸跟原图一样、遮罩外没动，但**要重画那块是纯黑的**。查出来的两件事：① ComfyUI 的 `LoadImage` 会把 RGBA **按 alpha 合成到黑底**，所以「一张 PNG 同时当底图和掩码」那套下，要重画那块在底图里永远是黑的（把框里填中灰也一样黑）；② 改成 **底图和掩码分两张传**（`inpaintGraph` 现在生成两个 `LoadImage`，掩码取 MASK 口）**还是黑**，而且换 seed、denoise 0.85→1，出图**逐字节一样** —— 生成结果没落到那块上。**问题在 E05 这条流程本身**：`docs/reports/P24.md` 当时只验了「遮罩外 827927 个像素没动」，没验「遮罩里画成了什么」。**修好之前别拿局部重绘干活动**，下一步是查 `InpaintCropImproved` / `InpaintStitchImproved` 的出入参或者换一条 inpaint 流程，见 `docs/reports/P29.md`。
 
 ## 6. 界面
 
@@ -1332,6 +1470,54 @@ SSE 事件（send / regenerate / edit 共用）：`{type:'user', message}`（sen
 做：5.31。假的 ComfyUI 加上 `VHS_LoadVideo`、`LoadAudio`、`TrimAudioDuration`，传上来的视频、音频才能选。测试用的小视频、小音频放 `tests/fixtures/media/`。
 
 完成标准：10.4 第 10、11 条；开 A 真机试一次参考视频、一次声音参考、一次两段 30 秒的配音，看配音跨段对不对得上口型；用户做 11.4 第 4 条。
+
+### P23 Krea2 指令编辑
+
+做：5.34。
+
+完成标准：界面上「起图」多一档「编辑」；选参考图 + 框里写一句话能出图；没选参考图时拦住并说清楚；真机跑一张，改的和说的是同一件事；`typecheck` / `vitest` / `e2e` 全绿。（**已做**：真机 1024×1024、8 步、63 秒，「换成红色皮衣」出来了，见 `docs/reports/P23.md`。）
+
+### P24a 掩码编辑器
+
+做：5.35 里的编辑器（拖框 + 涂抹 + 擦 + 清空，导出原图像素的 alpha 掩码 PNG），先出 `web/prototype/` 原型给用户看。
+
+完成标准：原型能在浏览器里点开看，拖框、涂、擦、清空、两工具叠加都顺眼；实现出来的导出的 PNG 正确（原图尺寸、要重画处 alpha=0、别处 255），单测覆盖缩放、非等比、小图放大。
+
+### P24b 局部重绘的服务端和流程
+
+做：5.35 里的接口、`inpaintGraph`、mock 节点、大图窗口入口。
+
+完成标准：10.3 第 15 条；e2e 覆盖拖框 → 出图 → mock 收到的 PNG 涂过的地方透明。
+
+### P24c 局部重绘的真机验证
+
+做：在出图那台真跑一次拖框重绘，确认遮罩外真的没动；顺带定 `output_target_width/height` 和 `mask_expand_pixels` 这两个数。
+
+完成标准：11.3 第 5 条里的局部重绘那部分。（**已验**：832×1216、强度 0.85，遮罩外 827 927 个像素一个都没动、最大差 0，15 秒出完；那两个数不用改，见 `docs/reports/P24.md`。）
+
+### P25 图像编辑节点（第六批，E1）
+
+做：5.36 里的节点类型、四份编辑提示词、设置页第三组、格式要求。
+
+完成标准：10.3 第 18 条；e2e 覆盖三种节点、编辑节点只能选编辑用的提示词、老节点按提示词归类。报告 `docs/reports/P25.md`。
+
+### P26 图像编辑节点的编辑栏（第六批，E2）
+
+做：5.36 里的编辑栏（功能 → 图 → 提示词 → 开始）、`POST /canvases/:id/nodes/:nid/edit`、出的图挂在框下面。
+
+完成标准：放一张图 + 选一句话 + 点开始，真出一张挂在框下面；图槽单选用右键开菜单。报告 `docs/reports/P26.md`。
+
+### P27 图像编辑节点让模型参与（第六批，E3）
+
+做：5.36 里的「模型提示词」那一行、按功能切提示词、发给模型的只有选中那张、候选框上的「用它」、输入框旁的「写一个」。
+
+完成标准：`tests/e2e/20-edit-node.spec.ts` 的 E3 那一条；报告 `docs/reports/P27.md`。**真机验证单独记在** `docs/reports/real-machine-edit-node.md`。
+
+### P28 图像编辑节点：转真人 / 换装（第六批，E4）
+
+做：5.36 里的转真人（照 `docs/krea2-real-usage.md` 那份「全开关」的接线和参数）+ 换装（编辑档换 LoRA）+ 面板上两个功能的参数区。
+
+完成标准：`tests/e2e/21-edit-real.spec.ts` 那 7 条；真机上跟作者那套同一张图对照过。报告 `docs/reports/P28.md`。**局部重绘（E4 剩下那一档）还没做**，要拖框/涂抹出掩码、走 5.35 那条 E05 流程。
 
 ## 9. 测试
 

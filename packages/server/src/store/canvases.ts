@@ -68,11 +68,12 @@ export function updateCanvas(work: string, canvasId: string, change: (canvas: Ca
   });
 }
 
-// 没记类型的老节点按现在用的系统提示词归类：生图提示词的算生图节点，别的（包括提示词已经不在了的）算视频节点。
-// 读的时候补上，下次存的时候写进文件，见 docs/dev-plan.md 5.23
+// 没记类型的老节点按现在用的系统提示词归类：生图提示词的算生图节点，编辑提示词的算图像编辑节点，
+// 别的（包括提示词已经不在了的）算视频节点。读的时候补上，下次存的时候写进文件，见 docs/dev-plan.md 5.23、5.36
 async function withKind(node: ChatNode, metaOf: (name: string) => Promise<PromptMeta | null>): Promise<ChatNode> {
   if (node.kind) return node;
-  return { ...node, kind: (await metaOf(node.systemPromptName))?.use === 'image' ? 'image' : 'video' };
+  const use = (await metaOf(node.systemPromptName))?.use;
+  return { ...node, kind: use === 'image' || use === 'edit' ? use : 'video' };
 }
 
 export async function listNodes(work: string, canvasId: string): Promise<ChatNode[]> {
@@ -97,6 +98,7 @@ export async function canvasDetail(work: string, canvasId: string, isGenerating:
   const metas = await Promise.all(placed.map(({ node }) => metaOf(node.systemPromptName)));
   const summaries = placed.map(({ layout, node }, i) => ({
     ...layout,
+    kind: node.kind,
     title: node.title,
     parentNodeId: node.parentNodeId,
     slots: node.slots,

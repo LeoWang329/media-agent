@@ -31,13 +31,13 @@ export const assetsDialog = (page: Page) => page.getByRole('dialog', { name: '�
 export const assetTile = (page: Page, name: string) => assetsDialog(page).getByTestId('asset-tile').filter({ hasText: name });
 
 // 首页新建画布、打开，再建一个节点；面板跟着打开
-// 工具栏「新建节点」点开选一种，建好就不能换，见 docs/dev-plan.md 5.23
-export async function newNode(page: Page, kind: '视频节点' | '生图节点' = '视频节点') {
+// 工具栏「新建节点」点开选一种，建好就不能换，见 docs/dev-plan.md 5.23、5.36
+export async function newNode(page: Page, kind: '视频节点' | '生图节点' | '图像编辑节点' = '视频节点') {
   await page.getByRole('button', { name: '新建节点' }).click();
   await page.getByRole('menuitem', { name: kind }).click();
 }
 
-export async function newCanvasWithNode(page: Page, title: string, kind: '视频节点' | '生图节点' = '视频节点') {
+export async function newCanvasWithNode(page: Page, title: string, kind: '视频节点' | '生图节点' | '图像编辑节点' = '视频节点') {
   await page.goto('/');
   await page.getByRole('button', { name: '新建画布' }).click();
   const dialog = page.getByRole('dialog', { name: '新建画布' });

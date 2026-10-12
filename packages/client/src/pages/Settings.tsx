@@ -426,6 +426,7 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
   const groups: [string, Prompt[]][] = [
     ['写视频提示词 · 视频节点用', prompts.filter((p) => metaOf(p).use === 'video')],
     ['写生图标签 · 生图节点用', prompts.filter((p) => metaOf(p).use === 'image')],
+    ['写改图说明 · 图像编辑节点用', prompts.filter((p) => metaOf(p).use === 'edit')],
   ];
 
   const edit = (text: string) => {
@@ -505,6 +506,12 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
                             生图{meta.family ? ` · ${meta.family}` : ''}
                           </span>
                         )}
+                        {meta.use === 'edit' && (
+                          <span className="tag tag-outline">
+                            <Icon name="wand" />
+                            编辑{meta.fn ? ` · ${meta.fn}` : ''}
+                          </span>
+                        )}
                         {p.name in BUILTIN ? <span className="tag">自带</span> : <span className="tag">自己建的</span>}
                         {p.name === DEFAULT_PROMPT && <span className="tag tag-accent">新节点默认</span>}
                         <span className="tag mono">{fmtNum(p.text.length)} 字</span>
@@ -538,7 +545,8 @@ function PromptsTab({ workFolder }: { workFolder: string | null }) {
             <p className="hint" style={{ marginTop: 8 }}>
               改动自动写进 <span className="mono">{`${workFolder}${sep}prompts${sep}${selected.name}.md`}</span>。程序会在这段后面自动接上
               <Link className="linkish" to={{ hash: 'format' }}>固定格式要求</Link>
-              {selectedMeta?.use === 'image' && `（生图那一份）。开头的「用途: 生图」${selectedMeta.family ? `「底模: ${selectedMeta.family}」` : ''}是程序认它的依据，别删`}。
+              {selectedMeta?.use === 'image' && `（生图那一份）。开头的「用途: 生图」${selectedMeta.family ? `「底模: ${selectedMeta.family}」` : ''}是程序认它的依据，别删`}
+              {selectedMeta?.use === 'edit' && `（图像编辑那一份）。开头的「用途: 编辑」「功能: ${selectedMeta.fn ?? '……'}」是程序认它的依据，别删 —— 编辑节点按「功能」挑用哪一份`}。
             </p>
           </section>
         )}
@@ -608,7 +616,7 @@ function NewPromptDialog({ from, existing, onClose, onCreated }: NewPromptProps)
 }
 
 function FormatTab() {
-  const [texts, setTexts] = useState<FormatRequirements>({ video: '', image: '', krea2: '' });
+  const [texts, setTexts] = useState<FormatRequirements>({ video: '', image: '', krea2: '', edit: '' });
 
   useEffect(() => {
     api<FormatRequirements>('/format-requirement').then(setTexts, failed);
@@ -629,6 +637,8 @@ function FormatTab() {
       <pre className="ro" data-od-id="format-requirement-image">{texts.image}</pre>
       <h3 className="ro-title">Krea2 写英文段落用这份</h3>
       <pre className="ro" data-od-id="format-requirement-krea2">{texts.krea2}</pre>
+      <h3 className="ro-title">图像编辑节点的四套用这份</h3>
+      <pre className="ro" data-od-id="format-requirement-edit">{texts.edit}</pre>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { activePath, type ChatNode, type ModelConfig, type ThinkingSettings } from '@media-agent/shared';
+import { activePath, editFnOf, editSettingsOf, type ChatNode, type ModelConfig, type NodeKind, type ThinkingSettings } from '@media-agent/shared';
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { useCanvasStore } from '../store/canvasStore';
@@ -16,6 +16,9 @@ import { Thread } from './Thread';
 
 const WIDTH_KEY = 'pc-drawer-w';
 const OUTLINE_KEY = 'pc-outline';
+
+// 提示词选错节点类型时，说清这个节点是哪一种
+const KIND_TEXT: Record<NodeKind, string> = { video: '视频', image: '生图', edit: '图像编辑' };
 
 // 对话目录开没开记在浏览器里，下次打开面板还是那样
 function readOutline(): boolean {
@@ -107,8 +110,12 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
   const parent = useCanvasStore((s) => s.detail?.nodes.find((n) => n.id === node.parentNodeId));
   const modelConfigs = useCanvasStore((s) => s.modelConfigs);
   const prompts = useCanvasStore((s) => s.prompts);
-  // 系统提示词只能选这种节点用的
-  const usable = prompts.filter((p) => p.use === node.kind);
+  // 系统提示词只能选这种节点用的；图像编辑节点再按当前功能筛一层——每个功能一套，换功能就换成那份，
+  // 见 docs/dev-plan.md 5.36。这一行在编辑节点上写「模型提示词」，就是给模型看的那套
+  const isEdit = node.kind === 'edit';
+  const editFn = editFnOf(editSettingsOf(node.edit, node.slots.length).fn);
+  const forKind = prompts.filter((p) => p.use === node.kind);
+  const usable = isEdit ? forKind.filter((p) => p.fn === editFn.name) : forKind;
   const thinking = useCanvasStore((s) => s.thinking);
   const turnLimit = useCanvasStore((s) => s.turnLimit);
   const patchNode = useCanvasStore((s) => s.patchNode);
@@ -211,27 +218,38 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
             ))}
           </select>
         </label>
-        <label className="cfg">
+        <label className="cfg" title={isEdit ? `模型提示词：每个功能一套，跟着「${editFn.name}」走。字是给模型看的，出图走哪条流程是上面「功能」定的` : undefined}>
           <Icon name="doc" className="icon-sm" />
+          {isEdit && <span className="cfg-lbl">模型提示词</span>}
           <select
             id="cfgSys"
-            aria-label="系统提示词"
+            aria-label={isEdit ? '模型提示词' : '系统提示词'}
             value={node.systemPromptName}
             onChange={(e) => {
               const name = e.target.value;
-              void patchNode(node.id, { systemPromptName: name }).then((ok) => ok && toast(`从下一条消息起用系统提示词「${name}」`));
+              void patchNode(node.id, { systemPromptName: name }).then((ok) => ok && toast(`从下一条消息起用${isEdit ? '模型提示词' : '系统提示词'}「${name}」`));
             }}
           >
-            {/* 现在用的这套删了，或者用途改成了另一种：照旧显示，写着用不了 */}
+            {/* 现在用的这套删了，或者用途改成了另一种：照旧显示，写着用不了。
+                放大 / 高清那条不走模型写字（fn.writes 是 false），没有它自己那份提示词，说清楚 */}
             {!usable.some((p) => p.name === node.systemPromptName) && (
               <option value={node.systemPromptName}>
-                （{prompts.some((p) => p.name === node.systemPromptName) ? `${node.systemPromptName} 不是${node.kind === 'image' ? '生图' : '视频'}节点用的` : `找不到 ${node.systemPromptName}`}）
+                （
+                {prompts.some((p) => p.name === node.systemPromptName)
+                  ? isEdit
+                    ? editFn.writes
+                      ? `${node.systemPromptName} 不是给「${editFn.name}」写的`
+                      : `${node.systemPromptName} 是聊天用的：「${editFn.name}」不用模型写字`
+                    : `${node.systemPromptName} 不是${KIND_TEXT[node.kind]}节点用的`
+                  : `找不到 ${node.systemPromptName}`}
+                ）
               </option>
             )}
             {usable.map((p) => (
               <option key={p.name} value={p.name}>
                 {p.name}
                 {p.family ? ` · ${p.family}` : ''}
+                {p.fn ? ` · ${p.fn}` : ''}
               </option>
             ))}
           </select>

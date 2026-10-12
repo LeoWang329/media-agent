@@ -24,6 +24,9 @@ const pad = (n: number) => String(n).padStart(2, '0');
 export const tempFolderName = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 export const tempFileName = (date: Date, seed: number) => `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${seed}.png`;
 
+// 局部重绘的掩码：同一天那个文件夹，名字带 mask，和出的图分得开
+export const maskFileName = (date: Date) => `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-mask.png`;
+
 // 下载的文件名：<节点标题>-<种子>.png，文件名里不能用的字符换成 _
 export const downloadFileName = (title: string, seed: number) => `${title.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')}-${seed}.png`;
 

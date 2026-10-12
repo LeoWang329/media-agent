@@ -3,6 +3,7 @@ import {
   addMessage,
   FAMILY_DEFAULTS,
   defaultImageSettings,
+  editSettingsOf,
   hiddenNodeIds,
   imageSettingsOf,
   isSupportedImageName,
@@ -20,6 +21,7 @@ import {
   type CanvasNodeLayout,
   type ChatNode,
   type Config,
+  type EditSettings,
   type Family,
   type FamilyDefaults,
   type ImageRecord,
@@ -53,6 +55,7 @@ const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text
 // image、video 只带要改的几项，服务端按节点原来的（没改过的按默认值）补全
 type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit'>> & {
   image?: Partial<ImageSettings>;
+  edit?: Partial<EditSettings>; // 图像编辑节点：功能、用哪张图、那句话，见 docs/dev-plan.md 5.36
   video?: Partial<VideoSettings>;
 };
 
@@ -259,14 +262,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
   // 改节点字段排队发，前一个回来再发下一个，服务端收到的顺序和点的顺序一致。失败时抛出去
   let patchQueue: Promise<unknown> = Promise.resolve();
+  // 服务端回来的节点取哪几个字段：这次改的那些（后面还有改动在排队的先不盖）。
+  // 图像编辑节点换了功能，服务端会把系统提示词换成那个功能那一份（面板顶栏「模型提示词」跟着变），
+  // 这个字段一起取回来，见 docs/dev-plan.md 5.36
+  const mergeKeys = (nodeId: string, patch: NodePatch, keys: string[]) => {
+    const merged = keys.filter((key) => !queued.has(`${nodeId}:${key}`));
+    if (patch.edit !== undefined && !merged.includes('systemPromptName') && !queued.has(`${nodeId}:systemPromptName`)) merged.push('systemPromptName');
+    return merged;
+  };
   const applyPatch = (nodeId: string, patch: NodePatch): Promise<void> => {
     const keys = Object.keys(patch);
     keys.forEach((key) => countQueued(`${nodeId}:${key}`, 1));
-    const { image, video, ...fields } = patch;
+    const { image, edit, video, ...fields } = patch;
     changeNode(nodeId, (node) => ({
       ...node,
       ...fields,
       ...(image && { image: { ...nodeImageSettings(node), ...image } }),
+      ...(edit && { edit: { ...editSettingsOf(node.edit, node.slots.length), ...edit } }),
       ...(video && { video: { ...videoSettingsOf(node.video), ...video } }),
     }));
     const run = patchQueue.then(async () => {
@@ -276,7 +288,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
       } finally {
         keys.forEach((key) => countQueued(`${nodeId}:${key}`, -1));
       }
-      mergeFields(nodeId, server, keys.filter((key) => !queued.has(`${nodeId}:${key}`)));
+      mergeFields(nodeId, server, mergeKeys(nodeId, patch, keys));
       if (CARD_FIELDS.some((key) => key in patch)) await refreshCanvas();
     });
     patchQueue = run.catch(() => undefined);

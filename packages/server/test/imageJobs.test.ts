@@ -4,6 +4,7 @@ import {
   defaultImageSettings,
   FAMILY_DEFAULTS,
   importedGraph,
+  inpaintGraph,
   type CanvasDetail,
   type ChatNode,
   type ComfyGraph,
@@ -443,7 +444,7 @@ describe('出图设置', () => {
       { name: 'il-test.safetensors', family: 'IL', guessed: true },
       { name: 'pony-test.safetensors', family: 'Pony', guessed: true },
     ]);
-    expect(options).toMatchObject({ loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
+    expect(options).toMatchObject({ loras: ['detail-test.safetensors', 'IL/anime-style-test.safetensors', 'IL/detail-tweaker-test.safetensors', 'krea2/krea2_4panel.safetensors', 'krea2/krea2_identity_edit_v1_1.safetensors', 'krea2/krea2_identity_edit_v1_2.safetensors', 'krea2/krea_outfittransfer.safetensors', 'krea2/Krea2_Anything2RealCharacters-V1.safetensors', 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', 'krea2/krea2_darkbrush.safetensors', 'krea2/DynamicCharacterSheet_krea2_v1.safetensors', 'krea2/Krea2_DreamCos_Realism.safetensors', 'krea2/Krea2-realism-V2.safetensors', 'krea2/krea2-Cc风情万种-人像.safetensors', 'krea2/krea2-Cc风情万种-风格.safetensors', 'krea2/krea2-Cc-天魔-身材.safetensors', 'krea2/Nick_baotunqun_Krea2.safetensors', 'krea2/Nick_leggings_Krea2.safetensors', 'krea2/krea2_reid_rank32.safetensors', 'krea2/Krea2-depth-control-lora.safetensors', 'krea2/Krea2_Remix_RealCosplay_rank64_v1.safetensors'], clipVisions: ['clip-vision-test.safetensors'], taggers: ['wd-v1-4-moat-tagger-v2'] });
     expect(options.samplers).toContain('euler_ancestral');
 
     await t.ok('PUT', '/settings', { checkpoints: { 'il-test.safetensors': 'Pony' } });
@@ -591,6 +592,103 @@ describe('放大、部位重绘、出完的图上补做、预设', () => {
     await t.ok('DELETE', `/image-presets/${created.id}`);
     expect((await t.ok<ImagePreset[]>('GET', '/image-presets')).map((preset) => preset.family)).toEqual(['Pony']);
     expect(JSON.parse(await fs.readFile(path.join(t.work, 'image-presets.json'), 'utf8'))).toHaveLength(1);
+  });
+});
+
+describe('局部重绘', () => {
+  // 要重画的地方做成透明的 PNG：底图和掩码是同一张，只改透明度、颜色照留
+  async function maskPng(width: number, height: number, hole: { x: number; y: number; width: number; height: number }): Promise<Buffer> {
+    const raw = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        raw[i] = 51;
+        raw[i + 1] = 102;
+        raw[i + 2] = 204;
+        raw[i + 3] = x >= hole.x && x < hole.x + hole.width && y >= hole.y && y < hole.y + hole.height ? 0 : 255;
+      }
+    }
+    return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+  }
+
+  const uploads = async () => (await (await fetch(`${comfyUrl}/_uploads`)).json()) as { name: string; bytes: number; sha256: string }[];
+  const inpaintUrl = (messageId: string, jobId: string, index = 0) => `${imagesUrl(messageId)}/${jobId}/${index}/inpaint`;
+
+  it('在一张出的图上拖框重绘：掩码原样落盘、传上去的是它，流程照 E05，挂在同一个框下，参数里记着从哪张来', async () => {
+    const messageId = await prepare('1girl, smile');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const original = (await until(messageId, first.id, settled)).images[0];
+    expect(original).toMatchObject({ status: 'done', width: 832, height: 1216 });
+
+    const png = await maskPng(832, 1216, { x: 100, y: 120, width: 200, height: 160 });
+    const job = await t.ok<ImageJob>('POST', inpaintUrl(messageId, first.id), { mask: png.toString('base64'), positive: '1girl, smile', negative: 'nsfw', denoise: 0.8 });
+    expect(job).toMatchObject({ kind: 'inpaint', promptIndex: 0, source: { kind: 'generated', jobId: first.id, seed: 100 }, images: [{ status: 'queued' }] });
+    expect(job.params).toMatchObject({
+      family: 'IL',
+      positive: 'masterpiece, best quality, 1girl, smile',
+      negative: `${FAMILY_DEFAULTS.IL.negative}, nsfw`,
+      checkpoint: 'il-test.safetensors',
+      width: 832,
+      height: 1216,
+      inpaint: { denoise: 0.8 },
+    });
+    // 那张 PNG 落在临时文件夹里（「已清理」那套跟着适用），内容一个字节都没动
+    expect(job.params.inpaint!.mask).toMatch(/^image-temp\/\d{4}-\d{2}-\d{2}\/\d{6}-mask\.png$/);
+    expect(await fs.readFile(path.join(t.work, job.params.inpaint!.mask))).toEqual(png);
+
+    const done = await until(messageId, job.id, settled);
+    expect(done.images[0]).toMatchObject({ status: 'done', width: 832, height: 1216 });
+    const sent = await uploads();
+    // 两张：掩码那张，和原图（大图窗口那条的底图就是出过的那张）；合成一张的话要重画那块会变黑
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toEqual({ name: `media-agent-${createHash('sha256').update(png).digest('hex').slice(0, 16)}.png`, bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') });
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(inpaintGraph(job.params, done.images[0].seed, { mask: sent[0].name, image: sent[1].name }));
+
+    // 「只换种子再来」重新上传存下的那张（按内容算名字，还是同一个），不用再涂
+    const again = await t.ok<ImageJob>('POST', imagesUrl(messageId), { again: { jobId: job.id, index: 0, sameSeed: false } });
+    expect(again).toMatchObject({ kind: 'inpaint', params: job.params, source: { kind: 'generated', jobId: first.id, seed: 100 } });
+    const second = await until(messageId, again.id, settled);
+    expect(second.images[0].seed).not.toBe(done.images[0].seed);
+    const resent = await uploads();
+    expect(resent).toHaveLength(2);
+    expect((await lastPrompts()).at(-1)!.prompt).toEqual(inpaintGraph(job.params, second.images[0].seed, { mask: resent[0].name, image: resent[1].name }));
+  });
+
+  it('正面、负面空着就用原图那组的；掩码不是 PNG、强度超出、那张图找不到都拦下来', async () => {
+    const messageId = await prepare('1girl, smile');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    const original = (await until(messageId, first.id, settled)).images[0];
+    const png = (await maskPng(832, 1216, { x: 10, y: 10, width: 40, height: 40 })).toString('base64');
+
+    const job = await t.ok<ImageJob>('POST', inpaintUrl(messageId, first.id), { mask: png, denoise: 1 });
+    expect(job.params).toMatchObject({ positive: first.params.positive, negative: first.params.negative, inpaint: { denoise: 1 } });
+    await until(messageId, job.id, settled);
+
+    expect(await t.call('POST', inpaintUrl(messageId, first.id), { mask: '不是图', denoise: 1 })).toEqual({ status: 400, body: { error: '掩码要是 base64 的 PNG' } });
+    expect(await t.call('POST', inpaintUrl(messageId, first.id), { mask: Buffer.from('不是 PNG 的字节').toString('base64'), denoise: 1 })).toEqual({ status: 400, body: { error: '掩码要是 base64 的 PNG' } });
+    expect(await t.call('POST', inpaintUrl(messageId, first.id), { mask: png, denoise: 0 })).toEqual({ status: 400, body: { error: '重绘强度要大于 0、不超过 1' } });
+    expect(await t.call('POST', inpaintUrl(messageId, first.id), { mask: png, denoise: 1.5 })).toEqual({ status: 400, body: { error: '重绘强度要大于 0、不超过 1' } });
+    expect(await t.call('POST', inpaintUrl(messageId, first.id, 3), { mask: png, denoise: 1 })).toMatchObject({ status: 404 });
+
+    // 原图的临时文件清掉了又没下载过：重绘不了
+    await fs.rm(path.join(t.work, original.file!));
+    expect(await t.call('POST', inpaintUrl(messageId, first.id), { mask: png, denoise: 1 })).toEqual({ status: 409, body: { error: '这张图的临时文件清掉了，也没下载过，没法重绘' } });
+  });
+
+  it('缺 ComfyUI-Inpaint-CropAndStitch 时一张都不发，说要装哪个插件', async () => {
+    const messageId = await prepare('1girl, smile');
+    const first = await t.ok<ImageJob>('POST', imagesUrl(messageId), { promptIndex: 0 });
+    await until(messageId, first.id, settled);
+    const png = (await maskPng(832, 1216, { x: 10, y: 10, width: 40, height: 40 })).toString('base64');
+    await fetch(`${comfyUrl}/_hide-nodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ types: ['InpaintCropImproved'] }) });
+    // 刚装了插件、刚卸了插件，界面上点「刷新」重读一次节点列表（见 5.18）
+    await t.ok('GET', '/comfy/options?refresh=1');
+
+    const job = await t.ok<ImageJob>('POST', inpaintUrl(messageId, first.id), { mask: png, denoise: 1 });
+    const failed = await until(messageId, job.id, settled);
+    expect(failed.images[0].error).toContain('InpaintCropImproved');
+    expect(failed.images[0].error).toContain('ComfyUI-Inpaint-CropAndStitch');
+    expect(await uploads()).toEqual([]);
   });
 });
 

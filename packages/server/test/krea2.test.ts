@@ -1,6 +1,7 @@
 import {
   activePath,
   defaultImageSettings,
+  EDIT_LORA,
   FAMILY_DEFAULTS,
   FOUR_VIEW_INSTRUCTION,
   kreaDefaults,
@@ -139,8 +140,106 @@ it('四视图模式必须选图；固定指令追加框中文字，参考图按�
   expect(uploads).toEqual([{ name: nodeOf(graph, 'LoadImage').inputs.image, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }]);
 });
 
-it('图上做四视图：槽位新建框，已出的图挂回原框；IL 节点也能做，原节点设置不变', async () => {
-  const imageId = await t.addImage(canvasId, '#345678');
+it('编辑档：放一张参考图写一句话就出图，走作者那套 Ostris；没选图拦住', async () => {
+  const imageId = await t.addImage(canvasId, '#654321');
+  const edit = kreaDefaults('edit');
+  await t.ok('PATCH', nodeUrl(), { slots: [imageId], image: { ...edit, width: 768, height: 512 } });
+  const messageId = await frame('把外套换成红色皮衣。');
+  expect((await t.call('POST', jobsUrl(messageId), { promptIndex: 0 })).body.error).toBe('编辑还没选参考图');
+  await t.ok('PATCH', nodeUrl(), { image: { krea: { ...edit.krea!, reference: { kind: 'slot', imageId } } } });
+  const job = await t.ok<ImageJob>('POST', jobsUrl(messageId), { promptIndex: 0 });
+  expect(job.kind).toBe('edit');
+  expect(job.params).toMatchObject({
+    family: 'Krea2',
+    positive: 'transform the image to realistic photograph\n\n把外套换成红色皮衣。',
+    negative: '',
+    checkpoint: 'krea2/moodyAmateurMixKrea2_3JAVStyle_int8.safetensors',
+    textEncoder: 'qwen3vl_4b_uncensored_int8_convrot.safetensors',
+    steps: 10,
+    cfg: 1,
+    loras: [{ name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength: 1 }],
+    krea: { mode: 'edit' },
+  });
+  await done(messageId, job);
+  const graph = await lastGraph();
+  expect(nodeOf(graph, 'LoraLoaderModelOnly').inputs).toMatchObject({ lora_name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength_model: 1 });
+  expect(nodeOf(graph, 'Krea2OstrisEditModelPatch').inputs).toMatchObject({ kv_cache: true });
+  // 编辑档不看面板上的宽高：参考图按比例缩到长边 2048，出图尺寸跟着它走
+  expect(nodeOf(graph, 'LayerUtility: ImageScaleByAspectRatio V2').inputs).toMatchObject({ scale_to_side: 'longest', scale_to_length: 2048, round_to_multiple: '16', fit: 'crop' });
+  // 出图尺寸不是面板上那个，是缩放后参考图的宽高（GetImageSize 的两个输出）
+  const sizeId = Object.entries(graph).find(([, n]) => n.class_type === 'GetImageSize')![0];
+  expect(nodeOf(graph, 'EmptySD3LatentImage').inputs).toMatchObject({ width: [sizeId, 0], height: [sizeId, 1] });
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).toBe('transform the image to realistic photograph\n\n把外套换成红色皮衣。');
+  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).not.toContain(FOUR_VIEW_INSTRUCTION);
+  expect(nodeOf(graph, 'Krea2EditModelPatch')).toBeUndefined();
+  expect(nodeOf(graph, 'LoadImage').inputs.image).toBeTruthy();
+});
+
+it('双图：图 1 是场景、图 2 是主体，两张都传上去，编码节点两路都接', async () => {
+  const sceneId = await t.addImage(canvasId, '#101010');
+  const subjectId = await t.addImage(canvasId, '#f0f0f0');
+  const edit = kreaDefaults('edit');
+  await t.ok('PATCH', nodeUrl(), {
+    slots: [sceneId, subjectId],
+    image: {
+      ...edit,
+      krea: { ...edit.krea!, reference: { kind: 'slot', imageId: sceneId }, referenceB: { kind: 'slot', imageId: subjectId }, refBoost: 2, refBoostA: 1.5 },
+    },
+  });
+  const messageId = await frame('把图 2 的人放进图 1 的场景里，姿势不变。');
+  const job = await t.ok<ImageJob>('POST', jobsUrl(messageId), { promptIndex: 0 });
+  expect(job.params.krea).toMatchObject({
+    mode: 'edit',
+    reference: { kind: 'slot', imageId: sceneId },
+    referenceB: { kind: 'slot', imageId: subjectId },
+  });
+  await done(messageId, job);
+  const graph = await lastGraph();
+  const encodes = Object.values(graph).filter((n) => n.class_type === 'TextEncodeKrea2OstrisEdit');
+  expect(encodes).toHaveLength(2);
+  for (const node of encodes) {
+    expect(node.inputs.image1).toBeTruthy();
+    expect(node.inputs.image2).toBeTruthy();
+  }
+  // 两张图都传上去了，顺序是场景在前、主体在后，内容各按自己算名字
+  const names = Object.values(graph)
+    .filter((n) => n.class_type === 'LoadImage')
+    .map((n) => n.inputs.image);
+  expect(names).toHaveLength(2);
+  const detail = await t.ok<{ images: Record<string, { sha256: string; ext: string }> }>('GET', `/canvases/${canvasId}`);
+  const sha = async (id: string) => {
+    const record = detail.images[id];
+    return createHash('sha256')
+      .update(await fs.readFile(path.join(t.work, 'canvases', canvasId, 'images', `${record.sha256}.${record.ext}`)))
+      .digest('hex');
+  };
+  const uploads = (await (await fetch(`${comfyUrl}/_uploads`)).json()) as { name: string; sha256: string }[];
+  expect(uploads.map((u) => u.name)).toEqual(names);
+  expect(uploads.map((u) => u.sha256)).toEqual([await sha(sceneId), await sha(subjectId)]);
+});
+
+it('编辑方案：默认那个（动漫转真人 V3）的触发词自动放在框里那句话前面；手动换 LoRA 就不算方案了', async () => {
+  const imageId = await t.addImage(canvasId, '#765432');
+  const edit = kreaDefaults('edit');
+  await t.ok('PATCH', nodeUrl(), {
+    slots: [imageId],
+    image: { ...edit, krea: { ...edit.krea!, reference: { kind: 'slot', imageId } } },
+  });
+  const messageId = await frame('她站在雨夜的站台上，穿深灰大衣。');
+  const job = await t.ok<ImageJob>('POST', jobsUrl(messageId), { promptIndex: 0 });
+  expect(job.params.positive).toBe(`transform the image to realistic photograph\n\n她站在雨夜的站台上，穿深灰大衣。`);
+  expect(job.params.loras).toEqual([{ name: 'krea2/Krea2_Anything2RealCharacters-V3.safetensors', strength: 1 }]);
+  await done(messageId, job);
+  expect(nodeOf(await lastGraph(), 'TextEncodeKrea2OstrisEdit').inputs.prompt).toContain('transform the image to realistic photograph');
+
+  // 换成不在任何方案里的 LoRA：不加触发词，正面词就是框里那句话
+  const other = await frame('把外套换成红色皮衣。');
+  await t.ok('PATCH', nodeUrl(), { image: { loras: [{ name: 'krea2/krea2_darkbrush.safetensors', strength: 0.8 }] } });
+  const job2 = await t.ok<ImageJob>('POST', jobsUrl(other), { promptIndex: 0 });
+  expect(job2.params.positive).toBe('把外套换成红色皮衣。');
+});
+
+it('图上做四视图：槽位新建框，已出的图挂回原框；IL 节点也能做，原节点设置不变', async () => {  const imageId = await t.addImage(canvasId, '#345678');
   await t.ok('PATCH', nodeUrl(), { systemPromptName: 'il', slots: [imageId] });
   const before = await t.ok<ChatNode>('GET', nodeUrl());
   const first = await t.ok<{ job: ImageJob; messageId: string }>('POST', `${nodeUrl()}/four-view`, {

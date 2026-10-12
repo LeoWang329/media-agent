@@ -1,7 +1,10 @@
 import {
   CONTROL_TYPES,
   DEFAULT_SELFLIFT,
+  DEPTH_MIN_STRENGTH,
+  EDIT_FNS,
   GUIDE_SIZES,
+  REAL_PEOPLE_STRENGTH,
   SIZE_LIMITS,
   TRANSLATE_LANGUAGES,
   UPSCALE_SCALES,
@@ -18,6 +21,8 @@ import {
   type ControlSettings,
   type ControlType,
   type DetailPass,
+  type EditFnId,
+  type EditSettings,
   type ImageRating,
   type ImageSettings,
   type LoraTarget,
@@ -79,6 +84,17 @@ export function bool(value: unknown, what: string): boolean {
 export function finiteNumber(value: unknown, what: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new HttpError(400, `${what}格式不对`);
   return value;
+}
+
+// 局部重绘的掩码：base64 的 PNG，认一下文件头，别把别的格式当图存下来，见 docs/dev-plan.md 5.35
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+export function pngBytes(value: unknown, what: string): Uint8Array {
+  const base64 = typeof value === 'string' ? value.replace(/^data:image\/png;base64,/, '') : '';
+  if (!base64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw new HttpError(400, `${what}要是 base64 的 PNG`);
+  const data = Buffer.from(base64, 'base64');
+  if (!data.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) throw new HttpError(400, `${what}要是 base64 的 PNG`);
+  return data;
 }
 
 export function layouts(value: unknown): CanvasNodeLayout[] {
@@ -149,7 +165,7 @@ export function language(value: unknown): TranslateLanguage {
 }
 
 export function nodeKind(value: unknown): NodeKind {
-  if (value !== 'video' && value !== 'image') throw new HttpError(400, '节点类型只能是 video 或 image');
+  if (value !== 'video' && value !== 'image' && value !== 'edit') throw new HttpError(400, '节点类型只能是 video、image 或 edit');
   return value;
 }
 
@@ -183,6 +199,96 @@ export function integer(value: unknown, what: string, min: number, max = Number.
   return value;
 }
 
+// 图像编辑节点记住的东西：只改带了的项，没带的用 base（节点原来的，或者默认的），见 docs/dev-plan.md 5.36。
+// real（转真人那一套）/ inpaint / depth / remix / upscale 几层也各收半份、跟 base 深合并
+export function editSettings(value: unknown, base: EditSettings): EditSettings {
+  if (typeof value !== 'object' || value === null) throw new HttpError(400, '编辑设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const next = { ...base };
+  if (fields.fn !== undefined) {
+    if (!EDIT_FNS.some((fn) => fn.id === fields.fn)) throw new HttpError(400, '不认识这个编辑功能');
+    next.fn = fields.fn as EditFnId;
+  }
+  if (fields.slot !== undefined) next.slot = index(fields.slot, '槽位');
+  if (fields.slotB !== undefined) next.slotB = index(fields.slotB, '槽位');
+  if (fields.text !== undefined) next.text = text(fields.text, '要改什么');
+  if (fields.refBoost !== undefined) {
+    const refBoost = finiteNumber(fields.refBoost, '相似度');
+    if (refBoost < 0 || refBoost > 10) throw new HttpError(400, '相似度要在 0 到 10 之间');
+    next.refBoost = refBoost;
+  }
+  if (fields.real !== undefined) next.real = realSettings(fields.real, base.real);
+  if (fields.inpaint !== undefined) next.inpaint = inpaintSettings(fields.inpaint, base.inpaint);
+  if (fields.depth !== undefined) next.depth = depthSettings(fields.depth, base.depth);
+  if (fields.remix !== undefined) next.remix = remixSettings(fields.remix, base.remix);
+  if (fields.upscale !== undefined) next.upscale = upscaleEditSettings(fields.upscale, base.upscale);
+  return next;
+}
+
+// 放大 / 高清那一套：倍数只有 1.5 和 2 两档（跟生图节点那个放大一样）、放大模型和面部修复的检测模型
+// 都是文件名（空着是「用这台 ComfyUI 上第一个」/「不开面部修复」），见 docs/plan-image-edit-node.md 第 3 节
+function upscaleEditSettings(value: unknown, base: EditSettings['upscale']): EditSettings['upscale'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '放大 / 高清的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  return {
+    scale: fields.scale === undefined ? base.scale : oneOf(fields.scale, '放大倍数', UPSCALE_SCALES),
+    model: fields.model === undefined ? base.model : text(fields.model, '放大模型'),
+    face: fields.face === undefined ? base.face : text(fields.face, '面部修复的检测模型'),
+  };
+}
+
+// 深度迁移的控制强度：0 到 1.5（**0 不能用**，见 krea2Depth.ts），见 docs/dev-plan.md 5.36
+function depthSettings(value: unknown, base: EditSettings['depth']): EditSettings['depth'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '深度迁移的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  return { strength: fields.strength === undefined ? base.strength : between(fields.strength, '控制强度', DEPTH_MIN_STRENGTH, 1.5) };
+}
+
+// 风格 Remix / 换人的 LoRA：名字 + 强度，见 docs/dev-plan.md 5.36
+function remixSettings(value: unknown, base: EditSettings['remix']): EditSettings['remix'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '风格 Remix 的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const next = { lora: { ...base.lora } };
+  if (fields.lora !== undefined) next.lora = loraSetting(fields.lora, base.lora, '风格 Remix LoRA');
+  return next;
+}
+
+// 转真人那一套（反推 / 双图 / 像图 2 多少 / 两组 LoRA / 无审查）：只改带了的项，范围照作者给的，
+// 见 docs/krea2-real-usage.md 第 2、6、7 节
+function realSettings(value: unknown, base: EditSettings['real']): EditSettings['real'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '转真人的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  const next = { ...base, lora: { ...base.lora } };
+  if (fields.reverse !== undefined) next.reverse = bool(fields.reverse, '用不用反推');
+  if (fields.dual !== undefined) next.dual = bool(fields.dual, '换不换脸');
+  if (fields.image2Strength !== undefined) next.image2Strength = between(fields.image2Strength, '图 2 强度', 0, 10);
+  // 名字空着就是不挂这条 LoRA（服务端 realLorasOf 会把没名字的滤掉）
+  if (fields.lora !== undefined) next.lora = loraSetting(fields.lora, base.lora, '转真人 LoRA');
+  if (fields.people !== undefined) {
+    if (!Array.isArray(fields.people)) throw new HttpError(400, '人物 LoRA 格式不对');
+    next.people = fields.people.map((one) => loraSetting(one, { name: '', strength: REAL_PEOPLE_STRENGTH }, '人物 LoRA'));
+  }
+  if (fields.uncensored !== undefined) next.uncensored = bool(fields.uncensored, '无审查');
+  return next;
+}
+
+// 一条 LoRA：名字 + 强度。强度上限 1.5：两个 LoRA 一起挂时总强度别顶满，见 docs/krea2-real-usage.md 第 6 节
+function loraSetting(value: unknown, base: { name: string; strength: number }, what: string): { name: string; strength: number } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, `${what}格式不对`);
+  const fields = value as Record<string, unknown>;
+  return {
+    name: fields.name === undefined ? base.name : text(fields.name, `${what}名字`),
+    strength: fields.strength === undefined ? base.strength : between(fields.strength, `${what}强度`, 0, 1.5),
+  };
+}
+
+// 局部重绘的重绘强度：0–1，见 docs/dev-plan.md 5.35
+function inpaintSettings(value: unknown, base: EditSettings['inpaint']): EditSettings['inpaint'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '局部重绘的设置格式不对');
+  const fields = value as Record<string, unknown>;
+  return { denoise: fields.denoise === undefined ? base.denoise : between(fields.denoise, '重绘强度', 0, 1) };
+}
+
 // 出图设置只改带了的项，没带的用 base（节点原来的，或者系列的默认值）
 export function imageSettings(value: unknown, base: ImageSettings): ImageSettings {
   if (typeof value !== 'object' || value === null) throw new HttpError(400, '出图设置格式不对');
@@ -200,9 +306,14 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
     if (typeof fields.krea !== 'object' || fields.krea === null || Array.isArray(fields.krea)) throw new HttpError(400, 'Krea2 设置格式不对');
     const krea = fields.krea as Record<string, unknown>;
     next.krea = {
-      mode: choice(krea.mode, 'Krea2 起图', ['text', 'four-view'] as const),
+      // 起图那一排只有前三种；real / depth / remix 是编辑节点自己造的那几档（见 jobs.ts 的 editParams），
+      // 一起收下来，免得老界面上存着这几种 mode 时 PATCH 直接报错
+      mode: choice(krea.mode, 'Krea2 起图', ['text', 'four-view', 'edit', 'real', 'depth', 'remix'] as const),
       reference: refImage(krea.reference),
+      referenceB: refImage(krea.referenceB ?? null),
       refBoost: between(krea.refBoost, '参考图相似度', 0, 10),
+      // 第一张（场景）的相似度，只有双图时起作用；没带就是 1
+      refBoostA: krea.refBoostA === undefined ? 1 : between(krea.refBoostA, '场景相似度', 0, 10),
       extra: text(krea.extra, '额外要求'),
     };
   }
@@ -225,7 +336,10 @@ export function imageSettings(value: unknown, base: ImageSettings): ImageSetting
   if (fields.upscale !== undefined) next.upscale = upscaleSettings(fields.upscale);
   if (fields.details !== undefined) next.details = detailPasses(fields.details);
   if (fields.controls !== undefined) next.controls = controls(fields.controls);
-  if (next.krea?.mode === 'four-view' && (next.width % 16 !== 0 || next.height % 16 !== 0)) throw new HttpError(400, '四视图的宽高要是 16 的倍数');
+  // 四视图、编辑、深度迁移、风格 Remix 都用 16 的倍数对齐的潜变量（转真人那条不出宽高）
+  if (next.krea && next.krea.mode !== 'text' && (next.width % 16 !== 0 || next.height % 16 !== 0)) {
+    throw new HttpError(400, `${next.krea.mode === 'four-view' ? '四视图' : '编辑'}的宽高要是 16 的倍数`);
+  }
   return next;
 }
 
