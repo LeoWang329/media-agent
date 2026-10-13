@@ -114,15 +114,16 @@ type Gesture =
 
 const HANDLE = 7;
 
-export function MaskEditor({ src, value, onChange }: { src: string; value: MaskShapes; onChange: (next: MaskShapes) => void }) {
+export function MaskEditor({ src, value, onChange, initialTool = 'rect' }: { src: string; value: MaskShapes; onChange: (next: MaskShapes) => void; initialTool?: Tool }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
-  const [tool, setTool] = useState<Tool>('rect');
+  const [tool, setTool] = useState<Tool>(initialTool);
   const [brush, setBrush] = useState(0);
   const [draft, setDraft] = useState<MaskShapes | null>(null);
   const [history, setHistory] = useState<MaskShapes[]>([]);
+  const [future, setFuture] = useState<MaskShapes[]>([]);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [scale, setScale] = useState(1);
   const shown = draft ?? value;
@@ -230,6 +231,7 @@ export function MaskEditor({ src, value, onChange }: { src: string; value: MaskS
     e.currentTarget.releasePointerCapture?.(e.pointerId);
     const next = draft.rect && (draft.rect.width < 2 || draft.rect.height < 2) && active.kind === 'new' ? { ...draft, rect: null } : draft;
     setHistory((past) => [...past, value].slice(-20));
+    setFuture([]);
     setDraft(null);
     onChange(next);
   };
@@ -239,16 +241,30 @@ export function MaskEditor({ src, value, onChange }: { src: string; value: MaskS
     const back = history[history.length - 1];
     if (!back) return;
     setHistory(past);
+    setFuture((next) => [value, ...next]);
     onChange(back);
+  };
+
+  const redo = () => {
+    if (!future.length) return;
+    setHistory((past) => [...past, value].slice(-20));
+    setFuture(future.slice(1));
+    onChange(future[0]);
   };
 
   const clear = () => {
     setHistory((past) => [...past, value].slice(-20));
+    setFuture([]);
     onChange(EMPTY_MASK);
   };
 
   return (
-    <div className="mask-wrap" data-od-id="mask-editor">
+    <div className="mask-wrap" data-od-id="mask-editor" onKeyDown={(e) => {
+      if (!(e.ctrlKey || e.metaKey) || !['z', 'y'].includes(e.key.toLowerCase())) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key.toLowerCase() === 'y' || e.shiftKey) redo(); else undo();
+    }}>
       <div className="mask-tools">
         <div className="seg" role="group" aria-label="掩码工具">
           {(['rect', 'brush', 'eraser'] as const).map((name) => (
@@ -271,6 +287,9 @@ export function MaskEditor({ src, value, onChange }: { src: string; value: MaskS
         <button type="button" className="btn btn-ghost btn-sm" id="maskClear" disabled={maskIsEmpty(value)} onClick={clear}>
           清空
         </button>
+        <button type="button" className="btn btn-ghost btn-sm" id="maskRedo" disabled={!future.length} onClick={redo}>
+          重做
+        </button>
         <span className="meta">{tool === 'rect' ? '按住拖一个框，能拖动、能拉四个角' : tool === 'brush' ? '按住涂要改的地方' : '按住擦掉画过的'}</span>
       </div>
       <div className="mask-board" ref={boxRef}>
@@ -281,6 +300,8 @@ export function MaskEditor({ src, value, onChange }: { src: string; value: MaskS
             width={natural.width}
             height={natural.height}
             className="mask-canvas"
+            tabIndex={0}
+            aria-label="掩码画布，按住拖动涂抹，Ctrl Z 撤销，Ctrl Shift Z 重做"
             onPointerDown={down}
             onPointerMove={move}
             onPointerUp={up}

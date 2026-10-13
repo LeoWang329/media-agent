@@ -3,6 +3,7 @@ import {
   DEFAULT_SELFLIFT,
   DEPTH_MIN_STRENGTH,
   EDIT_FNS,
+  EDIT_UPSCALE_SCALES,
   GUIDE_SIZES,
   REAL_PEOPLE_STRENGTH,
   SIZE_LIMITS,
@@ -213,6 +214,39 @@ export function editSettings(value: unknown, base: EditSettings): EditSettings {
   if (fields.slot !== undefined) next.slot = index(fields.slot, '槽位');
   if (fields.slotB !== undefined) next.slotB = index(fields.slotB, '槽位');
   if (fields.text !== undefined) next.text = text(fields.text, '要改什么');
+  if (fields.seed !== undefined) next.seed = fields.seed === null ? null : integer(fields.seed, '出图种子', 0);
+  if (fields.candidate !== undefined) {
+    if (fields.candidate !== null && (typeof fields.candidate !== 'object' || Array.isArray(fields.candidate))) throw new HttpError(400, '候选格式不对');
+    const candidate = fields.candidate as Record<string, unknown> | null;
+    next.candidate = candidate === null ? null : { messageId: uuid(candidate.messageId), promptIndex: index(candidate.promptIndex, '候选') };
+  }
+  if (fields.source !== undefined) {
+    if (fields.source !== null && (typeof fields.source !== 'object' || Array.isArray(fields.source))) throw new HttpError(400, '源图格式不对');
+    const source = fields.source as Record<string, unknown> | null;
+    next.source = source === null ? null : { kind: 'generated', jobId: uuid(source.jobId), seed: integer(source.seed, '源图种子', 0) };
+  }
+  if (fields.outfitLora !== undefined) next.outfitLora = text(fields.outfitLora, '换装 LoRA');
+  if (fields.fourview !== undefined) {
+    if (!fields.fourview || typeof fields.fourview !== 'object' || Array.isArray(fields.fourview)) throw new HttpError(400, '四视图尺寸格式不对');
+    const size = fields.fourview as Record<string, unknown>;
+    next.fourview = { width: side(size.width, '四视图宽度', { min: 256, max: 4096 }), height: side(size.height, '四视图高度', { min: 256, max: 4096 }) };
+  }
+  if (fields.maskShapes !== undefined) {
+    if (fields.maskShapes === null) next.maskShapes = null;
+    else {
+      const mask = fields.maskShapes as NonNullable<EditSettings['maskShapes']>;
+      if (!mask || typeof mask !== 'object' || !Array.isArray(mask.strokes)) throw new HttpError(400, '掩码形状格式不对');
+      const point = (p: { x: number; y: number }) => ({ x: finiteNumber(p?.x, '掩码位置'), y: finiteNumber(p?.y, '掩码位置') });
+      next.maskShapes = {
+        imageId: uuid(mask.imageId),
+        rect: mask.rect === null ? null : { ...point(mask.rect), width: between(mask.rect?.width, '掩码宽度', 0, 100000), height: between(mask.rect?.height, '掩码高度', 0, 100000) },
+        strokes: mask.strokes.map((s) => {
+          if (!s || !Array.isArray(s.points)) throw new HttpError(400, '掩码笔画格式不对');
+          return { eraser: bool(s.eraser, '掩码擦除'), size: between(s.size, '画笔大小', 1, 100000), points: s.points.map(point) };
+        }),
+      };
+    }
+  }
   if (fields.refBoost !== undefined) {
     const refBoost = finiteNumber(fields.refBoost, '相似度');
     if (refBoost < 0 || refBoost > 10) throw new HttpError(400, '相似度要在 0 到 10 之间');
@@ -226,23 +260,23 @@ export function editSettings(value: unknown, base: EditSettings): EditSettings {
   return next;
 }
 
-// 放大 / 高清那一套：倍数只有 1.5 和 2 两档（跟生图节点那个放大一样）、放大模型和面部修复的检测模型
+// 改图放大支持 2 / 4 倍，保留旧任务的 1.5 倍；放大模型和面部修复的检测模型
 // 都是文件名（空着是「用这台 ComfyUI 上第一个」/「不开面部修复」），见 docs/plan-image-edit-node.md 第 3 节
 function upscaleEditSettings(value: unknown, base: EditSettings['upscale']): EditSettings['upscale'] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '放大 / 高清的设置格式不对');
   const fields = value as Record<string, unknown>;
   return {
-    scale: fields.scale === undefined ? base.scale : oneOf(fields.scale, '放大倍数', UPSCALE_SCALES),
+    scale: fields.scale === undefined ? base.scale : oneOf(fields.scale, '放大倍数', EDIT_UPSCALE_SCALES),
     model: fields.model === undefined ? base.model : text(fields.model, '放大模型'),
     face: fields.face === undefined ? base.face : text(fields.face, '面部修复的检测模型'),
   };
 }
 
-// 深度迁移的控制强度：0 到 1.5（**0 不能用**，见 krea2Depth.ts），见 docs/dev-plan.md 5.39
+// 深度迁移的控制强度：0.1 到 2（0 不能用，见 krea2Depth.ts）。
 function depthSettings(value: unknown, base: EditSettings['depth']): EditSettings['depth'] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '深度迁移的设置格式不对');
   const fields = value as Record<string, unknown>;
-  return { strength: fields.strength === undefined ? base.strength : between(fields.strength, '控制强度', DEPTH_MIN_STRENGTH, 1.5) };
+  return { strength: fields.strength === undefined ? base.strength : between(fields.strength, '控制强度', DEPTH_MIN_STRENGTH, 2) };
 }
 
 // 风格 Remix / 换人的 LoRA：名字 + 强度，见 docs/dev-plan.md 5.39
@@ -261,6 +295,7 @@ function realSettings(value: unknown, base: EditSettings['real']): EditSettings[
   const fields = value as Record<string, unknown>;
   const next = { ...base, lora: { ...base.lora } };
   if (fields.reverse !== undefined) next.reverse = bool(fields.reverse, '用不用反推');
+  if (fields.reverseSeed !== undefined) next.reverseSeed = integer(fields.reverseSeed, '反推种子', 0);
   if (fields.dual !== undefined) next.dual = bool(fields.dual, '换不换脸');
   if (fields.image2Strength !== undefined) next.image2Strength = between(fields.image2Strength, '图 2 强度', 0, 10);
   // 名字空着就是不挂这条 LoRA（服务端 realLorasOf 会把没名字的滤掉）
@@ -287,7 +322,11 @@ function loraSetting(value: unknown, base: { name: string; strength: number }, w
 function inpaintSettings(value: unknown, base: EditSettings['inpaint']): EditSettings['inpaint'] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new HttpError(400, '局部重绘的设置格式不对');
   const fields = value as Record<string, unknown>;
-  return { denoise: fields.denoise === undefined ? base.denoise : between(fields.denoise, '重绘强度', 0, 1) };
+  return {
+    denoise: fields.denoise === undefined ? base.denoise : between(fields.denoise, '重绘强度', 0, 1),
+    ...(base.feather !== undefined && { feather: base.feather }),
+    ...(fields.feather !== undefined && { feather: integer(fields.feather, '羽化范围', 0, 128) }),
+  };
 }
 
 // 出图设置只改带了的项，没带的用 base（节点原来的，或者系列的默认值）

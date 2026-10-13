@@ -208,7 +208,7 @@ export function kreaRealGraph(add: Add, model: Link, clip: Link, vae: Link, para
         inference_mode: REVERSE_INFERENCE_MODE,
         max_frames: REVERSE_MAX_FRAMES,
         max_size: REVERSE_MAX_SIZE,
-        seed: REVERSE_SEED,
+        seed: real.reverseSeed ?? REVERSE_SEED,
         force_offload: REVERSE_FORCE_OFFLOAD,
         save_states: REVERSE_SAVE_STATES,
       })

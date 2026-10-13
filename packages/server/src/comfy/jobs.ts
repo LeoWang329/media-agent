@@ -240,7 +240,7 @@ async function inpaintParams(
   family: Family,
   from: ImageJobParams | null,
   image: Pick<JobImage, 'width' | 'height'>,
-  inpaint: { mask: string; positive: string; negative: string; denoise: number; image?: RefImage },
+  inpaint: { mask: string; positive: string; negative: string; denoise: number; feather?: number; image?: RefImage },
   settings: SharedSettings,
 ): Promise<ImageJobParams> {
   if (family === 'Krea2') throw new HttpError(400, 'Krea2 这期不支持局部重绘');
@@ -263,7 +263,7 @@ async function inpaintParams(
     // E05 那条流程其实不看出图尺寸（裁多大、拼回哪张都是 InpaintCropImproved / InpaintStitchImproved 定的）
     width: image.width ?? from?.width ?? DEFAULT_IMAGE_SIZE.width,
     height: image.height ?? from?.height ?? DEFAULT_IMAGE_SIZE.height,
-    inpaint: { mask: inpaint.mask, denoise: inpaint.denoise, ...(inpaint.image && { image: inpaint.image }) },
+    inpaint: { mask: inpaint.mask, denoise: inpaint.denoise, ...(inpaint.feather !== undefined && { feather: inpaint.feather }), ...(inpaint.image && { image: inpaint.image }) },
   };
 }
 
@@ -328,6 +328,11 @@ type FourView = { reference: RefImage; extra: string };
 // 不带时照旧自己造一条回复，见 docs/plan-image-edit-node-layout.md 第 4 节 ④
 export type EditJobRequest = {
   fn: EditFnId;
+  seed?: number | null;
+  candidate?: EditSettings['candidate'];
+  source?: EditSettings['source'];
+  outfitLora?: string;
+  fourview?: EditSettings['fourview'];
   slot: number;
   slotB?: number;
   text: string;
@@ -378,6 +383,7 @@ async function editParams(work: string, canvasId: string, node: ChatNode, edit: 
         positive: text,
         negative: '',
         denoise: edit_.inpaint.denoise,
+        feather: edit_.inpaint.feather,
         // 底图是槽位里选中的那张：真发图时要跟掩码分两张传（LoadImage 会把 alpha=0 的地方合成成黑）
         image: { kind: 'slot', imageId },
       }, settings),
@@ -391,7 +397,7 @@ async function editParams(work: string, canvasId: string, node: ChatNode, edit: 
   // 四视图：跟生图节点那个「做四视图」是同一条路（krea2_4panel + Krea2Edit 那两个节点），
   // 原图是槽位里选中的那张，框里那句话当额外要求（主指令 FOUR_VIEW_INSTRUCTION 由 fourViewPrompt 接在最前面）
   if (fn.id === 'fourview') {
-    const image = { ...defaultImageSettings(defaults, 'Krea2'), ...kreaDefaults('four-view'), seed: null };
+    const image = { ...defaultImageSettings(defaults, 'Krea2'), ...kreaDefaults('four-view'), ...edit_.fourview, seed: null };
     const krea: ImageJobParams['krea'] = { ...image.krea!, mode: 'four-view', reference: { kind: 'slot', imageId }, extra: text };
     return { params: kreaParams({ ...image, krea }, '') };
   }
@@ -433,6 +439,7 @@ async function editParams(work: string, canvasId: string, node: ChatNode, edit: 
           loras: realLorasOf(real),
           uncensored: real.uncensored,
           reverseInstruction: reverseInstructionOf(real.dual),
+          ...(real.reverseSeed !== undefined && { reverseSeed: real.reverseSeed }),
         },
       },
       ...(real.dual && !imageIdB && { note: '「换脸」要两张图，这次只给了一张 —— 退回只转真人（图 2 用图 1）' }),
@@ -473,6 +480,7 @@ async function editParams(work: string, canvasId: string, node: ChatNode, edit: 
   }
   // 指令编辑 / 换装照作者 T07：官方 Turbo + 身份编辑 / 换装 LoRA，不是生图节点那条真人化编辑档
   const image = { ...defaultImageSettings(defaults, 'Krea2'), ...kreaDefaults('edit'), ...(fn.id === 'outfit' ? kreaOutfitSetup() : kreaEditSetup()), seed: null };
+  if (fn.id === 'outfit' && edit_.outfitLora) image.loras = [{ name: edit_.outfitLora, strength: 1 }];
   return {
     params: kreaParams(
       { ...image, krea: { ...image.krea!, mode: 'edit', reference: { kind: 'slot', imageId }, refBoost: edit_.refBoost } },
@@ -578,7 +586,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     const message = node.messages[place.messageId];
     if (message?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
 
-    let source: { promptIndex: number; kind: ImageJob['kind']; params: ImageJobParams; seeds: number[]; from?: ImageJob['source'] };
+    let source: { promptIndex: number; kind: ImageJob['kind']; params: ImageJobParams; seeds: number[]; from?: ImageJob['source']; editFn?: EditFnId };
     if (edit) {
       // 图像编辑节点：原图是槽位里选中的那张，一句话改图，出 1 张，见 docs/dev-plan.md 5.39
       if (node.kind !== 'edit') throw new HttpError(400, '编辑要图像编辑节点');
@@ -589,8 +597,10 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       source = {
         promptIndex,
         kind: made.params.inpaint ? 'inpaint' : made.params.krea?.mode === 'four-view' ? 'four-view' : 'edit',
+        editFn: edit.fn,
         params: made.params,
-        seeds: [randomSeed()],
+        seeds: [edit.seed ?? randomSeed()],
+        ...(edit.source && { from: edit.source }),
       };
     } else if (fourView) {
       const family = node.kind === 'image' ? await imageFamily(place.work, node.systemPromptName) : 'Krea2';
@@ -608,6 +618,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       source = {
         promptIndex: job.promptIndex,
         kind: job.kind,
+        editFn: job.editFn,
         params: job.params,
         seeds: [again.sameSeed ? image.seed : randomSeed()],
         from: job.kind === 'refine' || job.kind === 'inpaint' ? job.source : { kind: 'generated', jobId: job.id, seed: image.seed },
@@ -652,6 +663,7 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       promptIndex: source.promptIndex,
       createdAt: new Date().toISOString(),
       kind: source.kind,
+      ...(source.editFn && { editFn: source.editFn }),
       ...(source.from && { source: source.from }),
       target,
       params: source.params,
@@ -810,8 +822,8 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
   // 补做的原图传给 ComfyUI；文件名按内容算，同一张传几次都是同一个名字
   async function uploadSource(place: JobPlace, job: ImageJob, url: string): Promise<string> {
     const node = await readNode(place.work, place.canvasId, place.nodeId);
-    const from = node.messages[place.messageId]?.images
-      ?.find((j) => j.id === job.source?.jobId)
+    const from = Object.values(node.messages).flatMap((message) => message.images ?? [])
+      .find((j) => j.id === job.source?.jobId)
       ?.images.find((image) => image.seed === job.source?.seed && image.status === 'done');
     const file = from && (await imageFile(place.work, from));
     if (!file) throw new comfy.ComfyError('要补做的那张原图找不到了：删掉了，或者临时文件清掉了又没下载过');
@@ -980,7 +992,8 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
     const data = await comfy.viewImage(t.url, ref);
     const { width, height } = await sharp(data).metadata();
     const file = await saveTemp(t.work, data, t.seed);
-    return { status: 'done', file, width, height, ...(t.startedAt && { ms: Date.now() - t.startedAt }) };
+    const promptText = Object.values(entry?.outputs ?? {}).flatMap((output) => output.text ?? []).join('\n').trim();
+    return { status: 'done', file, width, height, ...(promptText && { promptText }), ...(t.startedAt && { ms: Date.now() - t.startedAt }) };
   }
 
   async function end(t: Tracked, change: Partial<JobImage>): Promise<void> {
@@ -1157,11 +1170,20 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
   async function editJob(at: Omit<JobPlace, 'messageId'>, edit: EditJobRequest) {
     const node = await readNode(at.work, at.canvasId, at.nodeId);
     if (node.kind !== 'edit') throw new HttpError(400, '「开始」是图像编辑节点上的');
+    if (edit.source) {
+      const image = Object.values(node.messages).flatMap((m) => m.images ?? []).find((j) => j.id === edit.source?.jobId)?.images.find((i) => i.seed === edit.source?.seed);
+      if (image?.status !== 'done' || !image.savedPath) throw new HttpError(400, '派生源图不存在、尚未完成或尚未保存');
+    }
     const request = { ...edit, ...(edit.maskBytes && { mask: await saveMaskTemp(at.work, edit.maskBytes) }) };
     const fn = editFnOf(request.fn);
     const settings = editSettingsOf(request, node.slots.length);
     const imageId = node.slots[settings.slot];
     if (!imageId) throw new HttpError(400, '先选一张要改的图');
+    if (edit.candidate && !edit.source) {
+      const candidate = node.messages[edit.candidate.messageId];
+      const origin = candidate?.slotSnapshot[candidate.edit?.slot ?? settings.slot];
+      if (origin !== imageId) throw new HttpError(400, '候选绑定的原图与当前原图不同，请恢复原图或明确复用文字');
+    }
     // 放大 / 高清整条路不看提示词、四视图的主指令是固定的（框里那句只当额外要求），这两条不用写字；
     // 反推开着时那句话由反推模型现写，用户不写也行；局部重绘不写字就不知道那块画成什么
     const needText = editTextBlock(settings);
@@ -1176,7 +1198,9 @@ export function createImageJobs(configDir: string, autodl: Autodl) {
       const target = node.messages[messageId];
       if (target?.role !== 'assistant') throw new HttpError(404, '找不到这条回复');
       promptIndex = request.promptIndex ?? 0;
-      if (!target.parsed?.prompts[promptIndex]) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
+      if (request.source) {
+        if (!target.images?.some((job) => job.id === request.source?.jobId && job.promptIndex === promptIndex)) throw new HttpError(400, '派生源图与目标候选归属不一致');
+      } else if (!target.parsed?.prompts[promptIndex]) throw new HttpError(404, `这条回复里没有第 ${promptIndex + 1} 个提示词框`);
     } else {
       messageId = randomUUID();
       // 四视图框里显示的是**真发出去的那句**：主指令是固定的（作者那份一字不改），程序接在最前面；

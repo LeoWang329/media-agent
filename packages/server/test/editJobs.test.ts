@@ -252,8 +252,8 @@ it('深度迁移：控制强度是面板上那个数（强度 0 被 API 拦住�
   expect(nodeOf(weak.graph, 'Krea2ControlLoRALoader').inputs.strength).toBe(0.6);
 
   // 0 不行：真机上 strength=0 时 loader 不注册采样 wrapper，Apply 直接抛错
-  expect((await t.call('POST', editUrl(), { fn: 'depth', slot: 0, text: 'x', refBoost: 1, depth: { strength: 0 } })).body.error).toBe('控制强度要在 0.1 到 1.5 之间');
-  expect((await t.call('POST', editUrl(), { fn: 'depth', slot: 0, text: 'x', refBoost: 1, depth: { strength: 2 } })).body.error).toBe('控制强度要在 0.1 到 1.5 之间');
+  expect((await t.call('POST', editUrl(), { fn: 'depth', slot: 0, text: 'x', refBoost: 1, depth: { strength: 0 } })).body.error).toBe('控制强度要在 0.1 到 2 之间');
+  expect((await t.call('POST', editUrl(), { fn: 'depth', slot: 0, text: 'x', refBoost: 1, depth: { strength: 2.1 } })).body.error).toBe('控制强度要在 0.1 到 2 之间');
   // 节点上记住的那份也吃得住半份
   const patched = await t.ok<ChatNode>('PATCH', nodeUrl(), { edit: { fn: 'depth', depth: { strength: 0.8 } } });
   expect(patched.edit).toMatchObject({ fn: 'depth', depth: { strength: 0.8 } });
@@ -615,7 +615,7 @@ it('放大 / 高清：开了面部修复就多一道部位重绘（检测模型�
 it('放大 / 高清：倍数越界拦住，没选图也拦住，一句都不发出去', async () => {
   const imageId = await t.addImage(canvasId, '#c2d3e4');
   await t.ok('PATCH', nodeUrl(), { slots: [imageId] });
-  expect((await t.call('POST', editUrl(), { fn: 'upscale', slot: 0, text: '', refBoost: 1, upscale: { scale: 3 } })).body.error).toBe('放大倍数只能是 1.5、2');
+  expect((await t.call('POST', editUrl(), { fn: 'upscale', slot: 0, text: '', refBoost: 1, upscale: { scale: 3 } })).body.error).toBe('放大倍数只能是 1.5、2、4');
   await t.ok('PATCH', nodeUrl(), { slots: [] });
   expect((await t.call('POST', editUrl(), { fn: 'upscale', slot: 0, text: '', refBoost: 1 })).body.error).toBe('先选一张要改的图');
   expect(await (await fetch(`${comfyUrl}/_last-prompts`)).json()).toEqual([]);
@@ -717,4 +717,82 @@ it('框上的「开始」：带上目标回复就不新建回复，出的图挂�
     body: { error: '找不到这条回复' },
   });
   expect(Object.keys((await t.ok<ChatNode>('GET', nodeUrl())).messages)).toHaveLength(before);
+});
+
+it('执行种子和反推种子独立，反推实际文字随结果记录，后续修改不覆盖任务快照', async () => {
+  const imageId = await t.addImage(canvasId, '#e1a2b3');
+  await t.ok('PATCH', nodeUrl(), { slots: [imageId], edit: { seed: 123, real: { reverseSeed: 456 } } });
+  const { started, graph } = await start({ fn: 'real', text: '' });
+  expect(nodeOf(graph, 'KSampler').inputs.seed).toBe(123);
+  expect(nodeOf(graph, 'llama_cpp_instruct_adv').inputs.seed).toBe(456);
+  const result = (await t.ok<ChatNode>('GET', nodeUrl())).messages[started.messageId].images![0].images[0];
+  expect(result.promptText).toContain(REAL_TRIGGER);
+  await t.ok('PATCH', nodeUrl(), { edit: { seed: 789, real: { reverseSeed: 987 } } });
+  const frozen = (await t.ok<ChatNode>('GET', nodeUrl())).messages[started.messageId].images![0];
+  expect(frozen.images[0].seed).toBe(123);
+  expect(frozen.params.real?.reverseSeed).toBe(456);
+});
+
+it('4 倍放大、自定义四视图、换装 LoRA 和深度上限进入实际提交的工作流', async () => {
+  const imageId = await t.addImage(canvasId, '#e1b2c3');
+  await t.ok('PATCH', nodeUrl(), { slots: [imageId] });
+  const upscale = await start({ fn: 'upscale', upscale: { scale: 4 } });
+  expect(nodeOf(upscale.graph, 'ImageScale').inputs).toMatchObject({ width: 1200, height: 1200 });
+  expect(upscale.started.job.params.upscale?.denoise).toBe(0);
+  const four = await start({ fn: 'fourview', text: '蓝色背景', fourview: { width: 1280, height: 768 } });
+  expect(four.started.job.params).toMatchObject({ width: 1280, height: 768 });
+  expect(four.started.job.params.positive).toBe(`${FOUR_VIEW_INSTRUCTION}\n\n蓝色背景`);
+  const outfit = await start({ fn: 'outfit', text: 'red dress', outfitLora: 'krea2/krea_outfittransfer.safetensors' });
+  expect(nodeOf(outfit.graph, 'LoraLoaderModelOnly').inputs.lora_name).toBe('krea2/krea_outfittransfer.safetensors');
+  const depth = await start({ fn: 'depth', text: 'rain', depth: { strength: 2 } });
+  expect(nodeOf(depth.graph, 'Krea2ControlLoRALoader').inputs.strength).toBe(2);
+  expect((await t.call('POST', editUrl(), { fn: 'fourview', fourview: { width: 1279, height: 768 } })).status).toBe(400);
+});
+
+it('掩码随原图、上下文与思考设置持久化，羽化进入裁剪节点', async () => {
+  const imageId = await t.addImage(canvasId, '#e1c2d3');
+  const maskShapes = { imageId, rect: { x: 60, y: 60, width: 120, height: 100 }, strokes: [] };
+  await t.ok('PATCH', nodeUrl(), { slots: [imageId], thinking: 'low', turnLimit: 5, edit: { maskShapes, inpaint: { feather: 64 } } });
+  await t.restart();
+  expect(await t.ok('GET', nodeUrl())).toMatchObject({ thinking: 'low', turnLimit: 5, edit: { maskShapes, inpaint: { feather: 64 } } });
+  const mask = await sharp({ create: { width: 300, height: 300, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+  const { started, graph } = await start({ fn: 'inpaint', text: 'blue jacket', mask: mask.toString('base64') });
+  expect(started.job.params.inpaint?.feather).toBe(64);
+  expect(nodeOf(graph, 'InpaintCropImproved').inputs.mask_blend_pixels).toBe(64);
+  expect((await t.call('PATCH', nodeUrl(), { edit: { inpaint: { feather: 129 } } })).status).toBe(400);
+  expect((await t.call('PATCH', nodeUrl(), { thinking: 'invalid' })).status).toBe(400);
+});
+
+it('候选绑定原图，删除或切换原图会阻止错用；明确复用文字后可执行', async () => {
+  const first = await t.addImage(canvasId, '#e1d2e3');
+  const second = await t.addImage(canvasId, '#f1d2e3');
+  await t.ok('PATCH', nodeUrl(), { slots: [first, second], edit: { slot: 0 } });
+  const candidateNode = await t.ok<ChatNode>('POST', `${nodeUrl()}/handwritten`, { text: 'blue coat' });
+  const message = Object.values(candidateNode.messages)[0];
+  expect(message.edit).toEqual({ fn: 'edit', slot: 0 });
+  const candidate = { messageId: message.id, promptIndex: 0 };
+  const good = await start({ fn: 'edit', slot: 0, text: 'blue coat', candidate });
+  expect(good.started.messageId).toBe(message.id);
+  expect(Object.keys(good.started.node.messages)).toHaveLength(1);
+  expect((await t.call('POST', editUrl(), { fn: 'edit', slot: 1, text: 'blue coat', candidate })).status).toBe(400);
+  const reused = await start({ fn: 'edit', slot: 1, text: 'blue coat', candidate: null });
+  expect(reused.started.messageId).not.toBe(message.id);
+  const fork = await t.ok<ChatNode>('POST', `${nodeUrl()}/fork`, { messageId: reused.started.messageId });
+  expect(fork.kind).toBe('edit');
+});
+
+it('没有文字候选的已保存放大结果也能派生四视图，且不能挂到别的候选', async () => {
+  const imageId = await t.addImage(canvasId, '#a1d2e3');
+  await t.ok('PATCH', nodeUrl(), { slots: [imageId] });
+  const original = await start({ fn: 'upscale', text: '' });
+  await t.ok('POST', '/assets/folders', { path: t.work });
+  await t.ok('POST', '/images/download', { folder: t.work, items: [{ canvasId, nodeId, messageId: original.started.messageId, jobId: original.started.job.id, index: 0 }] });
+  const candidate = { messageId: original.started.messageId, promptIndex: 0 };
+  const source = { kind: 'generated', jobId: original.started.job.id, seed: original.started.job.images[0].seed };
+  const made = await start({ fn: 'fourview', text: '', source, candidate });
+  expect(made.started.messageId).toBe(original.started.messageId);
+  expect(made.started.job.source).toEqual(source);
+  expect(made.started.job.editFn).toBe('fourview');
+  const other = await start({ fn: 'edit', text: 'red coat' });
+  expect((await t.call('POST', editUrl(), { fn: 'fourview', text: '', source, candidate: { messageId: other.started.messageId, promptIndex: 0 } })).status).toBe(400);
 });

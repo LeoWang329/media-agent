@@ -135,7 +135,7 @@ export async function runGeneration(target: GenerationTarget, res: Response, pre
       if (node.kind === 'video' && node.video?.workflow === 'selflift' && messages[0].role === 'system') {
         messages[0].content += `\n\n${selfliftPromptNote(node.duration, videoSettingsOf(node.video))}`;
       }
-      const level = thinkingLevelFor(settings.thinking, 'chat');
+      const level = node.thinking && node.thinking !== 'follow' ? node.thinking : thinkingLevelFor(settings.thinking, 'chat');
       assistant = {
         ...assistant,
         modelName: thinkingRequest(modelConfig, level).model,

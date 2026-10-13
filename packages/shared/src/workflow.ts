@@ -215,7 +215,7 @@ export function inpaintGraph(params: ImageJobParams, seed: number, uploaded: { m
   // 分两张时：掩码那张 PNG 的 alpha 就是掩码，LoadImage 的 MASK 输出正好是「1 − alpha」——
   // 要重画的地方（alpha=0）是 1，正是 InpaintCropImproved 要的。IMAGE 输出只有三通道，取不了 alpha
   const mask = uploaded.image ? out(add('LoadImage', { image: uploaded.mask ?? '' }), 1) : out(loaded, 1);
-  const crop = add('InpaintCropImproved', { image: loaded, mask, ...INPAINT_CROP });
+  const crop = add('InpaintCropImproved', { image: loaded, mask, ...INPAINT_CROP, mask_blend_pixels: params.inpaint?.feather ?? INPAINT_CROP.mask_blend_pixels });
   const conditioned = add('InpaintModelConditioning', {
     positive,
     negative,

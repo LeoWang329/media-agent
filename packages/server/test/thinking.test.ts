@@ -58,6 +58,19 @@ describe('思考的设置', () => {
 });
 
 describe('发消息时的思考', () => {
+  it('节点覆盖只影响本节点；跟随恢复全局，岔出保留设置', async () => {
+    await setStyle('reasoning-effort');
+    await setThinking({ level: 'high' });
+    await t.ok('PATCH', nodeUrl, { thinking: 'low', turnLimit: 5 });
+    const low = await send('写一个');
+    expect(low.reply.text).toContain('"reasoning_effort":"low"');
+    expect((await t.ok<SharedSettings>('GET', '/settings')).thinking.level).toBe('high');
+    const fork = await t.ok('POST', `${nodeUrl}/fork`, { messageId: low.reply.id });
+    expect(fork).toMatchObject({ thinking: 'low', turnLimit: 5 });
+    await t.ok('PATCH', nodeUrl, { thinking: 'follow' });
+    expect((await send('再来')).reply.text).toContain('"reasoning_effort":"high"');
+  });
+
   it('开了思考：发出参数，思考原文一段段推给前端、存进回复，记下等了多久才出正文', async () => {
     await setStyle('reasoning-effort');
     await setThinking({ level: 'medium' });

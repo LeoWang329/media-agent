@@ -38,7 +38,7 @@ export const shownVersions = (node: ChatNode, message: Message) =>
 const BUSY_HINT = '正在生成，先叫停或等它写完';
 
 // 右侧面板的对话：复制来的消息收在最上面，下面是这个节点自己的
-export function Thread({ node }: { node: ChatNode }) {
+export function Thread({ node, embedded = false, visible = true }: { node: ChatNode; embedded?: boolean; visible?: boolean }) {
   const stream = useCanvasStore((s) => s.streams[node.id]);
   const remote = useCanvasStore((s) => !s.streams[node.id] && Boolean(s.detail?.nodes.find((n) => n.id === node.id)?.generating));
   const images = useCanvasStore((s) => s.detail?.images);
@@ -47,6 +47,16 @@ export function Thread({ node }: { node: ChatNode }) {
   const list = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
   const mounted = useRef(false);
+  const scroller = () => embedded ? list.current?.closest<HTMLElement>('.edit-workspace') : list.current;
+
+  useEffect(() => {
+    if (!embedded) return;
+    const el = scroller();
+    if (!el) return;
+    const update = () => { nearBottom.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80; };
+    el.addEventListener('scroll', update);
+    return () => el.removeEventListener('scroll', update);
+  }, [embedded]);
 
   const path = activePath(node);
   const copied = copiedCount(node, path);
@@ -57,24 +67,29 @@ export function Thread({ node }: { node: ChatNode }) {
 
   // 打开节点：停在最后一条回复的开头；正在生成时停在最底下
   useLayoutEffect(() => {
-    const el = list.current!;
-    const lastEl = el.lastElementChild as HTMLElement | null;
+    if (!visible) return;
+    const el = scroller()!;
+    const lastEl = list.current!.lastElementChild as HTMLElement | null;
     if (lastEl?.classList.contains('msg-ai') && !busy) el.scrollTop = Math.max(0, lastEl.offsetTop - el.offsetTop - 12);
     else el.scrollTop = el.scrollHeight;
-  }, []);
+  }, [visible]);
 
   // 开始生成时滚到底；之后停在底部才跟着往下走
   useLayoutEffect(() => {
-    if (stream?.assistantId) list.current!.scrollTop = list.current!.scrollHeight;
-  }, [stream?.assistantId]);
+    if (!visible) return;
+    const el = scroller();
+    if (stream?.assistantId && el) el.scrollTop = el.scrollHeight;
+  }, [stream?.assistantId, visible]);
 
   useLayoutEffect(() => {
+    if (!visible) return;
     if (!mounted.current) {
       mounted.current = true;
       return;
     }
-    if (nearBottom.current) list.current!.scrollTop = list.current!.scrollHeight;
-  }, [path.length, stream?.text, last?.text]);
+    const el = scroller();
+    if (nearBottom.current && el) el.scrollTop = el.scrollHeight;
+  }, [path.length, stream?.text, last?.text, visible]);
 
   const render = (message: Message, ro: boolean) =>
     message.role === 'user' ? (
@@ -103,9 +118,10 @@ export function Thread({ node }: { node: ChatNode }) {
 
   return (
     <div
-      className="dr-body"
+      className={embedded ? 'edit-history' : 'dr-body'}
       id="thread"
       data-od-id="thread"
+      data-node-kind={node.kind}
       ref={list}
       onScroll={(e) => {
         const el = e.currentTarget;
@@ -129,7 +145,7 @@ export function Thread({ node }: { node: ChatNode }) {
         <div style={{ padding: '48px 12px', textAlign: 'center' }} className="stack">
           <h3>这个节点还没有对话</h3>
           <p className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-            先在下面放参考图、选时长和比例，再写需求发出去。
+            {node.kind === 'edit' ? '选择原图，写下要修改的内容，可连续对话并保存候选。' : '先在下面放参考图、选时长和比例，再写需求发出去。'}
             <br />
             AI 第一次回复时会给节点起标题。
           </p>

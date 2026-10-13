@@ -13,6 +13,8 @@ import { closeDrawer, drawerMenu, finishRename, selectNode, startRename, useRena
 import { copiedCount, forkedAt, isUntitled, nodeCost } from './nodeInfo';
 import { Outline } from './Outline';
 import { Thread } from './Thread';
+import { EditWorkspace } from './EditWorkspace';
+import { useEditWorkspace } from './editWorkspaceStore';
 
 const WIDTH_KEY = 'pc-drawer-w';
 const OUTLINE_KEY = 'pc-outline';
@@ -91,14 +93,14 @@ export function Drawer() {
   };
 
   return (
-    <aside className="drawer" id="drawer" aria-label="节点对话" data-od-id="node-drawer">
+    <aside className="drawer" id="drawer" aria-label="节点对话" data-od-id="node-drawer" data-node-kind={node?.kind}>
       <div className="drawer-resize" id="drawerResize" title="拖动调宽" ref={handle} onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp} />
       {node && exists && (
         <>
           <DrawerHead node={node} outline={outline} onOutline={toggleOutline} />
-          <Thread key={`thread-${node.id}`} node={node} />
+          {node.kind === 'edit' ? <EditWorkspace key={`edit-${node.id}`} node={node} /> : <Thread key={`thread-${node.id}`} node={node} />}
           <Dock key={`dock-${node.id}`} node={node} />
-          {outlineShown && <Outline node={node} onClose={toggleOutline} />}
+          {outlineShown && node.kind !== 'edit' && <Outline node={node} onClose={toggleOutline} />}
         </>
       )}
     </aside>
@@ -180,7 +182,7 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
             {sub.flatMap((item, i) => (i ? [<span key={`dot-${i}`}>·</span>, ...item] : item))}
           </div>
         </div>
-        <button
+        {!isEdit && <button
           type="button"
           className={`btn btn-ghost btn-icon${outline ? ' is-on' : ''}`}
           id="drOutline"
@@ -190,7 +192,7 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
           onClick={onOutline}
         >
           <Icon name="list" />
-        </button>
+        </button>}
         <button type="button" className="btn btn-ghost btn-icon" id="drMenu" aria-label="节点操作" onClick={(e) => showMenu(e.currentTarget, drawerMenu(node.id))}>
           <Icon name="more" />
         </button>
@@ -220,8 +222,8 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
         </label>
         <label className="cfg" title={isEdit ? `模型提示词：每个功能一套，跟着「${editFn.name}」走。字是给模型看的，出图走哪条流程是上面「功能」定的` : undefined}>
           <Icon name="doc" className="icon-sm" />
-          {isEdit && <span className="cfg-lbl">模型提示词</span>}
-          <select
+          {isEdit && <span className="cfg-lbl">系统提示词</span>}
+          {isEdit ? <select id="cfgSys" aria-label="系统提示词" disabled value="edit"><option value="edit">图像编辑 · 用途固定</option></select> : <select
             id="cfgSys"
             aria-label={isEdit ? '模型提示词' : '系统提示词'}
             value={node.systemPromptName}
@@ -252,9 +254,9 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
                 {p.fn ? ` · ${p.fn}` : ''}
               </option>
             ))}
-          </select>
+          </select>}
         </label>
-        <label className="cfg" title="发给模型时最多带几轮对话">
+        {!isEdit && <label className="cfg" title="发给模型时最多带几轮对话">
           <Icon name="clock" className="icon-sm" />
           <select
             id="cfgTurns"
@@ -273,8 +275,8 @@ function DrawerHead({ node, outline, onOutline }: { node: ChatNode; outline: boo
               </option>
             ))}
           </select>
-        </label>
-        {thinking && <ThinkingButton config={modelConfigs.find((m) => m.id === node.modelConfigId)} settings={thinking} />}
+        </label>}
+        {isEdit ? <button type="button" className="cfg cfg-think" id="cfgThink" onClick={() => useEditWorkspace.setState({ context: node.id })}><Icon name="brain" className="icon-sm" />上下文</button> : thinking && <ThinkingButton config={modelConfigs.find((m) => m.id === node.modelConfigId)} settings={thinking} />}
         <span className="meta grow dr-cost" id="drCost">
           {cost ? `这个节点花了 ${cost}` : ''}
         </span>

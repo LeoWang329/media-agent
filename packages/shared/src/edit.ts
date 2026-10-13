@@ -322,6 +322,7 @@ export const defaultRemixSettings = (): EditRemixSettings => ({ lora: { name: RE
 // 放大模型空着是**有意的**：出图时用这台 ComfyUI 上第一个，跟底模那套一样（服务端 chooseUpscaleModel），
 // 这样点了「开始」就能直接放大，不用先挑一个模型。面部修复的检测模型空着是不开
 export const defaultUpscaleSettings = (): EditUpscaleSettings => ({ scale: 2, model: '', face: '' });
+export const EDIT_UPSCALE_SCALES = [1.5, 2, 4];
 
 // 编辑节点按当前功能挑那套系统提示词：每份的说明段里写着「功能: 」，名字对上了就是它。
 // 一份都没对上时返回 null，调用方留着现在用的那套，见 docs/dev-plan.md 5.39

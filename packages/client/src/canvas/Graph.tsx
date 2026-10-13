@@ -1,4 +1,4 @@
-import { aspectRatioText, hiddenNodeIds, type NodeSummary } from '@media-agent/shared';
+import { aspectRatioText, editFnOf, hiddenNodeIds, type NodeSummary } from '@media-agent/shared';
 import { memo, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { imageThumbUrl } from '../api';
 import { useCanvasStore } from '../store/canvasStore';
@@ -289,7 +289,7 @@ const GraphNode = memo(
           {n.kind === 'edit' ? (
             <span className="tag tag-outline gn-kind">
               <Icon name="wand" />
-              编辑
+              改图{n.editFn ? ` · ${editFnOf(n.editFn).name}` : ''}
             </span>
           ) : n.image ? (
             <span className="tag tag-outline gn-kind">

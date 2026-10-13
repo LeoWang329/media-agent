@@ -118,14 +118,13 @@ export const inpaint = (at: ImageAt, body: { mask: string; positive: string; neg
 // 图像编辑节点「开始」之前还差什么：差什么就返回一句话，都够了返回 null。
 // 「还没做」的功能拦住（框上那个「开始」是照回复上记的功能来的，可能是老回复时记下的）；
 // 放大 / 高清不看提示词、四视图的主指令是固定的（框里那句只当额外要求）、转真人开着反推时那句由反推模型跑图时现写，
-// 这三条不要求写字（editTextBlock）；「换脸」还要第二张图当真人参考。
-// 局部重绘那句「先在图上拖个框」跟画没画掩码有关，那块形状在面板里，所以由面板先问一遍（EditPanel），
+// 这三条不要求写字（editTextBlock）；双图未指定不同参考时按标准工作流回退图 1。
+// 局部重绘那句「先在图上拖个框」跟画没画掩码有关，那块形状由工作区检查，
 // 这儿只管节点上存着的那几项，见 docs/plan-image-edit-node-layout.md 第 4.2、4.4 节
 export function editStartBlock(node: ChatNode, edit = editSettingsOf(node.edit, node.slots.length)): string | null {
   const fn = editFnOf(edit.fn);
   if (!fn.ready) return `「${fn.name}」还没做，下一批上`;
   if (!node.slots[edit.slot]) return `还没选图：先在下面点一张${fn.role}`;
-  if (fn.id === 'real') return edit.real.dual && node.slots.length < 2 ? `换脸要 2 张图，现在只有 ${node.slots.length} 张` : null;
   return editTextBlock(edit);
 }
 
@@ -157,6 +156,7 @@ export async function startEdit(nodeId: string, options: EditStartOptions = {}) 
     // 深度迁移的控制强度、风格 Remix 的 LoRA、放大 / 高清的倍数和模型在 depth / remix / upscale 里
     const body = {
       fn: edit.fn, slot: edit.slot, slotB: edit.slotB, text: edit.text, refBoost: edit.refBoost,
+      seed: edit.seed, candidate: edit.candidate, source: edit.source, outfitLora: edit.outfitLora, fourview: edit.fourview,
       real: edit.real, inpaint: edit.inpaint, depth: edit.depth, remix: edit.remix, upscale: edit.upscale,
       mask: options.mask,
       ...(options.target && { messageId: options.target.messageId, promptIndex: options.target.promptIndex }),

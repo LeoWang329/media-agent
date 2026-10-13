@@ -62,6 +62,7 @@ export type EditFnId = 'edit' | 'real' | 'outfit' | 'inpaint' | 'depth' | 'remix
 // 反推 / 双图两个开关就是那份工作流的「① 用反推吗」「② 双图吗」；我们按选项现生成图，不用 LazySwitchKJ
 export type EditRealSettings = {
   reverse: boolean; // 开：提示词取反推模型写的；关：取手输那句话（text）
+  reverseSeed?: number;
   dual: boolean; // 开：图 2 决定长相（换脸）；关：只用图 1
   image2Strength: number; // 像图 2 多少，0–10，默认 1
   lora: { name: string; strength: number }; // 转真人 LoRA，默认 V3，强度可调
@@ -87,18 +88,30 @@ export type EditUpscaleSettings = { scale: number; model: string; face: string }
 // 转真人 / 局部重绘 / 深度迁移 / 风格 Remix / 放大各自那一套
 export type EditSettings = {
   fn: EditFnId;
+  seed?: number | null;
+  candidate?: { messageId: string; promptIndex: number } | null;
+  source?: { kind: 'generated'; jobId: string; seed: number } | null;
+  outfitLora?: string;
+  fourview?: { width: number; height: number };
+  maskShapes?: EditMask | null;
   slot: number; // 图 1：要改的那张 / 要转的动漫图 / 要放大的图
   slotB: number; // 图 2：换脸时的真人参考，只有转真人的「双图」用得上
   text: string;
   refBoost: number;
   real: EditRealSettings;
-  inpaint: { denoise: number }; // 局部重绘的重绘强度
+  inpaint: { denoise: number; feather?: number }; // 局部重绘的重绘强度与羽化范围
   depth: EditDepthSettings;
   remix: EditRemixSettings;
   upscale: EditUpscaleSettings;
 };
 
-// 三份固定格式要求：视频节点的、生图节点的、图像编辑节点的
+export type EditMask = {
+  imageId: string;
+  rect: { x: number; y: number; width: number; height: number } | null;
+  strokes: { eraser: boolean; size: number; points: { x: number; y: number }[] }[];
+};
+
+// 固定格式要求：视频、IL/Pony、生图 Krea2、改图节点。
 export type FormatRequirements = { video: string; image: string; krea2: string; edit: string };
 
 // 一个系列的默认值：固定开头、默认负面词、三档评级在这个系列里怎么写、出图参数，见 docs/dev-plan.md 5.18。
@@ -289,6 +302,7 @@ export type ImageJobParams = {
     loras: { name: string; strength: number }[];
     uncensored: boolean;
     reverseInstruction?: string;
+    reverseSeed?: number;
   };
   remix?: { controlStrength: number; lora: { name: string; strength: number } };
   family: Family;
@@ -312,7 +326,7 @@ export type ImageJobParams = {
   controls?: ControlSettings[];
   // 局部重绘：mask 是「要重画处 alpha=0」那张 PNG 的落盘路径；image 是底图（有的话底图和掩码
   // 分两张传上去，见 packages/shared/src/workflow.ts 的 inpaintGraph）
-  inpaint?: { mask: string; denoise: number; image?: RefImage };
+  inpaint?: { mask: string; denoise: number; feather?: number; image?: RefImage };
   upscaleFrom?: RefImage;
 };
 
@@ -325,6 +339,7 @@ export type JobImage = {
   width?: number;
   height?: number;
   ms?: number;
+  promptText?: string;
   savedPath?: string;
   starred?: boolean;
   error?: string;
@@ -340,6 +355,7 @@ export type ImageJob = {
   promptIndex: number;
   createdAt: string;
   kind: 'txt2img' | 'refine' | 'four-view' | 'edit' | 'inpaint';
+  editFn?: EditFnId;
   source?: { kind: 'generated'; jobId: string; seed: number };
   target: ComfyTarget;
   params: ImageJobParams;
@@ -755,6 +771,7 @@ export type ChatNode = {
   edit?: EditSettings; // 图像编辑节点改过编辑栏才有；没有时是「指令编辑 + 第 1 张图」，见 docs/dev-plan.md 5.39
   video?: VideoSettings; // 视频节点改过生成设置才有；没有时用默认值
   turnLimit?: TurnLimit | 'follow'; // 这个节点自己设的最多带几轮；没有或 follow 是跟设置
+  thinking?: ThinkingLevel | 'follow';
   createdAt: string;
   updatedAt: string;
 };
@@ -821,6 +838,7 @@ export type HomeData = {
 
 export type NodeSummary = CanvasNodeLayout & {
   kind: NodeKind; // 画布上的卡片按它分颜色和那一行摘要，见 docs/dev-plan.md 5.39
+  editFn?: EditFnId;
   title: string;
   parentNodeId: string | null;
   slots: string[];

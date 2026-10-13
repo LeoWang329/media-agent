@@ -368,7 +368,12 @@ export function canvasRoutes(configDir: string): express.Router {
     res.status(201).json(
       await updateNode(await work(), canvasId, nodeId, (node) => {
         if (parentId !== null && !node.messages[parentId]) throw new HttpError(404, '找不到要接在后面的那条消息');
-        return addMessage(node, handwrittenMessage(node, parentId, text, randomUUID(), new Date().toISOString()));
+        const message = handwrittenMessage(node, parentId, text, randomUUID(), new Date().toISOString());
+        if (node.kind === 'edit') {
+          const edit = editSettingsOf(node.edit, node.slots.length);
+          message.edit = { fn: edit.fn, slot: edit.slot };
+        }
+        return addMessage(node, message);
       }),
     );
   });
@@ -406,6 +411,10 @@ function applyNodePatch(node: ChatNode, body: Record<string, unknown>, imageBase
   if (body.duration !== undefined) next.duration = v.duration(body.duration);
   if (body.aspectRatio !== undefined) next.aspectRatio = v.aspectRatio(body.aspectRatio);
   if (body.draft !== undefined) next.draft = v.text(body.draft, '输入框内容');
+  if (body.thinking !== undefined) {
+    if (typeof body.thinking !== 'string' || !['follow', 'off', 'low', 'medium', 'high'].includes(body.thinking)) throw new HttpError(400, '思考档位格式不对');
+    next.thinking = body.thinking as ChatNode['thinking'];
+  }
   if (body.turnLimit !== undefined) {
     if (body.turnLimit !== 'follow' && !isTurnLimit(body.turnLimit)) throw new HttpError(400, `最多带几轮只能是 follow、all、${TURN_LIMITS.join('、')}`);
     next.turnLimit = body.turnLimit;

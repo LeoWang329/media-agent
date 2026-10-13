@@ -31,7 +31,8 @@ import { showMenu, type MenuItem } from '../ui/menu';
 import { Popover } from '../ui/Popover';
 import { toast } from '../ui/toast';
 import { copyOnlyNote, processedNote } from './imageInfo';
-import { EditFnBar, EditStartBar, SLOT_B_ROLE } from './EditPanel';
+import { EditFnBar, EditStartBar, SLOT_B_ROLE } from './EditWorkspace';
+import { useEditWorkspace } from './editWorkspaceStore';
 import { effectiveCheckpoint, imageSize, shortCheckpoint, SIZE_GROUPS, KREA2_SIZE_GROUPS, sizeText, useImageSettings, usePromptInfo } from './imageNode';
 import { closeRefPicker, openAssets, openRefPicker, useOverlays } from './overlays';
 import { tokens } from './tokens';
@@ -58,35 +59,36 @@ export function Dock({ node }: { node: ChatNode }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const use = node.kind;
   const isEdit = use === 'edit';
+  const editTab = useEditWorkspace((s) => s.tabs[node.id] ?? 'execute');
   return (
     <footer className={`dr-dock${use === 'image' ? ' is-image' : ''}${isEdit ? ' is-edit' : ''}`} data-od-id="composer-dock">
-      <Pending node={node} use={use} />
+      {!isEdit && <Pending node={node} use={use} />}
       {/* 图像编辑节点：先选功能，再选图，再选提示词，最后开始，见 docs/dev-plan.md 5.39 */}
       {isEdit && <EditFnBar node={node} />}
       <div className="slots-head">
         <span className="panel-title">
-          {isEdit ? '图' : '参考图'} <span className="mono" id="slotCount">{node.slots.length}/9</span>
+          {isEdit ? `输入图片（图 ${editSettingsOf(node.edit, node.slots.length).slot + 1} 为原图）` : '参考图'} <span className="mono" id="slotCount">{node.slots.length}/9</span>
         </span>
         {/* 编辑节点不吃尺寸和张数，这一行只留「资产库 / 电脑里的图 / 拼图」 */}
         {use === 'video' ? <VideoParams node={node} /> : use === 'image' ? <ImageParams node={node} /> : null}
         <span className="grow" />
-        <button type="button" className="btn btn-ghost btn-sm" id="slotAssets" data-od-id="btn-slot-from-assets" onClick={() => openAssets('slots')}>
+        <button type="button" className="btn btn-ghost btn-sm" id="slotAssets" aria-label="资产库" data-od-id="btn-slot-from-assets" onClick={() => openAssets('slots')}>
           <Icon name="image" />
           <span className="hide-sm">资产库</span>
         </button>
-        <button type="button" className="btn btn-ghost btn-sm" id="slotLocal" data-od-id="btn-slot-from-disk" onClick={() => fileInput.current?.click()}>
+        <button type="button" className="btn btn-ghost btn-sm" id="slotLocal" aria-label={use === 'video' ? '电脑里的文件' : '电脑里的图'} data-od-id="btn-slot-from-disk" onClick={() => fileInput.current?.click()}>
           <Icon name="folder" />
           <span className="hide-sm">{use === 'video' ? '电脑里的文件' : '电脑里的图'}</span>
         </button>
-        <button type="button" className="btn btn-ghost btn-sm" id="slotCollage" data-od-id="btn-collage" onClick={() => useOverlays.setState({ collage: true })}>
+        <button type="button" className="btn btn-ghost btn-sm" id="slotCollage" aria-label="拼图" data-od-id="btn-collage" onClick={() => useOverlays.setState({ collage: true })}>
           <Icon name="grid" />
           <span className="hide-sm">拼图</span>
         </button>
       </div>
       <Slots node={node} />
-      {isEdit && <EditStartBar node={node} />}
+      {isEdit && editTab !== 'create' && <EditStartBar node={node} />}
       {use === 'video' && <MediaSlots node={node} />}
-      <Composer node={node} />
+      {isEdit ? <div className="edit-node-ui" id="editChatDisclosure" hidden={editTab !== 'create'}><span id="editChatLabel">继续对话</span><p id="editChatHelp" className="meta">在当前节点连续对话，历史和候选保留。</p><Composer node={node} /></div> : <Composer node={node} />}
       <input
         ref={fileInput}
         type="file"
@@ -444,10 +446,17 @@ function Slots({ node }: { node: ChatNode }) {
           data-i={i}
           title={isEdit ? `${tip}\n点一下：用这张图` : tip}
           tabIndex={0}
+          role={isEdit ? 'button' : undefined}
+          aria-pressed={isEdit ? isSource : undefined}
+          aria-label={isEdit ? `用图 ${i + 1} 作为原图：${image?.originalName ?? ''}` : undefined}
           data-od-id={`slot-${i + 1}`}
           data-testid="slot"
           // 编辑节点点一下是「用这张图」，菜单挪到右键；别的节点照旧左键开菜单，见 docs/dev-plan.md 5.39
           onClick={(e) => (isEdit ? patchEditSlot(node, i) : menu(e.currentTarget, i))}
+          onKeyDown={(e) => {
+            if (!isEdit || !['Enter', ' '].includes(e.key)) return;
+            e.preventDefault(); patchEditSlot(node, i);
+          }}
           onContextMenu={(e) => {
             if (!isEdit) return;
             e.preventDefault();
@@ -565,8 +574,10 @@ function Composer({ node }: { node: ChatNode }) {
     slots: node.slots,
     nodeId: node.id,
     ariaLabel: '输入消息',
+    ariaLabelledby: node.kind === 'edit' ? 'editChatLabel' : undefined,
+    ariaDescribedby: node.kind === 'edit' ? 'editChatHelp' : undefined,
     className: 'composer-input',
-    placeholder: '写需求，比如「第二个方向再慢一点」。按 @ 可以把某张图插进句子里',
+    placeholder: node.kind === 'edit' ? '描述改图要求，或接着上一轮继续追问' : '写需求，比如「第二个方向再慢一点」。按 @ 可以把某张图插进句子里',
     onAt: (instance, typedAt) => refButton.current && openRefPicker(refButton.current, instance, typedAt),
     onEscape: closeRefPicker,
     onEnter: () => submit(),

@@ -38,7 +38,7 @@ import { ThemeToggle, toggleTheme } from '../ui/theme';
 const NEW_NODE_MENU: MenuItem[] = [
   { label: '视频节点', icon: 'film', onClick: () => void addRootNode('video') },
   { label: '生图节点', icon: 'sparkles', onClick: () => void addRootNode('image') },
-  { label: '图像编辑节点', icon: 'wand', onClick: () => void addRootNode('edit') },
+  { label: '改图节点', icon: 'wand', onClick: () => void addRootNode('edit') },
 ];
 
 export function Canvas() {

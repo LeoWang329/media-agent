@@ -215,6 +215,11 @@ function editRequestOf(req: Request, base: EditSettings): EditJobRequest {
   const settings = v.editSettings(fields, base);
   return {
     fn: settings.fn as EditFnId,
+    seed: settings.seed,
+    candidate: settings.candidate,
+    source: settings.source,
+    outfitLora: settings.outfitLora,
+    fourview: settings.fourview,
     slot: settings.slot,
     slotB: settings.slotB,
     text: settings.text,
@@ -224,8 +229,8 @@ function editRequestOf(req: Request, base: EditSettings): EditJobRequest {
     depth: settings.depth,
     remix: settings.remix,
     upscale: settings.upscale,
-    ...(fields.messageId !== undefined && { messageId: v.nonEmptyText(fields.messageId, '消息 id') }),
-    ...(fields.promptIndex !== undefined && { promptIndex: v.index(fields.promptIndex, '提示词框') }),
+    ...(fields.messageId !== undefined ? { messageId: v.nonEmptyText(fields.messageId, '消息 id') } : settings.candidate ? { messageId: settings.candidate.messageId } : {}),
+    ...(fields.promptIndex !== undefined ? { promptIndex: v.index(fields.promptIndex, '提示词框') } : settings.candidate ? { promptIndex: settings.candidate.promptIndex } : {}),
     // 没带掩码：局部重绘这条路到 editParams 里会报「先在图上拖个框或者涂抹出要重画的地方」
     ...(fields.mask !== undefined && { maskBytes: v.pngBytes(fields.mask, '掩码') }),
   };

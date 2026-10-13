@@ -1,6 +1,6 @@
 # 图像编辑节点 · 布局草图（md 版）
 
-配套：[开发计划](plan-image-edit-node.md)、[转真人用法](krea2-real-usage.md)、能点的原型 `web/prototype/image-edit-node.html`。
+配套：[开发计划](plan-image-edit-node.md)、[转真人用法](krea2-real-usage.md)。本文件为历史布局草图；配套旧原型已于 2026-10-13 按用户要求移除，不作为本次重新设计的依据。
 
 面板就是现在右边那个抽屉：**默认 600px 宽，左边框能拖**（`--drawer-w`）。下面画的宽度按 600px 比。
 

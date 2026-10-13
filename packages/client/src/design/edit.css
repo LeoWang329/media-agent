@@ -1,0 +1,111 @@
+/* Only the added edit node uses these rules; the main canvas system is unchanged. */
+ :is(.edit-workspace,.edit-node-ui,.edit-node-dialog,#thread[data-node-kind="edit"]){--edit-control:13px;--edit-body:14px;--edit-title:14px;--edit-gap:8px;--edit-space:16px;--edit-radius:6px;font-size:14px;line-height:1.6}
+#drawer[data-node-kind="edit"] .dr-title{font-size:var(--edit-title,14px);font-weight:550}
+#drawer[data-node-kind="edit"] select,:is(.edit-node-dialog,.edit-workspace) select,:is(.edit-node-dialog,.edit-workspace) option{font-size:13px}
+#drawer[data-node-kind="edit"] .dr-dock{max-height:66dvh;overflow-y:auto;overscroll-behavior:contain}
+.edit-node-ui{display:grid;gap:var(--edit-gap);min-width:0}
+.edit-node-ui[hidden]{display:none}
+#drawer[data-node-kind="edit"] .dr-body{min-height:0}
+.edit-workspace{min-width:0}
+.edit-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:8px}
+.edit-tabs .btn{flex:1;font-size:13px}
+.edit-tabs [aria-selected="true"]{color:var(--accent-ink);background:var(--accent-soft);border-color:var(--accent)}
+@media(max-width:768px){.edit-workspace .wb-columns{grid-template-columns:1fr}}
+.edit-node-ui .edit-toprow{display:flex;align-items:center;flex-wrap:wrap;gap:var(--edit-gap)}
+.edit-node-ui .edit-toprow>label{flex:none;font-size:var(--edit-control)}
+.edit-node-ui .edit-toprow>select{flex:1;min-width:120px;max-width:220px}
+.edit-node-ui :is(select,textarea){width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:var(--edit-radius);padding:8px;min-height:36px;font:inherit}
+.edit-node-ui select{font-size:var(--edit-control)}
+.edit-node-ui textarea{resize:vertical;min-height:64px;max-height:160px;font-size:var(--edit-body);line-height:1.6}
+.edit-node-ui :is(label,small){display:block}
+.edit-node-ui small{font-size:12px;color:var(--muted)}
+#editStartBar{margin-top:8px}
+#editChatDisclosure{margin-top:8px}
+#editChatLabel{font-size:13px;color:var(--fg)}
+#editChatHelp{font-size:12px;color:var(--muted);margin:0}
+#editChatDisclosure .composer{margin-top:0}
+#drawer[data-node-kind="edit"] #composer:focus-within{border-color:var(--accent-ink);box-shadow:none}
+#drawer[data-node-kind="edit"] #input:focus-visible{outline:none}
+.edit-node-ui .edit-startrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.edit-node-ui .edit-status{flex:1;overflow-wrap:anywhere;color:var(--muted);font-size:12px}
+.edit-node-dialog{width:min(640px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0}
+:is(.edit-node-dialog,.edit-workspace) .dialog-body{min-height:0;overflow-y:auto;overscroll-behavior:contain}
+:is(.edit-node-dialog,.edit-workspace) .dialog-head h2{font-size:var(--edit-title);font-weight:550;line-height:1.5}
+:is(.edit-node-dialog,.edit-workspace) .dialog-foot{flex-wrap:wrap;gap:8px}
+:is(.edit-node-dialog,.edit-workspace) .btn{font-size:var(--edit-control);min-height:36px;height:auto}
+:is(.edit-node-dialog,.edit-workspace) :is(.wb-section,.wb-field,.wb-results,.wb-result){display:grid;gap:var(--edit-gap);min-width:0}
+:is(.edit-node-dialog,.edit-workspace) .wb-section+.wb-section{margin-top:24px;padding-top:16px;border-top:1px solid var(--border)}
+:is(.edit-node-dialog,.edit-workspace) .wb-sectionhead{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+:is(.edit-node-dialog,.edit-workspace) .wb-sectionhead h3{font-size:var(--edit-title);font-weight:550;margin:0 auto 0 0;line-height:1.5}
+:is(.edit-node-dialog,.edit-workspace) .wb-field label{font-size:13px;font-weight:520}
+:is(.edit-node-dialog,.edit-workspace) .wb-field :is(input,select,textarea){width:100%;min-height:36px;padding:8px 12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:var(--edit-radius);font:inherit}
+:is(.edit-node-dialog,.edit-workspace) .wb-field select,:is(.edit-node-dialog,.edit-workspace) :is(#wbSeedMode,#wbSeed){font-size:var(--edit-control)}
+:is(.edit-node-dialog,.edit-workspace) .wb-field textarea{font-size:var(--edit-body);line-height:1.6;resize:vertical;min-height:96px}
+:is(.edit-node-dialog,.edit-workspace) .hint{font-size:12px;margin:0;line-height:1.5}
+:is(.edit-node-dialog,.edit-workspace) .wb-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+:is(.edit-node-dialog,.edit-workspace) :is(.wb-note,.wb-contract){padding:12px;background:var(--fg-softer);border-radius:var(--edit-radius);overflow-wrap:anywhere;font-size:13px}
+:is(.edit-node-dialog,.edit-workspace) .wb-note p{margin:0}
+:is(.edit-node-dialog,.edit-workspace) .wb-note p+p{margin-top:8px}
+:is(.edit-node-dialog,.edit-workspace) .wb-note.warning{color:var(--warn)}
+:is(.edit-node-dialog,.edit-workspace) .wb-note.error{color:var(--danger)}
+:is(.edit-node-dialog,.edit-workspace) .wb-contract strong{display:block;font-size:13px;font-weight:550;margin-bottom:4px}
+:is(.edit-node-dialog,.edit-workspace) .wb-caption{font-size:12px;color:var(--muted);line-height:1.5}
+:is(.edit-node-dialog,.edit-workspace) .wb-source{display:flex;gap:16px;align-items:center;min-width:0}
+:is(.edit-node-dialog,.edit-workspace) .wb-source>.od-media{flex:none;max-width:96px;width:96px;height:auto;object-fit:contain}
+:is(.edit-node-dialog,.edit-workspace) .wb-source strong{font-size:13px;overflow-wrap:anywhere}
+:is(.edit-node-dialog,.edit-workspace) .wb-empty{display:grid;gap:8px;padding:24px 0}
+:is(.edit-node-dialog,.edit-workspace) .wb-empty>strong{font-size:13px;font-weight:550}
+:is(.edit-node-dialog,.edit-workspace) :is(.wb-result-head,.wb-result-actions,.wb-taskrow,.wb-mask-toolbar){display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+:is(.edit-node-dialog,.edit-workspace) .wb-result{padding:16px 0;border-top:1px solid var(--border)}
+:is(.edit-node-dialog,.edit-workspace) .wb-result-label{font-size:13px;font-weight:550;overflow-wrap:anywhere}
+:is(.edit-node-dialog,.edit-workspace) .wb-result>.od-media{width:100%;height:auto;object-fit:contain}
+:is(.edit-node-dialog,.edit-workspace) .wb-result>button[data-wb="result-detail"]{max-width:280px;justify-self:center}
+:is(.edit-node-dialog,.edit-workspace) .wb-taskrow{padding:8px 0;border-bottom:1px solid var(--border);justify-content:space-between}
+:is(.edit-node-dialog,.edit-workspace) .wb-progress{height:4px;background:var(--fg-soft);border-radius:4px;overflow:hidden;width:100%}
+:is(.edit-node-dialog,.edit-workspace) .wb-progress>span{display:block;height:100%;background:var(--accent);transform-origin:left center}
+:is(.edit-node-dialog,.edit-workspace) .wb-snapshot{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 16px;font-size:13px;margin:0}
+:is(.edit-node-dialog,.edit-workspace) .wb-snapshot dt{color:var(--muted)}
+:is(.edit-node-dialog,.edit-workspace) .wb-snapshot dd{margin:0;overflow-wrap:anywhere}
+:is(.edit-node-dialog,.edit-workspace) pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}
+:is(.edit-node-dialog,.edit-workspace) .wb-compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+:is(.edit-node-dialog,.edit-workspace) .wb-purpose{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+:is(.edit-node-dialog,.edit-workspace) .wb-purpose>button{display:flex;gap:8px;align-items:center;min-height:40px;padding:8px 12px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:var(--edit-radius);font-size:13px;cursor:pointer}
+#thread[data-node-kind="edit"] .edit-history-copy{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--edit-body);line-height:1.6;margin:0}
+#thread[data-node-kind="edit"] .edit-history-intro{margin-bottom:8px}
+#thread[data-node-kind="edit"] .edit-history-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+#thread[data-node-kind="edit"] .edit-history-title strong{font-size:13px;font-weight:550;flex:1;overflow-wrap:anywhere}
+#thread[data-node-kind="edit"] .edit-history-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+#thread[data-node-kind="edit"] .edit-history-actions .btn{font-size:13px}
+#thread[data-node-kind="edit"] .edit-thread-empty{padding:24px 8px}
+.gnode[data-node-kind="edit"] .gn-slot img{object-fit:contain}
+:is(.edit-node-ui,.edit-node-dialog,#thread[data-node-kind="edit"]) :focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}
+@media(hover:hover){:is(.edit-node-dialog,.edit-workspace) .wb-purpose>button:hover{border-color:var(--accent);background:var(--accent-soft)}}
+@media(max-width:768px){.edit-node-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}:is(.edit-node-dialog,.edit-workspace) .wb-columns{grid-template-columns:1fr}:is(.edit-node-dialog,.edit-workspace) .wb-source{align-items:flex-start}}
+@media(max-width:375px){.edit-node-ui .edit-toprow>select{min-width:96px}:is(.edit-node-dialog,.edit-workspace) .wb-compare{grid-template-columns:1fr}}
+@media(pointer:coarse){:is(.edit-node-ui,.edit-node-dialog) :is(.btn,select,summary){min-height:44px}}
+@media(prefers-reduced-motion:reduce){:is(.edit-node-ui,.edit-node-dialog) *{animation:none!important;transition:none!important}}
+
+
+/* Keep the edit-node image picker actions below its scrolling content. */
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"][open]{display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-body{min-height:0;grid-template-rows:minmax(0,1fr)}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] :is(.as-side,.as-main,.as-grid){min-height:0}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-main{overflow:hidden}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-foot{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] #asSel{min-width:0;overflow-wrap:anywhere}
+#drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-foot>.btn{justify-self:end;white-space:nowrap}
+@media(max-width:720px){
+ #drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-body{grid-template-rows:auto minmax(0,1fr)}
+ #drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] .as-foot{grid-template-columns:minmax(0,1fr) auto}
+ #drawer[data-node-kind="edit"] ~ [data-od-id="dialog-assets"] #asSel{grid-column:1/-1}
+}
+
+.edit-workspace .edit-history{padding:0;overflow:visible;min-height:0}
+.wb-result-image{display:block;width:100%;max-width:280px;justify-self:center;padding:0;background:none;border:0;cursor:pointer}
+.wb-select{display:flex;align-items:center;gap:8px;font-size:13px}
+.wb-compare figure{margin:0}
+.wb-result .od-media,.edit-node-dialog .od-media{display:block;width:100%;height:auto;object-fit:contain}
+.wb-sectionhead{margin-bottom:8px}
+#editTaskList{margin-bottom:24px}
+#thread[data-node-kind="edit"] .pb-actions{justify-content:flex-start;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border)}
+#thread[data-node-kind="edit"] .pb-actions .lbl{display:inline}

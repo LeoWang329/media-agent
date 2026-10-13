@@ -12,6 +12,7 @@ import './design/image.css';
 import './design/video.css';
 import './design/glue.css';
 import './design/features.css';
+import './design/edit.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

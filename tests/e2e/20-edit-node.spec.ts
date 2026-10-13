@@ -1,211 +1,144 @@
-import { expect, test, type Page } from '@playwright/test';
-import { MOCK_COMFY_PORT } from './env';
-import { FIXTURES, FIXTURES_DIR } from '../fixtures/makeImages';
-import { assetsDialog, assetTile, cardTitled, cards, lastReply, newCanvasWithNode, newNode, panel, send, setupWorkFolder, toasts } from './helpers';
+import { expect, test } from '@playwright/test';
+import { cards, lastReply, panel, send, setupWorkFolder, toasts } from './helpers';
+import { chooseFn, currentNode, graphOf, nodeAt, nodeOf, prepareEdit, reopenEdit, startEditResult } from './edit-helpers';
 
-const COMFY_URL = `http://127.0.0.1:${MOCK_COMFY_PORT}`;
-type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
-const graphOf = async (page: Page) => ((await (await page.request.get(`${COMFY_URL}/_last-prompts`)).json()) as { prompt: Graph }[]).at(-1)!.prompt;
-const nodeOf = (graph: Graph, type: string) => Object.values(graph).find((n) => n.class_type === type)!;
+test.beforeAll(async ({ playwright }) => { await setupWorkFolder(playwright); });
 
-test.beforeAll(async ({ playwright }) => {
-  await setupWorkFolder(playwright);
-});
-
-test.beforeEach(async ({ page }) => {
-  expect((await page.request.put('/api/config', { data: { comfyTarget: 'lan' } })).ok()).toBe(true);
-  expect((await page.request.put('/api/settings', { data: { comfy: { lanUrl: COMFY_URL } } })).ok()).toBe(true);
-  expect((await page.request.post(`${COMFY_URL}/_hide-nodes`, { data: { types: [] } })).ok()).toBe(true);
-});
-
-// 往槽位里放一张测试图
-async function putImage(page: Page) {
-  expect((await page.request.post('/api/assets/folders', { data: { path: FIXTURES_DIR } })).ok()).toBe(true);
-  await panel(page).locator('#slotAssets').click();
-  await assetsDialog(page).locator('.as-folder').filter({ hasText: FIXTURES_DIR }).first().click();
-  await assetTile(page, FIXTURES.first).click();
-  await assetsDialog(page).getByRole('button', { name: /放进槽位/ }).click();
-  await expect(panel(page).locator('#slots .slot.is-filled')).toHaveCount(1);
-}
-
-test('10.3 第 18 条（E1）：「新建节点」里有第三种「图像编辑节点」→ 卡片标「编辑」、边框跟视频和生图都不一样，模型提示词只有当前功能那一份', async ({ page }) => {
-  await newCanvasWithNode(page, '图像编辑节点', '图像编辑节点');
-  const kinds = cards(page).locator('.gn-kind');
-  const cfgSys = panel(page).locator('#cfgSys');
-  const options = cfgSys.locator('option');
-
-  await expect(kinds).toHaveText(['编辑']);
-  // 这一行在编辑节点上叫「模型提示词」：四个功能各有一套，这里只列当前功能（默认指令编辑）那一份
-  await expect(panel(page).locator('.cfg-lbl')).toHaveText('模型提示词');
-  await expect(cfgSys).toHaveAttribute('aria-label', '模型提示词');
-  await expect(options).toHaveText(['edit · 指令编辑']);
-  await expect(cfgSys).toHaveValue('edit');
-  await expect(cards(page).first()).toHaveClass(/is-edit/);
-
-  // 另外两种节点跟着建，卡片上三种标得清清楚
-  await newNode(page);
-  await newNode(page, '生图节点');
-  await expect(kinds).toHaveText(['编辑', '视频', '生图 · IL']);
-
-  // 都不选中时，编辑节点的边框跟视频、生图都不一样
-  await panel(page).locator('#drClose').click();
-  await page.mouse.move(0, 0);
-  await expect(cards(page).nth(1)).not.toHaveClass(/is-edit/);
-  await expect(cards(page).nth(2)).not.toHaveClass(/is-edit/);
-  const border = (i: number) => cards(page).nth(i).evaluate((el) => getComputedStyle(el).borderTopColor);
-  expect(await border(0)).not.toBe(await border(1));
-  expect(await border(0)).not.toBe(await border(2));
-
-  // 编辑节点上写一句话能给模型发出去，系统消息里接的是编辑那份格式要求
-  await cards(page).first().click();
-  await expect(cfgSys).toHaveValue('edit');
-});
-
-test('10.3 第 18 条（E1）：编辑节点只能选编辑用的系统提示词；岔出来的还是编辑节点', async ({ page }) => {
-  await newCanvasWithNode(page, '编辑节点换提示词', '图像编辑节点');
-  const kinds = cards(page).locator('.gn-kind');
-  const options = panel(page).locator('#cfgSys option');
-
-  // 别的用途的提示词根本不在下拉里；别的功能那几份也不在（每个功能一套，跟着功能走）
-  await expect(options).toHaveText(['edit · 指令编辑']);
-  await expect(panel(page).locator('#cfgSys option[value="il"]')).toHaveCount(0);
-  await expect(panel(page).locator('#cfgSys option[value="ref2va"]')).toHaveCount(0);
-  await expect(panel(page).locator('#cfgSys option[value="edit-real"]')).toHaveCount(0);
-
-  // 输入框在，跟别的节点一样能发消息
-  await expect(panel(page).getByRole('textbox', { name: '输入消息' })).toBeVisible();
-  await expect(kinds).toHaveText(['编辑']);
-});
-
-test('10.3 第 18 条（E1）：设置页里多出第三组「写改图说明 · 图像编辑节点用」，四份都在，带「编辑 · 功能名」标签', async ({ page }) => {
-  await page.goto('/settings#prompts');
-  const list = page.locator('#pList');
-  await expect(list.locator('.li-sep')).toHaveText([
-    '写视频提示词 · 视频节点用',
-    '写生图标签 · 生图节点用',
-    '写改图说明 · 图像编辑节点用',
-  ]);
-  for (const name of ['edit', 'edit-outfit', 'edit-inpaint', 'edit-real']) {
-    await expect(page.locator(`[data-prompt="${name}"]`)).toBeVisible();
-  }
-  await expect(page.locator('[data-prompt="edit"]')).toContainText('编辑 · 指令编辑');
-  await expect(page.locator('[data-prompt="edit-real"]')).toContainText('编辑 · 转真人');
-  // 固定格式要求里也多了一份
-  await page.goto('/settings#format');
-  const editFormat = page.locator('[data-od-id="format-requirement-edit"]');
-  await expect(editFormat).toContainText('输出格式要求：');
-  await expect(editFormat).toContainText('一个字都不会被程序改动');
-});
-
-test('10.3 第 18 条（E2）：编辑栏从上到下是功能 → 图 → 提示词 → 开始；放一张图、选一条现成的、点开始 → 出图挂在框下面', async ({ page }) => {
-  await newCanvasWithNode(page, '编辑栏', '图像编辑节点');
-  const dock = panel(page).locator('[data-od-id="composer-dock"]');
-
-  // 功能：默认「指令编辑」；E4 之后转真人、换装能选了，E5 之后局部重绘也能选了
-  await expect(dock.locator('#editFn')).toContainText('指令编辑');
-  await expect(dock.locator('#editNeed')).toHaveText('要 1 张：① 要改的图');
-  await dock.locator('#editFn').click();
-  await expect(page.getByRole('menuitem', { name: '转真人' })).toBeVisible();
-  await expect(page.getByRole('menuitem', { name: '换装' })).toBeVisible();
-  await expect(page.getByRole('menuitem', { name: '局部重绘' })).toBeVisible();
-  await page.getByRole('menuitem', { name: '指令编辑' }).click();
-  await expect(dock.locator('#editFn')).toContainText('指令编辑');
-
-  // 没图、没写字：开始是灰的
-  await expect(dock.locator('#btnEditStart')).toBeDisabled();
-
-  // 图：放一张进来，它自动成了「要改的」那张
-  await putImage(page);
-  await expect(dock.getByTestId('slot-role')).toHaveText('要改的');
-  await expect(dock.locator('#btnEditStart')).toBeDisabled(); // 还差一句话
-
-  // 提示词：选一条现成的 → 正文被填上
-  await dock.locator('#editPreset').selectOption({ label: '换衣服 · 保持脸和背景' });
-  await expect(dock.locator('#editText')).toHaveValue(/black studded leather biker jacket/);
-  await expect(dock.locator('#btnEditStart')).toBeEnabled();
-
-  // 开始 → 出图挂在新建的框下面
-  await dock.locator('#btnEditStart').click();
-  const box = lastReply(page).getByTestId('prompt-box');
-  await expect(box).toContainText('指令编辑');
-  await expect(box.locator('.ig-cell.is-done img')).toHaveCount(1);
-
-  // 发出去的图：走的是 Krea2 编辑档那套（Ostris 的两个节点），不是四视图那条 Krea2Edit，
-  // 也不挂动漫转真人 V3（所以不会自己加真人化触发词）
-  const graph = await graphOf(page);
-  expect(nodeOf(graph, 'Krea2OstrisEditModelPatch').inputs.kv_cache).toBe(true);
-  expect(nodeOf(graph, 'TextEncodeKrea2OstrisEdit').inputs.prompt).toBe('Change her coat into a black studded leather biker jacket, keep her face, hair and the background exactly the same.');
-  expect(nodeOf(graph, 'Krea2EditModelPatch')).toBeUndefined();
-  expect(nodeOf(graph, 'Krea2EditGroundedEncode')).toBeUndefined();
-  expect(nodeOf(graph, 'LoraLoaderModelOnly').inputs.lora_name).toBe('krea2/krea2_identity_edit_v1_1.safetensors');
-  expect(nodeOf(graph, 'LoadImage').inputs.image).toBeTruthy();
-  expect(nodeOf(graph, 'KSampler').inputs.scheduler).toBe('simple');
-});
-
-test('10.3 第 18 条（E2）：图槽点一下就用那张；换一张之后开始出的图跟着换；右击还能开原来的菜单', async ({ page }) => {
-  await newCanvasWithNode(page, '编辑栏换图', '图像编辑节点');
-  const dock = panel(page).locator('[data-od-id="composer-dock"]');
-  await putImage(page);
-  // 再放一张
-  await panel(page).locator('#slotAssets').click();
-  await assetTile(page, FIXTURES.second).click();
-  await assetsDialog(page).getByRole('button', { name: /放进槽位/ }).click();
-  await expect(panel(page).locator('#slots .slot.is-filled')).toHaveCount(2);
-
-  // 默认是第 1 张
-  await expect(panel(page).locator('#slots .slot').nth(0)).toHaveClass(/is-source/);
-  await panel(page).locator('#slots .slot').nth(1).click();
-  await expect(panel(page).locator('#slots .slot').nth(1)).toHaveClass(/is-source/);
-  await expect(panel(page).locator('#slots .slot').nth(0)).not.toHaveClass(/is-source/);
-
-  // 右击开菜单，里面有「用这张图」
-  await panel(page).locator('#slots .slot').nth(0).click({ button: 'right' });
-  await expect(page.getByRole('menuitem', { name: '用这张图' })).toBeVisible();
+test('改图工作区：默认执行，三页签，固定用途，上下文与思考保存', async ({ page }) => {
+  await prepareEdit(page, '新版改图工作区');
+  await expect(panel(page).getByRole('tab')).toHaveText(['创作', '执行', '结果']);
+  await expect(panel(page).getByRole('tab', { name: '执行', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(panel(page).locator('#cfgSys')).toBeDisabled();
+  await expect(panel(page).locator('#cfgSys')).toContainText('图像编辑 · 用途固定');
+  await expect(panel(page).locator('#editChatDisclosure')).toBeHidden();
+  await expect(cards(page).first()).toContainText('改图 · 指令编辑');
+  await panel(page).locator('#cfgThink').click();
+  const dialog = page.getByRole('dialog', { name: '上下文与思考' });
+  await dialog.locator('#wbRounds').selectOption('5');
+  await dialog.locator('#wbThinking').selectOption('low');
+  await dialog.getByRole('button', { name: '应用', exact: true }).click();
+  await expect.poll(async () => (await currentNode(page)).thinking).toBe('low');
+  await reopenEdit(page);
+  await panel(page).locator('#cfgThink').click();
+  await expect(dialog.locator('#wbRounds')).toHaveValue('5');
+  await expect(dialog.locator('#wbThinking')).toHaveValue('low');
   await page.keyboard.press('Escape');
+  await panel(page).getByRole('tab', { name: '创作', exact: true }).click();
+  await expect(panel(page).getByRole('textbox', { name: '继续对话' })).toBeVisible();
+  await expect(panel(page).locator('#editStart')).toHaveCount(0);
+  await panel(page).getByRole('tab', { name: '结果', exact: true }).click();
+  await expect(panel(page).locator('#editStart')).toBeVisible();
 });
 
-// 拿当前画布和里面那个编辑节点的 id（界面上还换不了功能，用接口换）
-async function editNodeAt(page: Page, title: string): Promise<{ canvasId: string; nodeId: string }> {
-  const home = (await (await page.request.get('/api/home')).json()) as { canvases: { id: string; title: string }[] };
-  const canvasId = home.canvases.find((c) => c.title === title)!.id;
-  const detail = (await (await page.request.get(`/api/canvases/${canvasId}`)).json()) as { nodes: { id: string; kind: string }[] };
-  return { canvasId, nodeId: detail.nodes.find((n) => n.kind === 'edit')!.id };
-}
+test('辅助编写不覆盖执行文字；候选原框归属、版本和结果保留', async ({ page }) => {
+  await prepareEdit(page, '候选与执行');
+  await panel(page).locator('#wbText').fill('保留这句执行要求');
+  await panel(page).getByRole('tab', { name: '创作', exact: true }).click();
+  await send(page, '把外套换成朋克风，给我三个方向');
+  await expect(lastReply(page).getByTestId('prompt-box')).toHaveCount(3);
+  await panel(page).getByRole('tab', { name: '执行', exact: true }).click();
+  await expect(panel(page).locator('#wbText')).toHaveValue('保留这句执行要求');
+  await panel(page).locator('#wbCandidate').selectOption({ index: 1 });
+  await expect(panel(page).locator('#wbText')).toHaveValue(/black studded leather biker jacket/);
+  const before = await currentNode(page);
+  await startEditResult(page);
+  const after = await currentNode(page);
+  expect(Object.keys(after.messages)).toHaveLength(Object.keys(before.messages).length);
+  expect(after.messages[after.edit!.candidate!.messageId].images).toHaveLength(1);
+  expect(nodeOf(await graphOf(page), 'TextEncodeKrea2OstrisEdit').inputs.prompt).toContain('black studded leather biker jacket');
+  await chooseFn(page, 'outfit');
+  await panel(page).locator('#wbCandidate').selectOption({ index: 1 });
+  await expect(panel(page).locator('#editOp')).toHaveValue('outfit');
+  await startEditResult(page, 2);
+  expect(nodeOf(await graphOf(page), 'LoraLoaderModelOnly').inputs.lora_name).toBe('krea2/krea_outfittransfer.safetensors');
+  await panel(page).getByRole('tab', { name: '执行', exact: true }).click();
+  await panel(page).locator('#wbText').fill('换成红色外套');
+  await panel(page).getByRole('button', { name: '保存候选', exact: true }).click();
+  await expect(panel(page).getByRole('tab', { name: '创作', exact: true })).toHaveAttribute('aria-selected', 'true');
+  const revised = await currentNode(page);
+  expect(Object.values(revised.messages).some((m) => m.images?.length)).toBe(true);
+  expect(Object.keys(revised.messages).length).toBeGreaterThan(Object.keys(after.messages).length);
+});
 
-test('10.3 第 18 条（E3）：模型看着选中的那张图给几个方向，框上标着「指令编辑 · 用几号图」；「用它」落到编辑栏；「写一个」不问那句话', async ({ page }) => {
-  await newCanvasWithNode(page, '模型参与', '图像编辑节点');
-  const dock = panel(page).locator('[data-od-id="composer-dock"]');
-  const { canvasId, nodeId } = await editNodeAt(page, '模型参与');
-  await putImage(page);
-  // 放图是先改本地再写服务端，等它真的落到服务端再发，不然发出去的是空槽位
-  const slots = async () => ((await (await page.request.get(`/api/canvases/${canvasId}/nodes/${nodeId}`)).json()) as { slots: string[] }).slots.length;
-  await expect.poll(slots).toBe(1);
+test('候选绑定原图，原图缺失时拦住，显式复用文字解除绑定', async ({ page }) => {
+  await prepareEdit(page, '候选原图绑定', 2);
+  await panel(page).locator('#slots .slot').nth(1).press('Space');
+  await expect(panel(page).locator('#slots .slot').nth(1)).toHaveClass(/is-source/);
+  await panel(page).locator('#slots .slot').nth(0).press('Enter');
+  await expect(panel(page).locator('#slots .slot').nth(0)).toHaveClass(/is-source/);
+  await panel(page).locator('#wbText').fill('blue coat');
+  await panel(page).getByRole('button', { name: '保存候选', exact: true }).click();
+  await expect(panel(page).getByRole('tab', { name: '创作', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await panel(page).getByRole('tab', { name: '执行', exact: true }).click();
+  const at = await nodeAt(page);
+  const node = await currentNode(page);
+  expect((await page.request.patch(at, { data: { slots: [node.slots[1]] } })).ok()).toBe(true);
+  await reopenEdit(page);
+  await panel(page).locator('#editStart').click();
+  await expect(panel(page).locator('#editDockError')).toContainText('候选绑定的原图');
+  await panel(page).getByRole('button', { name: '复用文字', exact: true }).click();
+  await panel(page).locator('#wbText').press('Control+Enter');
+  await expect(panel(page).getByRole('tab', { name: '结果', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(panel(page).locator('.wb-result')).toHaveCount(1, { timeout: 20_000 });
+});
 
-  // 说一句中文（要三个方向）→ 只把选中的那张图发给模型，回复里三个框
-  await send(page, '把她的外套换成朋克风，给我三个方向');
-  const reply = lastReply(page);
-  await expect(reply).toContainText('收到 1 张图：<Picture 1>');
-  const boxes = reply.getByTestId('prompt-box');
-  await expect(boxes).toHaveCount(3);
-  await expect(boxes.first()).toContainText('Change her coat into a black studded leather biker jacket');
-  await expect(boxes.first().getByTestId('box-edit-tag')).toHaveText('指令编辑 · 用 1 号图');
+test('结果：收藏、比较完整图、同参数与换种子重出，文件缺失独立提示', async ({ page }) => {
+  await prepareEdit(page, '结果工具');
+  await panel(page).locator('#wbText').fill('red coat');
+  await panel(page).locator('#wbSeedMode').selectOption('fixed');
+  await panel(page).locator('#wbSeed').fill('123');
+  await startEditResult(page);
+  await panel(page).getByRole('button', { name: '收藏', exact: true }).click();
+  await expect(panel(page).getByRole('button', { name: '已收藏', exact: true })).toBeVisible();
+  await panel(page).getByRole('button', { name: '任务快照', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: /任务快照/ });
+  await expect(dialog).toContainText('123');
+  await dialog.getByRole('button', { name: '同参数重出', exact: true }).click();
+  await expect(panel(page).locator('.wb-result')).toHaveCount(2, { timeout: 20_000 });
+  await panel(page).locator('.wb-result input[type=checkbox]').nth(0).check();
+  await panel(page).locator('.wb-result input[type=checkbox]').nth(1).check();
+  await panel(page).getByRole('button', { name: '比较', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '比较结果' }).locator('img')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await panel(page).locator('.wb-result').first().getByRole('button', { name: '任务快照' }).click();
+  await dialog.getByRole('button', { name: '只换种子', exact: true }).click();
+  await expect(panel(page).locator('.wb-result')).toHaveCount(3, { timeout: 20_000 });
+  const seeds = Object.values((await currentNode(page)).messages).flatMap((m) => m.images ?? []).flatMap((j) => j.images.map((i) => i.seed));
+  expect(seeds.filter((seed) => seed === 123)).toHaveLength(2);
+  expect(seeds.some((seed) => seed !== 123)).toBe(true);
+  await page.route('**/images/*/*/file*', (route) => route.fulfill({ status: 404 }));
+  await reopenEdit(page);
+  await panel(page).getByRole('tab', { name: '结果', exact: true }).click();
+  await expect(panel(page).locator('.wb-result').first()).toContainText('结果文件已缺失');
+  await expect(panel(page).locator('.wb-result').first()).toContainText('完成');
+});
 
-  // 点「用它」→ 那句话落到编辑栏的正文里，功能还是指令编辑
-  await boxes.first().getByRole('button', { name: '用它' }).click();
-  await expect(dock.locator('#editText')).toHaveValue(/black studded leather biker jacket/);
-  await expect(dock.locator('#editFn')).toContainText('指令编辑');
+test('任务失败与停止状态可见，失败保留参数并可重试', async ({ page }) => {
+  await prepareEdit(page, '任务状态');
+  await panel(page).locator('#wbText').fill('显存不足');
+  await panel(page).locator('#editStart').click();
+  await expect(panel(page).locator('.wb-taskrow')).toContainText('失败', { timeout: 20_000 });
+  await panel(page).locator('.wb-taskrow').getByRole('button', { name: /失败/ }).click();
+  await expect(page.getByRole('dialog', { name: /任务快照/ })).toContainText('CUDA');
+  await expect(page.getByRole('dialog', { name: /任务快照/ }).getByRole('button', { name: '重试', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await panel(page).getByRole('tab', { name: '执行', exact: true }).click();
+  await panel(page).locator('#wbText').fill('慢任务');
+  await panel(page).locator('#editStart').click();
+  await panel(page).locator('.wb-taskrow').first().getByRole('button', { name: '停止任务' }).click();
+  await expect(panel(page).locator('.wb-taskrow').first()).toContainText('停止', { timeout: 15_000 });
+});
 
-  // 「写一个」：不问你要改什么，直接按当前功能发一句出去，模型照样给框
-  await dock.locator('#btnWriteOne').click();
-  await expect(panel(page).getByTestId('message-user').last()).toContainText('看图，按「指令编辑」给我写几个方向。');
-  const second = lastReply(page);
-  await expect(second).toContainText('收到 1 张图：<Picture 1>');
-  await expect(second.getByTestId('prompt-box')).toHaveCount(2);
-
-  // 换了功能（E4 之前界面上还选不了，先用接口换）：模型提示词跟着换成那个功能那一份
-  expect((await page.request.patch(`/api/canvases/${canvasId}/nodes/${nodeId}`, { data: { edit: { fn: 'real' } } })).ok()).toBe(true);
-  await page.reload();
-  await cards(page).first().click();
-  await expect(panel(page).locator('#cfgSys')).toHaveValue('edit-real');
-  await expect(panel(page).locator('.cfg-lbl')).toHaveText('模型提示词');
+test('原型布局：桌面与手机无横向溢出，页签与底部操作可访问', async ({ page }, testInfo) => {
+  await prepareEdit(page, '布局回归');
+  await expect(toasts(page)).toHaveCount(0, { timeout: 8000 });
+  for (const width of [1440, 1024, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(panel(page).getByRole('tab', { name: '执行', exact: true })).toBeVisible();
+    await expect(panel(page).getByRole('tab', { name: '执行', exact: true })).toBeInViewport();
+    await expect(panel(page).locator('#editStart')).toBeVisible();
+    await expect(panel(page).getByRole('button', { name: '电脑里的图', exact: true })).toHaveCount(1);
+    expect(await panel(page).evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`edit-${width}.png`) });
+  }
 });

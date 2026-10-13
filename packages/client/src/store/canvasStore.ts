@@ -56,7 +56,7 @@ export type Stream = { assistantId: string | null; text: string; reasoning: stri
 const emptyStream = (assistantId: string | null): Stream => ({ assistantId, text: '', reasoning: '', firstTextAt: null });
 
 // image、video 只带要改的几项，服务端按节点原来的（没改过的按默认值）补全
-type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit'>> & {
+type NodePatch = Partial<Pick<ChatNode, 'title' | 'modelConfigId' | 'systemPromptName' | 'draft' | 'duration' | 'aspectRatio' | 'slots' | 'turnLimit' | 'thinking'>> & {
   image?: Partial<ImageSettings>;
   edit?: Partial<EditSettings>; // 图像编辑节点：功能、用哪张图、那句话，见 docs/dev-plan.md 5.39
   video?: Partial<VideoSettings>;
@@ -308,7 +308,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
         keys.forEach((key) => countQueued(`${nodeId}:${key}`, -1));
       }
       mergeFields(nodeId, server, mergeKeys(nodeId, patch, keys));
-      if (CARD_FIELDS.some((key) => key in patch)) await refreshCanvas();
+      if (CARD_FIELDS.some((key) => key in patch) || patch.edit?.fn !== undefined) await refreshCanvas();
     });
     patchQueue = run.catch(() => undefined);
     return run.catch(async (err) => {
@@ -709,7 +709,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => {
 
     createNode: (x, y, kind) =>
       attempt(async () => {
-        const node = await write<ChatNode>(`${canvasUrl()}/nodes`, 'POST', { x, y, kind });
+        let node = await write<ChatNode>(`${canvasUrl()}/nodes`, 'POST', { x, y, kind });
+        if (kind === 'edit') node = await write<ChatNode>(nodeUrl(node.id), 'PATCH', { edit: { real: { reverse: false, image2Strength: 0.7 }, inpaint: { denoise: 0.4, feather: 16 } } });
         setNode(node);
         await refreshCanvas();
         set({ selectedId: node.id });

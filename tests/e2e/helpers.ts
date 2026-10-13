@@ -23,7 +23,7 @@ export const cards = (page: Page) => page.getByTestId('node-card');
 export const cardTitled = (page: Page, title: string) =>
   cards(page).filter({ has: page.locator('.gn-title', { hasText: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
 export const lastReply = (page: Page) => panel(page).getByTestId('message-assistant').last();
-export const input = (page: Page) => panel(page).getByRole('textbox', { name: '输入消息' });
+export const input = (page: Page) => panel(page).getByRole('textbox', { name: /^(输入消息|继续对话)$/ });
 export const slots = (page: Page) => panel(page).getByTestId('slot');
 export const filledSlots = (page: Page) => panel(page).locator('#slots .slot.is-filled');
 export const toasts = (page: Page) => page.locator('.toast');
@@ -32,12 +32,12 @@ export const assetTile = (page: Page, name: string) => assetsDialog(page).getByT
 
 // 首页新建画布、打开，再建一个节点；面板跟着打开
 // 工具栏「新建节点」点开选一种，建好就不能换，见 docs/dev-plan.md 5.23、5.39
-export async function newNode(page: Page, kind: '视频节点' | '生图节点' | '图像编辑节点' = '视频节点') {
+export async function newNode(page: Page, kind: '视频节点' | '生图节点' | '图像编辑节点' | '改图节点' = '视频节点') {
   await page.getByRole('button', { name: '新建节点' }).click();
-  await page.getByRole('menuitem', { name: kind }).click();
+  await page.getByRole('menuitem', { name: kind === '图像编辑节点' ? '改图节点' : kind }).click();
 }
 
-export async function newCanvasWithNode(page: Page, title: string, kind: '视频节点' | '生图节点' | '图像编辑节点' = '视频节点') {
+export async function newCanvasWithNode(page: Page, title: string, kind: '视频节点' | '生图节点' | '图像编辑节点' | '改图节点' = '视频节点') {
   await page.goto('/');
   await page.getByRole('button', { name: '新建画布' }).click();
   const dialog = page.getByRole('dialog', { name: '新建画布' });

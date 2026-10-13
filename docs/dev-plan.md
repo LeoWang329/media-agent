@@ -1107,7 +1107,7 @@ assistant 消息的 content 就是 `text`（失败的消息跳过）。
 
 **为什么单独开一种节点**：编辑跟生图是两回事——生图是「照这句话画一张新的」，编辑是「拿这张图改一改」。框里的语义、底下的按钮、要几张图都不一样，硬塞进生图节点会把两边的提示词、参数和出图入口全搅在一起。所以节点类型从两种变三种：`video` / `image` / `edit`。
 
-详细计划在 `docs/plan-image-edit-node.md`（开发步骤）和 `docs/plan-image-edit-node-layout.md`（界面草图，配能点的原型 `web/prototype/image-edit-node.html`）；转真人那套照 `docs/krea2-real-usage.md`（作者原件 `krea2_v10.json`）。
+详细计划在 `docs/plan-image-edit-node.md`（开发步骤）和 `docs/plan-image-edit-node-layout.md`（历史界面草图；旧编辑原型已移除，不作为后续设计依据）；转真人那套照 `docs/krea2-real-usage.md`（作者原件 `krea2_v10.json`）。
 
 **节点类型和系统提示词解绑**（以前 `NodeKind = PromptMeta['use']`）：
 
